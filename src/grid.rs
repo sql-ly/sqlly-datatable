@@ -585,18 +585,12 @@ impl GridState {
             }
             self.is_dragging = true;
         }
-        // Convert world -> window for hit_test (hit_test adds scroll internally).
-        let scroll = self.scroll_handle.offset();
-        let start_win = point(
-            px(pf(start_world.x) - pf(scroll.x)),
-            px(pf(start_world.y) - pf(scroll.y)),
-        );
-        let end_win = point(
-            px(pf(end_world.x) - pf(scroll.x)),
-            px(pf(end_world.y) - pf(scroll.y)),
-        );
-        let r1 = self.hit_test(start_win);
-        let r2 = self.hit_test(end_win);
+        // World coords already include scroll offset, so pass sx=0, sy=0 to
+        // hit_test_content. Content-space = world - bounds.origin.
+        let ox = pf(self.bounds.origin.x);
+        let oy = pf(self.bounds.origin.y);
+        let r1 = self.hit_test_content(pf(start_world.x) - ox, pf(start_world.y) - oy, 0.0, 0.0);
+        let r2 = self.hit_test_content(pf(end_world.x) - ox, pf(end_world.y) - oy, 0.0, 0.0);
         match (r1, r2) {
             (HitResult::Cell(r1c, _), HitResult::Cell(r2c, c2)) => {
                 let (r1c, c1) = if let Selection::Cell(_, pc) = &self.selection {
@@ -846,6 +840,13 @@ impl GridState {
         if mx > 0.0 && y >= bh - SCROLLBAR_SIZE && x >= self.row_header_width {
             return HitResult::HorizontalScrollbar;
         }
+        self.hit_test_content(x, y, sx, sy)
+    }
+
+    /// Hit test using content-space coordinates (relative to bounds.origin, with
+    /// scroll already applied). No viewport guards — works for cells scrolled
+    /// out of view, which is needed for drag selection.
+    fn hit_test_content(&self, x: f32, y: f32, sx: f32, sy: f32) -> HitResult {
         if y < self.header_height {
             if x < self.row_header_width {
                 return HitResult::Corner;
