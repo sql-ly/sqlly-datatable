@@ -116,6 +116,7 @@ pub struct GridState {
     pub context_menu: Option<ContextMenu>,
     pub filter_prompt: Option<FilterPrompt>,
     pub pending_action: Option<(MenuAction, usize)>,
+    pub pending_drag_selection: Option<Selection>,
     pub scrollbar_drag: Option<ScrollbarAxis>,
     pub scrollbar_drag_start_offset: f32,
     pub scrollbar_drag_start_pos: f32,
@@ -195,6 +196,7 @@ impl GridState {
             context_menu: None,
             filter_prompt: None,
             pending_action: None,
+            pending_drag_selection: None,
             scrollbar_drag: None,
             scrollbar_drag_start_offset: 0.0,
             scrollbar_drag_start_pos: 0.0,
@@ -529,6 +531,7 @@ impl GridState {
         self.drag_start = None;
         self.scroll_at_click = None;
         self.last_mouse_pos = None;
+        self.pending_drag_selection = None;
     }
 
     /// World (content) coordinates of the two drag corners.
@@ -601,11 +604,11 @@ impl GridState {
                 } else {
                     (r1c, c2)
                 };
-                self.selection =
-                    Selection::CellRange(r1c.min(r2c), c1.min(c2), r1c.max(r2c), c1.max(c2));
+                self.pending_drag_selection =
+                    Some(Selection::CellRange(r1c.min(r2c), c1.min(c2), r1c.max(r2c), c1.max(c2)));
             }
             (HitResult::RowHeader(r1r), HitResult::RowHeader(r2r)) => {
-                self.selection = Selection::RowRange(r1r.min(r2r), r1r.max(r2r));
+                self.pending_drag_selection = Some(Selection::RowRange(r1r.min(r2r), r1r.max(r2r)));
             }
             _ => {}
         }
@@ -664,6 +667,9 @@ impl GridState {
     pub fn handle_mouse_up(&mut self) {
         self.resizing_col = None;
         self.scrollbar_drag = None;
+        if let Some(sel) = self.pending_drag_selection.take() {
+            self.selection = sel;
+        }
         self.clear_drag();
     }
 
@@ -1070,7 +1076,7 @@ impl PaintData {
     fn from_state(s: &GridState) -> Self {
         Self {
             display_indices: s.display_indices.clone(),
-            selection: s.selection.clone(),
+            selection: if s.is_dragging { Selection::None } else { s.selection.clone() },
             sort: s.sort,
             theme: s.theme.clone(),
             columns: s.data.columns.clone(),
@@ -1660,6 +1666,7 @@ impl Render for GridView {
         if let Some((action, col)) = self.state.read(cx).pending_action {
             self.state.update(cx, |s, cx| {
                 s.execute_action(action, col, cx);
+                s.pending_action = None;
             });
             // Don't return; allow notify to drive repaint.
         }
