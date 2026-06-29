@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Compile all targets
+        run: cargo check --all-targets
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Documentation
+        run: cargo doc --no-deps
+      - name: Unit tests
+        run: cargo test --lib
+      - name: Integration tests
+        run: cargo test --test text_box_gpui
+
+      # Package the crate and upload as a build artifact for auditing.
+      - name: Package
+        run: cargo package
+      - name: Upload crate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: crate-package
+          path: target/package/*.crate
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # --no-verify skips the verification rebuild. The build job already
+      # compiled, ran clippy, and passed all tests. This job only packages
+      # (fast, no compilation) and uploads to crates.io.
+      - name: Publish to crates.io
+        run: cargo publish --no-verify --token ${{ secrets.CRATE_API_KEY }}
