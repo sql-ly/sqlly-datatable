@@ -6,7 +6,7 @@ I discovered [GPUI](https://github.com/zed-industries/gpui) while building [sqll
 
 What I discovered along the way is that building a real SQL management client on top of GPUI requires a lot of little tweaks that GPUI doesn't ship with out of the box — virtualized data grids, drag selection, column resizing, scrollbars, configurable formatting, context menus, the works. So I built them.
 
-I am not a skilled Rust developer. I have written custom UI controls in several other languages over the years, but I built this project with AI assistance. I cannot attest to the quality of the code. I am sharing it freely in the hope that people more skilled than I am will improve it — or that the GPUI maintainers see something here worth pulling upstream.
+I am not a skilled Rust developer. I have written custom UI controls in several other languages over the years, but I built this project with AI assistance (read as prompt, check, sigh, repeat). I cannot attest to the quality of the code. I am sharing it freely in the hope that people more skilled than I am will improve it — or that the GPUI maintainers see something here worth pulling upstream.
 
 If even one part of this makes a GPUI contributor think "huh, that's a useful pattern" rather than "wow, what a bunch of AI slop," the project has served its purpose.
 
