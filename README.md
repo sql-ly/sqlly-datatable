@@ -16,7 +16,7 @@ A configurable data grid component for GPUI, built for the needs of [sqlly.app](
 
 ## Features
 
-- **Virtualized rendering** — only visible rows/columns are painted, handling thousands of rows efficiently
+- **Virtualized cell selection** — while the base grid supported virturalized rendering and it worked wonderfully it didn't seem to allow you to select cells that are virturalized
 - **Cell selection** — single cells, row ranges, column ranges, and click-drag rectangle selection
 - **Sorting** — click column headers or sort buttons to cycle ascending/descending/off
 - **Filtering** — per-column filter prompt via right-click context menu
