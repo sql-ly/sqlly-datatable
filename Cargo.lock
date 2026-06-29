@@ -4795,7 +4795,7 @@ dependencies = [
 
 [[package]]
 name = "sqlly-datatable"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "gpui",
  "smol",
@@ -4803,7 +4803,7 @@ dependencies = [
 
 [[package]]
 name = "sqlly-datatable-sample"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "gpui",
  "sqlly-datatable",

@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "Sample application demonstrating the sqlly-datatable virtualized grid."
+repository = "https://github.com/mattvanhorn/sqlly-datatable"
 publish = false
 
 [[bin]]
@@ -16,4 +17,4 @@ expect_used = "allow"
 
 [dependencies]
 gpui = { version = "0.2" }
-sqlly-datatable = { path = "../sqlly-datatable" }
+sqlly-datatable = { version = "1.0.2", path = "../sqlly-datatable" }
