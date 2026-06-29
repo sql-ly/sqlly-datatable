@@ -2090,14 +2090,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpui-grid"
-version = "0.1.0"
-dependencies = [
- "gpui",
- "smol",
-]
-
-[[package]]
 name = "gpui-macros"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4799,6 +4791,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eda41003dc44290527a59b13432d4a0379379fa074b70174882adfbdfd917844"
 dependencies = [
  "bitflags 2.13.0",
+]
+
+[[package]]
+name = "sqlly-datatable"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "smol",
+]
+
+[[package]]
+name = "sqlly-datatable-sample"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "sqlly-datatable",
 ]
 
 [[package]]

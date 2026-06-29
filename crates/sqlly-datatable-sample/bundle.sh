@@ -1,6 +1,6 @@
 #!/bin/sh
-BIN=target/debug/gpui-grid
-APP=target/debug/GpuiGrid.app
+BIN=target/debug/sqlly-datatable-sample
+APP=target/debug/SqllyDataTableSample.app
 
 i=0
 while [ "$i" -lt 600 ]; do
@@ -19,14 +19,14 @@ done
 [ -f "$BIN" ] || exit 0
 
 mkdir -p "$APP/Contents/MacOS"
-cp "$BIN" "$APP/Contents/MacOS/GpuiGrid"
+cp "$BIN" "$APP/Contents/MacOS/SqllyDataTableSample"
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleExecutable</key><string>GpuiGrid</string>
-<key>CFBundleIdentifier</key><string>com.local.gpui-grid</string>
-<key>CFBundleName</key><string>GpuiGrid</string>
+<key>CFBundleExecutable</key><string>SqllyDataTableSample</string>
+<key>CFBundleIdentifier</key><string>com.sql-ly.sqlly-datatable-sample</string>
+<key>CFBundleName</key><string>SqllyDataTableSample</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 </dict></plist>
 EOF

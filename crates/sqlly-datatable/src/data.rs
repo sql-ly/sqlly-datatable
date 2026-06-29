@@ -10,20 +10,20 @@ pub enum CellValue {
     None
 }
 
-#[derive(Clone, Debug)]
-pub enum ColumnType {
+#[derive(Clone, Debug, PartialEq)]
+pub enum ColumnKind {
     Text,
-    Integer { decimals: usize },
-    Decimal { decimals: usize },
-    Date { format: String },
+    Integer,
+    Decimal,
+    Date,
     Boolean,
-    None
+    None,
 }
 
 #[derive(Clone, Debug)]
 pub struct Column {
     pub name: String,
-    pub col_type: ColumnType,
+    pub kind: ColumnKind,
     pub width: f32,
 }
 
@@ -53,23 +53,23 @@ pub fn compare_cells(a: &CellValue, b: &CellValue) -> Ordering {
 
 pub fn sample_data() -> GridData {
    let columns = vec![
-        Column { name: "JournalLineId".into(), col_type: ColumnType::Integer { decimals: 0 }, width: 120.0 },
-        Column { name: "TenantId".into(), col_type: ColumnType::Integer { decimals: 0 }, width: 100.0 },
-        Column { name: "JournalId".into(), col_type: ColumnType::Integer { decimals: 0 }, width: 110.0 },
-        Column { name: "FinancialAccountingKeyId".into(), col_type: ColumnType::Integer { decimals: 0 }, width: 200.0 },
-        Column { name: "ExtendedFinancialAccountingKeyId".into(), col_type: ColumnType::Integer { decimals: 0 }, width: 240.0 },
-        Column { name: "TransactionCurrencyAmount".into(), col_type: ColumnType::Decimal { decimals: 4 }, width: 200.0 },
-        Column { name: "JurisdictionalCurrencyAmount".into(), col_type: ColumnType::Decimal { decimals: 4 }, width: 200.0 },
-        Column { name: "ReportingCurrencyAmount".into(), col_type: ColumnType::Decimal { decimals: 4 }, width: 200.0 },
-        Column { name: "Sequence".into(), col_type: ColumnType::Integer { decimals: 0 }, width: 100.0 },
-        Column { name: "TransPart".into(), col_type: ColumnType::Boolean, width: 110.0 },
-        Column { name: "ReferenceTypeId".into(), col_type: ColumnType::Integer { decimals: 0 }, width: 140.0 }, // Nullable ID
-        Column { name: "ReferenceEntityId".into(), col_type: ColumnType::Integer { decimals: 0 }, width: 150.0 }, // Nullable ID
-        Column { name: "InternalReference".into(), col_type: ColumnType::Text, width: 160.0 },
-        Column { name: "CounterPartyReference".into(), col_type: ColumnType::Text, width: 180.0 },
-        Column { name: "Narrative".into(), col_type: ColumnType::Text, width: 270.0 },
-        Column { name: "CurrencyId".into(), col_type: ColumnType::Integer { decimals: 0 }, width: 110.0 },
-        Column { name: "IsCleared".into(), col_type: ColumnType::Boolean, width: 110.0 },
+        Column { name: "JournalLineId".into(), kind: ColumnKind::Integer, width: 120.0 },
+        Column { name: "TenantId".into(), kind: ColumnKind::Integer, width: 100.0 },
+        Column { name: "JournalId".into(), kind: ColumnKind::Integer, width: 110.0 },
+        Column { name: "FinancialAccountingKeyId".into(), kind: ColumnKind::Integer, width: 200.0 },
+        Column { name: "ExtendedFinancialAccountingKeyId".into(), kind: ColumnKind::Integer, width: 240.0 },
+        Column { name: "TransactionCurrencyAmount".into(), kind: ColumnKind::Decimal, width: 200.0 },
+        Column { name: "JurisdictionalCurrencyAmount".into(), kind: ColumnKind::Decimal, width: 200.0 },
+        Column { name: "ReportingCurrencyAmount".into(), kind: ColumnKind::Decimal, width: 200.0 },
+        Column { name: "Sequence".into(), kind: ColumnKind::Integer, width: 100.0 },
+        Column { name: "TransPart".into(), kind: ColumnKind::Boolean, width: 110.0 },
+        Column { name: "ReferenceTypeId".into(), kind: ColumnKind::Integer, width: 140.0 }, // Nullable ID
+        Column { name: "ReferenceEntityId".into(), kind: ColumnKind::Integer, width: 150.0 }, // Nullable ID
+        Column { name: "InternalReference".into(), kind: ColumnKind::Text, width: 160.0 },
+        Column { name: "CounterPartyReference".into(), kind: ColumnKind::Text, width: 180.0 },
+        Column { name: "Narrative".into(), kind: ColumnKind::Text, width: 270.0 },
+        Column { name: "CurrencyId".into(), kind: ColumnKind::Integer, width: 110.0 },
+        Column { name: "IsCleared".into(), kind: ColumnKind::Boolean, width: 110.0 },
     ];
     let _ts = 1719500000i64;
     let rows = vec![

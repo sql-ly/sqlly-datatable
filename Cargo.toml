@@ -1,15 +1,14 @@
-[package]
-name = "gpui-grid"
+[workspace]
+members = [
+    "crates/sqlly-datatable",
+    "crates/sqlly-datatable-sample",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-
-[[bin]]
-name = "gpui-grid"
-path = "src/main.rs"
-
-[dependencies]
-gpui = { version = "0.2" }
-smol = "2.0"
+license = "MIT"
 
 [profile.dev]
 opt-level = 1

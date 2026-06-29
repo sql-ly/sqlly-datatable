@@ -1,3 +1,4 @@
+use crate::config::{GridConfig, ResolvedColumnFormat, TextAlignment};
 use crate::data::{CellValue, GridData, compare_cells};
 use crate::format::{cell_matches_filter, format_cell};
 use gpui::prelude::*;
@@ -88,6 +89,7 @@ const SCROLLBAR_SIZE: f32 = 20.0;
 
 pub struct GridState {
     pub data: GridData,
+    pub config: GridConfig,
     pub display_indices: Vec<usize>,
     pub selection: Selection,
     pub sort: Option<(usize, SortDirection)>,
@@ -103,6 +105,7 @@ pub struct GridState {
     pub theme: GridTheme,
     pub is_dragging: bool,
     pub drag_start: Option<Point<Pixels>>,
+    pub drag_start_hit: Option<HitResult>,
     pub scroll_at_click: Option<Point<Pixels>>,
     pub last_mouse_pos: Option<Point<Pixels>>,
     pub status_bar_height: f32,
@@ -116,7 +119,6 @@ pub struct GridState {
     pub context_menu: Option<ContextMenu>,
     pub filter_prompt: Option<FilterPrompt>,
     pub pending_action: Option<(MenuAction, usize)>,
-    pub pending_drag_selection: Option<Selection>,
     pub scrollbar_drag: Option<ScrollbarAxis>,
     pub scrollbar_drag_start_offset: f32,
     pub scrollbar_drag_start_pos: f32,
@@ -163,11 +165,12 @@ pub struct FilterPrompt {
 }
 
 impl GridState {
-    pub fn new(data: GridData, focus_handle: FocusHandle) -> Self {
+    pub fn new(data: GridData, config: GridConfig, focus_handle: FocusHandle) -> Self {
         let col_count = data.columns.len();
         let display_indices = (0..data.rows.len()).collect();
         Self {
             data,
+            config,
             display_indices,
             selection: Selection::None,
             sort: None,
@@ -183,6 +186,7 @@ impl GridState {
             theme: GridTheme::default(),
             is_dragging: false,
             drag_start: None,
+            drag_start_hit: None,
             scroll_at_click: None,
             last_mouse_pos: None,
             status_bar_height: 24.0,
@@ -196,7 +200,6 @@ impl GridState {
             context_menu: None,
             filter_prompt: None,
             pending_action: None,
-            pending_drag_selection: None,
             scrollbar_drag: None,
             scrollbar_drag_start_offset: 0.0,
             scrollbar_drag_start_pos: 0.0,
@@ -212,7 +215,8 @@ impl GridState {
                         return true;
                     }
                     let cell = &self.data.rows[row_idx][col_idx];
-                    cell_matches_filter(cell, &col.col_type, filter)
+                    let fmt = self.config.resolve(col_idx, col.kind.clone());
+                    cell_matches_filter(cell, &fmt, filter)
                 })
             })
             .collect();
@@ -394,6 +398,7 @@ impl GridState {
                     self.selection = Selection::Row(row);
                 }
                 self.start_drag(pos);
+                self.drag_start_hit = Some(HitResult::RowHeader(row));
             }
             HitResult::Cell(row, col) => {
                 if shift {
@@ -407,6 +412,7 @@ impl GridState {
                     self.selection = Selection::Cell(row, col);
                 }
                 self.start_drag(pos);
+                self.drag_start_hit = Some(HitResult::Cell(row, col));
             }
             HitResult::Corner | HitResult::None => {
                 self.selection = Selection::None;
@@ -475,7 +481,8 @@ impl GridState {
                 let mut text = String::new();
                 for &row_idx in &self.display_indices {
                     let cell = &self.data.rows[row_idx][col];
-                    let (s, _) = crate::format::format_cell(cell, &self.data.columns[col].col_type);
+                    let fmt = self.config.resolve(col, self.data.columns[col].kind.clone());
+                    let (s, _) = crate::format::format_cell(cell, &fmt);
                     text.push_str(&s);
                     text.push('\n');
                 }
@@ -487,7 +494,8 @@ impl GridState {
                 text.push('\n');
                 for &row_idx in &self.display_indices {
                     let cell = &self.data.rows[row_idx][col];
-                    let (s, _) = crate::format::format_cell(cell, &self.data.columns[col].col_type);
+                    let fmt = self.config.resolve(col, self.data.columns[col].kind.clone());
+                    let (s, _) = crate::format::format_cell(cell, &fmt);
                     text.push_str(&s);
                     text.push('\n');
                 }
@@ -529,9 +537,9 @@ impl GridState {
     fn clear_drag(&mut self) {
         self.is_dragging = false;
         self.drag_start = None;
+        self.drag_start_hit = None;
         self.scroll_at_click = None;
         self.last_mouse_pos = None;
-        self.pending_drag_selection = None;
     }
 
     /// World (content) coordinates of the two drag corners.
@@ -585,24 +593,24 @@ impl GridState {
             }
             self.is_dragging = true;
         }
+        // Use the start cell/row captured at click time — stable even as
+        // self.selection mutates during the drag.
+        let r1 = match self.drag_start_hit {
+            Some(h) => h,
+            None => return,
+        };
         // World coords already include scroll offset, so pass sx=0, sy=0 to
         // hit_test_content. Content-space = world - bounds.origin.
         let ox = pf(self.bounds.origin.x);
         let oy = pf(self.bounds.origin.y);
-        let r1 = self.hit_test_content(pf(start_world.x) - ox, pf(start_world.y) - oy, 0.0, 0.0);
         let r2 = self.hit_test_content(pf(end_world.x) - ox, pf(end_world.y) - oy, 0.0, 0.0);
         match (r1, r2) {
-            (HitResult::Cell(r1c, _), HitResult::Cell(r2c, c2)) => {
-                let (r1c, c1) = if let Selection::Cell(_, pc) = &self.selection {
-                    (r1c, *pc)
-                } else {
-                    (r1c, c2)
-                };
-                self.pending_drag_selection =
-                    Some(Selection::CellRange(r1c.min(r2c), c1.min(c2), r1c.max(r2c), c1.max(c2)));
+            (HitResult::Cell(r1c, c1), HitResult::Cell(r2c, c2)) => {
+                self.selection =
+                    Selection::CellRange(r1c.min(r2c), c1.min(c2), r1c.max(r2c), c1.max(c2));
             }
             (HitResult::RowHeader(r1r), HitResult::RowHeader(r2r)) => {
-                self.pending_drag_selection = Some(Selection::RowRange(r1r.min(r2r), r1r.max(r2r)));
+                self.selection = Selection::RowRange(r1r.min(r2r), r1r.max(r2r));
             }
             _ => {}
         }
@@ -661,9 +669,6 @@ impl GridState {
     pub fn handle_mouse_up(&mut self) {
         self.resizing_col = None;
         self.scrollbar_drag = None;
-        if let Some(sel) = self.pending_drag_selection.take() {
-            self.selection = sel;
-        }
         self.clear_drag();
     }
 
@@ -735,6 +740,64 @@ impl GridState {
             self.handle_scroll_drag();
         }
         true
+    }
+
+    pub fn select_all(&mut self) {
+        let nrows = self.display_indices.len();
+        let ncols = self.data.columns.len();
+        if nrows > 0 && ncols > 0 {
+            self.selection = Selection::CellRange(0, 0, nrows - 1, ncols - 1);
+        }
+    }
+
+    pub fn copy_selection(&self, with_headers: bool, cx: &mut App) {
+        let (r1, c1, r2, c2) = match &self.selection {
+            Selection::Cell(r, c) => (*r, *c, *r, *c),
+            Selection::CellRange(r1, c1, r2, c2) => (*r1, *c1, *r2, *c2),
+            Selection::Row(r) => (*r, 0, *r, self.data.columns.len().saturating_sub(1)),
+            Selection::RowRange(r1, r2) => (*r1, 0, *r2, self.data.columns.len().saturating_sub(1)),
+            Selection::Column(c) => (0, *c, self.display_indices.len().saturating_sub(1), *c),
+            Selection::None => return,
+        };
+        if self.display_indices.is_empty() || self.data.columns.is_empty() {
+            return;
+        }
+        let r1 = r1.min(self.display_indices.len() - 1);
+        let r2 = r2.min(self.display_indices.len() - 1);
+        let c1 = c1.min(self.data.columns.len() - 1);
+        let c2 = c2.min(self.data.columns.len() - 1);
+        let mut text = String::new();
+        if with_headers {
+            for c in c1..=c2 {
+                if c > c1 { text.push('\t'); }
+                text.push_str(&self.data.columns[c].name);
+            }
+            text.push('\n');
+        }
+        for dr in r1..=r2 {
+            let row_idx = self.display_indices[dr];
+            for c in c1..=c2 {
+                if c > c1 { text.push('\t'); }
+                let cell = &self.data.rows[row_idx][c];
+                let fmt = self.config.resolve(c, self.data.columns[c].kind.clone());
+                let (s, _) = crate::format::format_cell(cell, &fmt);
+                text.push_str(&s);
+            }
+            text.push('\n');
+        }
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+    }
+
+    pub fn page_up(&mut self) {
+        let vh = pf(self.bounds.size.height) - self.header_height;
+        let rows = (vh / self.row_height) as i32;
+        self.move_selection(0, -rows);
+    }
+
+    pub fn page_down(&mut self) {
+        let vh = pf(self.bounds.size.height) - self.header_height;
+        let rows = (vh / self.row_height) as i32;
+        self.move_selection(0, rows);
     }
 
     pub fn handle_key(&mut self, keystroke: &Keystroke) {
@@ -1059,6 +1122,7 @@ struct PaintData {
     sort: Option<(usize, SortDirection)>,
     theme: GridTheme,
     columns: Vec<crate::data::Column>,
+    resolved_formats: Vec<ResolvedColumnFormat>,
     rows: Vec<Vec<CellValue>>,
     filters: Vec<String>,
     scroll_offset: Point<Pixels>,
@@ -1077,10 +1141,11 @@ impl PaintData {
     fn from_state(s: &GridState) -> Self {
         Self {
             display_indices: s.display_indices.clone(),
-            selection: if s.is_dragging { Selection::None } else { s.selection.clone() },
+            selection: s.selection.clone(),
             sort: s.sort,
             theme: s.theme.clone(),
             columns: s.data.columns.clone(),
+            resolved_formats: s.config.resolve_all(&s.data.columns),
             rows: s.data.rows.clone(),
             filters: s.filters.clone(),
             scroll_offset: s.scroll_handle.offset(),
@@ -1292,13 +1357,14 @@ fn paint_grid(data: &PaintData, window: &mut Window, cx: &mut App, bounds: Bound
                 fill_quad(window, x, y, w, row_h, theme.selection_bg);
             }
             let cell = &data.rows[row_idx][ci];
-            let (text, is_neg) = format_cell(cell, &col.col_type);
-            let color = if is_neg { theme.negative_fg } else { theme.text_fg };
+            let fmt = &data.resolved_formats[ci];
+            let (text, is_neg) = format_cell(cell, fmt);
+            let color = if is_neg && fmt.number.show_negative_red { theme.negative_fg } else { theme.text_fg };
             let text_w = text.len() as f32 * cw;
-            let tx = match col.col_type {
-                crate::data::ColumnType::Text => x + 8.0,
-                crate::data::ColumnType::Date { .. } => x + (w - text_w) * 0.5,
-                _ => x + w - text_w - 8.0,
+            let tx = match fmt.alignment() {
+                TextAlignment::Left => x + 8.0,
+                TextAlignment::Center => x + (w - text_w) * 0.5,
+                TextAlignment::Right => x + w - text_w - 8.0,
             };
             let ty = y + (row_h - fs) * 0.5;
             paint_txt(window, cx, &text, tx, ty, color, Some(w - 16.0));
@@ -1374,8 +1440,8 @@ fn paint_grid(data: &PaintData, window: &mut Window, cx: &mut App, bounds: Bound
         let ry = sy0.min(sy1);
         let rw = (sx1 - sx0).abs();
         let rh = (sy1 - sy0).abs();
-        let drag_fill = hsla(0.58, 0.50, 0.50, 0.20);
-        let drag_border = hsla(0.58, 0.60, 0.45, 0.90);
+        let drag_fill = hsla(0.0, 0.0, 0.0, 0.0);
+        let drag_border = hsla(0.0, 0.0, 0.0, 0.0);
         window.paint_quad(PaintQuad {
             bounds: Bounds {
                 origin: point(px(rx), px(ry)),
@@ -1631,23 +1697,48 @@ fn paint_filter_prompt(
     }
 }
 
-pub struct GridView {
+pub struct SqllyDataTable {
     pub state: Entity<GridState>,
 }
 
-impl GridView {
+impl SqllyDataTable {
     pub fn new(state: Entity<GridState>) -> Self {
         Self { state }
     }
+
+    pub fn builder(data: GridData) -> SqllyDataTableBuilder {
+        SqllyDataTableBuilder {
+            data,
+            config: GridConfig::default(),
+        }
+    }
 }
 
-impl Focusable for GridView {
+pub struct SqllyDataTableBuilder {
+    data: GridData,
+    config: GridConfig,
+}
+
+impl SqllyDataTableBuilder {
+    pub fn config(mut self, config: GridConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    pub fn build(self, cx: &mut App) -> SqllyDataTable {
+        let focus = cx.focus_handle();
+        let state = cx.new(|_cx| GridState::new(self.data, self.config, focus.clone()));
+        SqllyDataTable { state }
+    }
+}
+
+impl Focusable for SqllyDataTable {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.state.read(cx).focus_handle.clone()
     }
 }
 
-impl Render for GridView {
+impl Render for SqllyDataTable {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state_canvas = self.state.clone();
         let state_status = self.state.clone();
@@ -1812,12 +1903,26 @@ impl Render for GridView {
                 });
             })
             .on_key_down(move |event: &KeyDownEvent, _window, cx| {
-                if event.keystroke.modifiers.platform && event.keystroke.key == "q" {
+                let ks = &event.keystroke;
+                if ks.modifiers.platform && ks.key == "q" {
                     cx.quit();
                     return;
                 }
                 state_key.update(cx, |s, cx| {
-                    s.handle_key(&event.keystroke);
+                    let kb = &s.config.key_bindings;
+                    if kb.select_all.matches(ks) {
+                        s.select_all();
+                    } else if kb.copy.matches(ks) {
+                        s.copy_selection(false, cx);
+                    } else if kb.copy_with_headers.matches(ks) {
+                        s.copy_selection(true, cx);
+                    } else if kb.page_up.matches(ks) {
+                        s.page_up();
+                    } else if kb.page_down.matches(ks) {
+                        s.page_down();
+                    } else {
+                        s.handle_key(ks);
+                    }
                     cx.notify();
                 });
             })

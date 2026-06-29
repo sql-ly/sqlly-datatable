@@ -1,0 +1,13 @@
+[package]
+name = "sqlly-datatable-sample"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sqlly-datatable-sample"
+path = "src/main.rs"
+
+[dependencies]
+gpui = { version = "0.2" }
+sqlly-datatable = { path = "../sqlly-datatable" }
