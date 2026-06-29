@@ -10,6 +10,9 @@ I am not a skilled Rust developer. I have written custom UI controls in several 
 
 If even one part of this makes a GPUI contributor think "huh, that's a useful pattern" rather than "wow, what a bunch of AI slop," the project has served its purpose.
 
+**Why not just submit a PR?**
+Given that this may or may not be total AI slop and my name is attached to it, doing so would be a bit gauche don't you think? 
+
 ## What
 
 A configurable data grid component for GPUI, built for the needs of [sqlly.app](https://sqlly.app).
