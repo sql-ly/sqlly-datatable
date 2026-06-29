@@ -116,3 +116,135 @@ pub fn screen_to_content(
     let py: f32 = pos.y.into();
     (px - ox + sx, py - oy + sy)
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::field_reassign_with_default
+)]
+mod tests {
+    use super::*;
+    use gpui::{px, Pixels};
+
+    fn p(x: f32, y: f32) -> Point<Pixels> {
+        Point { x: px(x), y: px(y) }
+    }
+
+    #[test]
+    fn normalized_bounds_none_is_none() {
+        assert_eq!(Selection::None.normalized_bounds(), None);
+    }
+
+    #[test]
+    fn normalized_bounds_cell_folds_to_single_point() {
+        assert_eq!(
+            Selection::Cell(2, 3).normalized_bounds(),
+            Some((2, 3, 2, 3))
+        );
+    }
+
+    #[test]
+    fn normalized_bounds_row_spans_all_columns() {
+        let (r0, c0, r1, c1) = Selection::Row(4).normalized_bounds().unwrap();
+        assert_eq!(r0, 4);
+        assert_eq!(r1, 4);
+        assert_eq!(c0, 0);
+        assert_eq!(c1, usize::MAX);
+    }
+
+    #[test]
+    fn normalized_bounds_column_spans_all_rows() {
+        let (r0, c0, r1, c1) = Selection::Column(5).normalized_bounds().unwrap();
+        assert_eq!(r0, 0);
+        assert_eq!(r1, usize::MAX);
+        assert_eq!(c0, 5);
+        assert_eq!(c1, 5);
+    }
+
+    #[test]
+    fn normalized_bounds_cell_range_handles_reversed() {
+        assert_eq!(
+            Selection::CellRange(5, 4, 1, 2).normalized_bounds(),
+            Some((1, 2, 5, 4)),
+        );
+    }
+
+    #[test]
+    fn normalized_bounds_row_range_handles_reversed() {
+        let (r0, _c0, r1, c1) = Selection::RowRange(9, 3).normalized_bounds().unwrap();
+        assert_eq!(r0, 3);
+        assert_eq!(r1, 9);
+        assert_eq!(c1, usize::MAX);
+    }
+
+    #[test]
+    fn is_cell_selected_for_all_variants() {
+        assert!(!is_cell_selected(&Selection::None, 0, 0));
+        assert!(is_cell_selected(&Selection::Cell(2, 3), 2, 3));
+        assert!(!is_cell_selected(&Selection::Cell(2, 3), 3, 2));
+
+        assert!(is_cell_selected(&Selection::CellRange(1, 1, 3, 3), 2, 2));
+        assert!(is_cell_selected(&Selection::CellRange(3, 3, 1, 1), 2, 2));
+        assert!(!is_cell_selected(&Selection::CellRange(1, 1, 3, 3), 4, 4));
+
+        assert!(is_cell_selected(&Selection::Row(2), 2, 0));
+        assert!(is_cell_selected(&Selection::Row(2), 2, 99));
+        assert!(!is_cell_selected(&Selection::Row(2), 3, 0));
+
+        assert!(is_cell_selected(&Selection::RowRange(1, 3), 2, 5));
+        assert!(!is_cell_selected(&Selection::RowRange(1, 3), 4, 5));
+        assert!(is_cell_selected(&Selection::RowRange(3, 1), 2, 0));
+
+        assert!(is_cell_selected(&Selection::Column(5), 0, 5));
+        assert!(is_cell_selected(&Selection::Column(5), 99, 5));
+        assert!(!is_cell_selected(&Selection::Column(5), 0, 4));
+    }
+
+    #[test]
+    fn is_row_selected_only_for_row_and_row_range() {
+        assert!(is_row_selected(&Selection::Row(3), 3));
+        assert!(!is_row_selected(&Selection::Row(3), 4));
+        assert!(is_row_selected(&Selection::RowRange(2, 5), 4));
+        assert!(is_row_selected(&Selection::RowRange(5, 2), 4));
+        assert!(!is_row_selected(&Selection::RowRange(2, 5), 6));
+
+        assert!(!is_row_selected(&Selection::Cell(1, 2), 1));
+        assert!(!is_row_selected(&Selection::CellRange(0, 0, 9, 9), 5));
+        assert!(!is_row_selected(&Selection::Column(0), 5));
+        assert!(!is_row_selected(&Selection::None, 0));
+    }
+
+    #[test]
+    fn is_column_selected_only_for_column_variant() {
+        assert!(is_column_selected(&Selection::Column(7), 7));
+        assert!(!is_column_selected(&Selection::Column(7), 8));
+        assert!(!is_column_selected(&Selection::Row(0), 0));
+        assert!(!is_column_selected(&Selection::None, 0));
+        assert!(!is_column_selected(&Selection::CellRange(0, 2, 9, 2), 2));
+    }
+
+    #[test]
+    fn screen_to_content_applies_origin_and_scroll() {
+        let pos = p(50.0, 60.0);
+        let origin = p(10.0, 20.0);
+        let scroll = p(5.0, 7.0);
+        let (cx, cy) = screen_to_content(pos, origin, scroll);
+        assert_eq!(cx, 45.0);
+        assert_eq!(cy, 47.0);
+    }
+
+    #[test]
+    fn screen_to_content_no_offset() {
+        let (cx, cy) = screen_to_content(p(0.0, 0.0), p(0.0, 0.0), p(0.0, 0.0));
+        assert_eq!(cx, 0.0);
+        assert_eq!(cy, 0.0);
+    }
+
+    #[test]
+    fn screen_to_content_handles_negative_above_origin() {
+        // Above-origin and negative-axis positions happen during drag-scroll
+        // and should not panic.
+        let (_, _) = screen_to_content(p(-30.0, -30.0), p(0.0, 0.0), p(0.0, 0.0));
+    }
+}

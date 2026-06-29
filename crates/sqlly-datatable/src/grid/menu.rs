@@ -152,3 +152,144 @@ pub fn background() -> Hsla {
         a: 1.0,
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::field_reassign_with_default
+)]
+mod tests {
+    use super::*;
+    use gpui::px;
+
+    fn menu_at(x: f32, y: f32) -> ContextMenu {
+        ContextMenu::standard(7, point_from(x, y))
+    }
+
+    fn point_from(x: f32, y: f32) -> Point<Pixels> {
+        Point { x: px(x), y: px(y) }
+    }
+
+    fn anchor_y(m: &ContextMenu) -> f32 {
+        f32::from(m.anchor.y)
+    }
+
+    #[test]
+    fn standard_menu_item_sequence_is_stable() {
+        let m = ContextMenu::standard(0, point_from(0.0, 0.0));
+        let kinds: Vec<&'static str> = m
+            .items
+            .iter()
+            .map(|i| match i {
+                MenuItem::Action(MenuAction::SelectColumn) => "SelectColumn",
+                MenuItem::Action(MenuAction::CopyColumn) => "CopyColumn",
+                MenuItem::Action(MenuAction::CopyColumnWithHeaders) => "CopyColumnWithHeaders",
+                MenuItem::Separator => "Separator",
+                MenuItem::Action(MenuAction::SortAscending) => "SortAscending",
+                MenuItem::Action(MenuAction::SortDescending) => "SortDescending",
+                MenuItem::Action(MenuAction::ClearSort) => "ClearSort",
+                MenuItem::Action(MenuAction::FilterPrompt) => "FilterPrompt",
+                MenuItem::Action(MenuAction::ClearFilter) => "ClearFilter",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "SelectColumn",
+                "CopyColumn",
+                "CopyColumnWithHeaders",
+                "Separator",
+                "SortAscending",
+                "SortDescending",
+                "ClearSort",
+                "Separator",
+                "FilterPrompt",
+                "ClearFilter",
+            ],
+        );
+    }
+
+    #[test]
+    fn at_least_two_separators_break_three_groups() {
+        let m = ContextMenu::standard(0, point_from(0.0, 0.0));
+        let separators = m
+            .items
+            .iter()
+            .filter(|i| matches!(i, MenuItem::Separator))
+            .count();
+        assert_eq!(separators, 2);
+    }
+
+    #[test]
+    fn every_menu_action_has_non_empty_label() {
+        for a in [
+            MenuAction::SelectColumn,
+            MenuAction::CopyColumn,
+            MenuAction::CopyColumnWithHeaders,
+            MenuAction::SortAscending,
+            MenuAction::SortDescending,
+            MenuAction::ClearSort,
+            MenuAction::FilterPrompt,
+            MenuAction::ClearFilter,
+        ] {
+            assert!(!label(a).is_empty(), "{a:?} has empty label");
+        }
+    }
+
+    #[test]
+    fn width_respects_min_width() {
+        let m = menu_at(0.0, 0.0);
+        assert!(m.width_for(1.0) >= MENU_MIN_WIDTH);
+    }
+
+    #[test]
+    fn width_grows_with_longest_label() {
+        let m = menu_at(0.0, 0.0);
+        let narrow = m.width_for(1.0);
+        let wide = m.width_for(20.0);
+        assert!(wide > narrow);
+    }
+
+    #[test]
+    fn total_height_matches_items_and_padding() {
+        let m = menu_at(0.0, 0.0);
+        let expected = m.items.len() as f32 * MENU_ITEM_HEIGHT + MENU_INNER_PAD * 2.0;
+        assert_eq!(m.total_height(), expected);
+    }
+
+    #[test]
+    fn hover_returns_none_outside_x_bounds() {
+        let m = menu_at(100.0, 100.0);
+        let right = m.width_for(8.0);
+        assert_eq!(hover_at(&m, 99.0, 110.0, 8.0), None);
+        assert_eq!(hover_at(&m, 100.0 + right + 1.0, 110.0, 8.0), None);
+    }
+
+    #[test]
+    fn hover_returns_none_above_anchor() {
+        let m = menu_at(100.0, 100.0);
+        assert_eq!(hover_at(&m, 110.0, 99.0, 8.0), None);
+    }
+
+    #[test]
+    fn hover_on_first_action_returns_action_index_zero() {
+        let m = menu_at(100.0, 100.0);
+        let y: f32 = anchor_y(&m) + MENU_INNER_PAD;
+        assert_eq!(hover_at(&m, 110.0, y, 8.0), Some(0));
+    }
+
+    #[test]
+    fn hover_on_separator_returns_none() {
+        let m = menu_at(100.0, 100.0);
+        let y: f32 = anchor_y(&m) + MENU_INNER_PAD + 3.0 * MENU_ITEM_HEIGHT;
+        assert_eq!(hover_at(&m, 110.0, y, 8.0), None);
+    }
+
+    #[test]
+    fn hover_below_last_item_is_none() {
+        let m = menu_at(100.0, 100.0);
+        let y: f32 = anchor_y(&m) + 1000.0;
+        assert_eq!(hover_at(&m, 110.0, y, 8.0), None);
+    }
+}

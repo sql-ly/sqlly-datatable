@@ -380,17 +380,19 @@ mod tests {
 
     #[test]
     fn resolve_uses_per_column_override() {
-        let mut cfg = GridConfig::default();
-        cfg.column_overrides = vec![
-            ColumnOverride {
-                number: Some(NumberFormat {
-                    decimals: 4,
-                    ..NumberFormat::default()
-                }),
-                ..Default::default()
-            },
-            ColumnOverride::default(),
-        ];
+        let cfg = GridConfig {
+            column_overrides: vec![
+                ColumnOverride {
+                    number: Some(NumberFormat {
+                        decimals: 4,
+                        ..NumberFormat::default()
+                    }),
+                    ..Default::default()
+                },
+                ColumnOverride::default(),
+            ],
+            ..GridConfig::default()
+        };
         let cols = vec![
             crate::data::Column::new("a", ColumnKind::Decimal, 80.0),
             crate::data::Column::new("b", ColumnKind::Decimal, 80.0),

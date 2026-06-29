@@ -140,4 +140,5 @@ fn sample_data() -> GridData {
     ];
 
     GridData::new(columns, rows).expect("rectangular sample data")
+    // (allowed in a sample binary, not in the library)
 }

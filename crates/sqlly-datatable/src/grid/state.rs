@@ -961,3 +961,240 @@ fn keystroke_to_char(k: &Keystroke) -> Option<char> {
         None
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::field_reassign_with_default
+)]
+mod tests {
+    use super::*;
+    use crate::data::{CellValue, Column, ColumnKind};
+    use crate::grid::state::state_inner::{edge_scroll_speed, format_current_status};
+
+    fn anchor() -> Point<Pixels> {
+        Point {
+            x: px(0.0),
+            y: px(0.0),
+        }
+    }
+
+    fn prompt_with(text: &str, cursor: usize) -> FilterPrompt {
+        let mut p = FilterPrompt::new(0, anchor(), text.to_owned());
+        p.cursor_chars = cursor;
+        p
+    }
+
+    #[test]
+    fn filter_prompt_new_cursors_at_char_count_not_bytes() {
+        // "hé🙂" is 3 chars but 7 bytes (h=1, é=2, 🙂=4).
+        let p = FilterPrompt::new(0, anchor(), "hé🙂".into());
+        assert_eq!(p.cursor_chars, 3);
+        assert_eq!(p.input.len(), 7);
+    }
+
+    #[test]
+    fn filter_prompt_insert_emoji_at_start_does_not_panic() {
+        let mut p = prompt_with("ab", 0);
+        p.insert_char('\u{1F600}');
+        assert_eq!(p.input, "\u{1F600}ab");
+        assert_eq!(p.cursor_chars, 1);
+    }
+
+    #[test]
+    fn filter_prompt_insert_in_middle_keeps_cursor_at_char_position() {
+        let mut p = prompt_with("helloworld", 5);
+        p.insert_char(' ');
+        assert_eq!(p.input, "hello world");
+        assert_eq!(p.cursor_chars, 6);
+    }
+
+    #[test]
+    fn filter_prompt_backspace_at_zero_is_noop() {
+        let mut p = prompt_with("abc", 0);
+        p.backspace();
+        assert_eq!(p.input, "abc");
+        assert_eq!(p.cursor_chars, 0);
+    }
+
+    #[test]
+    fn filter_prompt_backspace_removes_one_char_value() {
+        // Cursor sits after "hé" (2 chars); backspace should delete "é" only.
+        let mut p = prompt_with("héx", 2);
+        p.backspace();
+        assert_eq!(p.input, "hx");
+        assert_eq!(p.cursor_chars, 1);
+    }
+
+    #[test]
+    fn filter_prompt_clamp_cursor_pulls_back_past_end() {
+        let mut p = prompt_with("abc", 99);
+        p.clamp_cursor();
+        assert_eq!(p.cursor_chars, 3);
+    }
+
+    #[test]
+    fn edge_scroll_speed_stops_outside_band() {
+        assert_eq!(edge_scroll_speed(200.0), 0.0);
+        assert_eq!(edge_scroll_speed(-100.0), 80.0); // clamps at cap
+        assert_eq!(edge_scroll_speed(0.0), 12.0); // < 25
+        assert_eq!(edge_scroll_speed(24.99), 12.0);
+        assert_eq!(edge_scroll_speed(25.0), 6.0); // < 50
+        assert_eq!(edge_scroll_speed(49.99), 6.0);
+        assert_eq!(edge_scroll_speed(50.0), 3.0); // < 100
+        assert_eq!(edge_scroll_speed(99.99), 3.0);
+        assert_eq!(edge_scroll_speed(100.0), 1.0); // < 150
+        assert_eq!(edge_scroll_speed(149.99), 1.0);
+    }
+
+    #[test]
+    fn edge_scroll_speed_caps_negative_runaway() {
+        // -1000 should saturate to (24 + 600).min(80) = 80.
+        assert_eq!(edge_scroll_speed(-1000.0), 80.0);
+    }
+
+    /// `GridState` requires a real GPUI `FocusHandle` from
+    /// `gpui::Application`, but `gpui::Application::new()` panics on any
+    /// thread other than `main`. Since Rust's test runner executes on a
+    /// worker pool, the GPUI-backed assertions cannot run alongside pure
+    /// tests. We mark this test `#[ignore]` so `cargo test` stays green; run
+    /// it with `cargo test -- --ignored grid_state_behavior_under_application`
+    /// from the workspace root on the test thread observable to GPUI.
+    #[allow(clippy::expect_used, clippy::unwrap_used)]
+    #[test]
+    #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
+    fn grid_state_behavior_under_application() {
+        gpui::Application::new().run(|cx| {
+            let focus = cx.focus_handle();
+
+            // format_current_status_handles_initial_state
+            let mut state = GridState::new(
+                GridData::new(
+                    vec![Column::new("n", ColumnKind::Integer, 100.0)],
+                    vec![vec![CellValue::Integer(1)]],
+                )
+                .expect("rectangular"),
+                crate::config::GridConfig::default(),
+                focus.clone(),
+            );
+            let _ = format_current_status(&state);
+            assert_eq!(state.selection, Selection::None);
+
+            // format_current_status_replaces_with_supplied_pos
+            state.last_mouse_pos = Some(Point {
+                x: px(120.0),
+                y: px(80.0),
+            });
+            let s = format_current_status(&state);
+            assert!(s.contains("(120, 80)"), "missing positional, got: {s}");
+
+            // recompute_filters_then_sorts_then_clears
+            let mut state = GridState::new(
+                GridData::new(
+                    vec![Column::new("name", ColumnKind::Text, 100.0)],
+                    vec![
+                        vec![CellValue::Text("alpha".into())],
+                        vec![CellValue::Text("beta".into())],
+                        vec![CellValue::Text("gamma".into())],
+                    ],
+                )
+                .expect("rectangular"),
+                crate::config::GridConfig::default(),
+                focus.clone(),
+            );
+            state.filters[0] = "a".into();
+            state.toggle_sort(0);
+            state.recompute();
+            assert_eq!(state.display_indices, vec![0, 2]);
+            state.toggle_sort(0);
+            state.recompute();
+            assert_eq!(state.display_indices, vec![2, 0]);
+            state.filters[0].clear();
+            state.toggle_sort(0);
+            state.recompute();
+            assert_eq!(state.display_indices, vec![0, 1, 2]);
+
+            // toggle_sort_cycles_through_three_states
+            let mut state = GridState::new(
+                GridData::new(
+                    vec![Column::new("v", ColumnKind::Integer, 80.0)],
+                    vec![vec![CellValue::Integer(1)]],
+                )
+                .expect("rectangular"),
+                crate::config::GridConfig::default(),
+                focus.clone(),
+            );
+            state.toggle_sort(0);
+            assert_eq!(state.sort, Some((0, SortDirection::Ascending)));
+            state.toggle_sort(0);
+            assert_eq!(state.sort, Some((0, SortDirection::Descending)));
+            state.toggle_sort(0);
+            assert_eq!(state.sort, None);
+
+            // select_all_picks_full_range_when_data_present
+            let mut state = GridState::new(
+                GridData::new(
+                    vec![
+                        Column::new("a", ColumnKind::Integer, 80.0),
+                        Column::new("b", ColumnKind::Integer, 80.0),
+                    ],
+                    vec![vec![CellValue::Integer(1), CellValue::Integer(2)]],
+                )
+                .expect("rectangular"),
+                crate::config::GridConfig::default(),
+                focus.clone(),
+            );
+            state.select_all();
+            assert_eq!(state.selection, Selection::CellRange(0, 0, 0, 1));
+
+            // select_all_is_noop_on_empty
+            let mut state = GridState::new(
+                GridData::new(vec![Column::new("a", ColumnKind::Integer, 80.0)], vec![])
+                    .expect("rectangular"),
+                crate::config::GridConfig::default(),
+                focus.clone(),
+            );
+            state.select_all();
+            assert_eq!(state.selection, Selection::None);
+
+            // set_config_refreshes_resolved_formats
+            let mut state = GridState::new(
+                GridData::new(
+                    vec![Column::new("v", ColumnKind::Decimal, 100.0)],
+                    vec![vec![CellValue::Decimal(1.234)]],
+                )
+                .expect("rectangular"),
+                crate::config::GridConfig::default(),
+                focus.clone(),
+            );
+            assert_eq!(state.resolved_formats[0].number.decimals, 2);
+            let mut cfg = crate::config::GridConfig::default();
+            cfg.column_overrides = vec![crate::config::ColumnOverride {
+                number: Some(crate::config::NumberFormat {
+                    decimals: 6,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }];
+            state.set_config(cfg);
+            assert_eq!(state.resolved_formats[0].number.decimals, 6);
+
+            // wants_edge_scroll_tick_mirrors_is_dragging
+            let mut state = GridState::new(
+                GridData::new(
+                    vec![Column::new("a", ColumnKind::Integer, 80.0)],
+                    vec![vec![CellValue::Integer(1)]],
+                )
+                .expect("rectangular"),
+                crate::config::GridConfig::default(),
+                focus.clone(),
+            );
+            assert!(!state.wants_edge_scroll_tick());
+            state.is_dragging = true;
+            assert!(state.wants_edge_scroll_tick());
+
+            cx.quit();
+        });
+    }
+}

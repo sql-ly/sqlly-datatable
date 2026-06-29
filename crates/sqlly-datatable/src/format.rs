@@ -535,12 +535,20 @@ mod tests {
 
     #[test]
     fn format_string_case() {
-        let mut fmt = StringFormat::default();
-        fmt.case = TextCase::Upper;
+        let fmt = StringFormat {
+            case: TextCase::Upper,
+            ..StringFormat::default()
+        };
         assert_eq!(format_string("hello", &fmt), "HELLO");
-        fmt.case = TextCase::Lower;
+        let fmt = StringFormat {
+            case: TextCase::Lower,
+            ..StringFormat::default()
+        };
         assert_eq!(format_string("HELLO", &fmt), "hello");
-        fmt.case = TextCase::Title;
+        let fmt = StringFormat {
+            case: TextCase::Title,
+            ..StringFormat::default()
+        };
         assert_eq!(format_string("hello world", &fmt), "Hello World");
     }
 
