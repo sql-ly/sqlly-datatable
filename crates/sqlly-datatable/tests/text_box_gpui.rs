@@ -6,11 +6,12 @@
 //! window, so the suite stays portable across macOS CI hosts.
 
 use sqlly_datatable::{
-    CellValue, Column, ColumnKind, GridConfig, GridData, NumberFormat, ResolvedColumnFormat,
-    StringFormat, TextAlignment, compare_cells,
+    compare_cells, CellValue, Column, ColumnKind, GridConfig, GridData, NumberFormat,
+    ResolvedColumnFormat, StringFormat, TextAlignment,
 };
 
 #[test]
+#[allow(clippy::expect_used)]
 fn public_api_links_and_compiles() {
     let _data = GridData::new(
         vec![
