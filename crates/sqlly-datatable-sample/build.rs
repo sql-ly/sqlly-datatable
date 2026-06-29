@@ -1,10 +1,10 @@
+/// Optional macOS bundling helper.
+///
+/// The previous version of this file silently spawned `bundle.sh` in the
+/// background, which made `cargo build` surprises look like ghost processes.
+/// The script is still useful but only when the user explicitly wants an
+/// `.app` directory (e.g. before running `open SqllyDataTableSample.app`).
+/// To trigger it, run `sh bundle.sh` from this directory after building.
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
-        let _ = std::process::Command::new("sh")
-            .arg("bundle.sh")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-    }
+    // Intentionally does nothing. See `bundle.sh` for the explicit invocation.
 }

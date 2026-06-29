@@ -1,21 +1,17 @@
-use gpui::prelude::*;
-use gpui::{px, size, App, Bounds, WindowBounds, WindowOptions};
+use gpui::{prelude::*, px, size, App, Bounds, WindowBounds, WindowOptions};
 use sqlly_datatable::{
-    ColumnKind, ColumnOverride, GridConfig, GridData, NumberFormat, SqllyDataTable,
+    Column, ColumnKind, ColumnOverride, GridConfig, GridData, NumberFormat, SqllyDataTable,
 };
-use sqlly_datatable::data::sample_data;
 
 fn main() {
+    let data = sample_data();
+    let config = sample_config(&data);
+
     let application = gpui::Application::new();
     application.run(move |cx: &mut App| {
         cx.activate(true);
 
-        let data = sample_data();
-        let config = sample_config(&data);
-        let view = SqllyDataTable::builder(data)
-            .config(config)
-            .build(cx);
-
+        let view = SqllyDataTable::builder(data).config(config).build(cx);
         let focus = view.state.read(cx).focus_handle.clone();
 
         let options = WindowOptions {
@@ -32,17 +28,22 @@ fn main() {
         };
 
         let state = view.state.clone();
-        let window = cx.open_window(options, move |_window, cx| {
+        match cx.open_window(options, move |_window, cx| {
             cx.new(|_cx| SqllyDataTable::new(state.clone()))
-        });
-        if let Ok(window) = window {
-            window.update(cx, |_view, window, _cx| {
-                window.focus(&focus);
-                window.on_window_should_close(_cx, |_window, cx| {
-                    cx.quit();
-                    true
+        }) {
+            Ok(window) => {
+                let _ = window.update(cx, |_view, window, _cx| {
+                    window.focus(&focus);
+                    window.on_window_should_close(_cx, |_window, cx| {
+                        cx.quit();
+                        true
+                    });
                 });
-            }).ok();
+            }
+            Err(err) => {
+                eprintln!("failed to open window: {err}");
+                cx.quit();
+            }
         }
     });
 }
@@ -74,7 +75,69 @@ fn sample_config(data: &GridData) -> GridConfig {
             _ => {}
         }
     }
-
     config.column_overrides = overrides;
     config
+}
+
+fn sample_data() -> GridData {
+    use sqlly_datatable::CellValue::*;
+    let columns = vec![
+        Column::new("amount", ColumnKind::Decimal, 200.0),
+        Column::new("currency_id", ColumnKind::Integer, 110.0),
+        Column::new("narrative", ColumnKind::Text, 270.0),
+        Column::new("trans_part", ColumnKind::Boolean, 110.0),
+    ];
+
+    let rows = vec![
+        vec![
+            Decimal(17968.20),
+            Integer(1),
+            Text("saldo de apertura".into()),
+            Boolean(false),
+        ],
+        vec![
+            Decimal(717.84),
+            Integer(1),
+            Text("saldo de apertura".into()),
+            Boolean(false),
+        ],
+        vec![
+            Decimal(768.41),
+            Integer(1),
+            Text("saldo de apertura".into()),
+            Boolean(false),
+        ],
+        vec![
+            Decimal(1141.10),
+            Integer(1),
+            Text("cargo".into()),
+            Boolean(true),
+        ],
+        vec![
+            Decimal(1937.50),
+            Integer(1),
+            Text("cargo".into()),
+            Boolean(true),
+        ],
+        vec![
+            Decimal(1018.81),
+            Integer(1),
+            Text("cargo".into()),
+            Boolean(true),
+        ],
+        vec![
+            Decimal(3172.81),
+            Integer(1),
+            Text("abono".into()),
+            Boolean(false),
+        ],
+        vec![
+            Decimal(1640.00),
+            Integer(2),
+            Text("abono".into()),
+            Boolean(false),
+        ],
+    ];
+
+    GridData::new(columns, rows).expect("rectangular sample data")
 }

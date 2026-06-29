@@ -6,39 +6,39 @@ I discovered [GPUI](https://github.com/zed-industries/gpui) while building [sqll
 
 What I discovered along the way is that building a real SQL management client on top of GPUI requires a lot of little tweaks that GPUI doesn't ship with out of the box — virtualized data grids, drag selection, column resizing, scrollbars, configurable formatting, context menus, the works. So I built them.
 
-I am not a skilled Rust developer. I have written custom UI controls in several other languages over the years, but I built this project with AI assistance (read as prompt, check, sigh, repeat). I cannot attest to the quality of the code. I am sharing it freely in the hope that people more skilled than I am will improve it — or that the GPUI maintainers see something here worth pulling upstream.
+Before you read on: I am not a skilled Rust developer. I have written custom UI controls in several other languages over the years, but I built this project with AI assistance (read as: prompt, check, sigh, repeat). I cannot attest to the quality of the code. I am sharing it freely in the hope that people more skilled than I am will improve it — or that the GPUI maintainers see something here worth pulling upstream.
 
 If even one part of this makes a GPUI contributor think "huh, that's a useful pattern" rather than "wow, what a bunch of AI slop," the project has served its purpose.
 
 **Why not just submit a PR?**
-Given that this may or may not be total AI slop and my name is attached to it, doing so would be a bit gauche don't you think? 
+Given that this may or may not be total AI slop and my name is attached to it, doing so would be a bit gauche don't you think?
 
 ## What
 
-A configurable data grid component for GPUI, built for the needs of [sqlly.app](https://sqlly.app).
+A configurable data grid component for GPUI, built for the needs of [sqlly.app](https://sqlly.app). The library targets Rust 1.87+ and links against `gpui` 0.2.
 
 ## Features
 
-- **Virtualized cell selection** — while the base grid supported virturalized rendering and it worked wonderfully it didn't seem to allow you to select cells that are virturalized
-- **Cell selection** — single cells, row ranges, column ranges, and click-drag rectangle selection
-- **Sorting** — click column headers or sort buttons to cycle ascending/descending/off
-- **Filtering** — per-column filter prompt via right-click context menu
-- **Column resizing** — drag column borders to resize
-- **Scrollbars** — horizontal and vertical, with scroll clamping and edge-scroll during drag
-- **Context menu** — right-click column headers for sort, copy, filter actions
-- **Keyboard navigation** — arrow keys, page up/down, select all, copy/copy-with-headers
-- **Status bar** — shows click position, scroll offsets, cell coordinates, and hover info
+- **Virtualized cell selection** — large datasets render only the visible rows; cell / row / column / rectangular drag selection still works on rows that are currently offscreen.
+- **Cell selection** — single cells, row ranges, column ranges, and click-drag rectangle selection. Shift extends the existing selection.
+- **Sorting** — click column headers or sort buttons to cycle ascending / descending / off. Uses a deterministic total ordering across `Integer`, `Decimal`, `Text`, `Date`, `Boolean`, and `None`.
+- **Filtering** — per-column filter prompt via the right-click context menu. The filter is compared against the formatted value, case-insensitively.
+- **Column resizing** — drag column borders to resize; the cell `[r1..r2]` predicate normalizes reversed drag directions.
+- **Scrollbars** — horizontal and vertical, with scroll clamping and edge-scroll during drag selection. Auto-scroll is on-demand (only while a drag is active), so it isn't a 60 fps loop.
+- **Context menu** — right-click column headers for select / copy / copy-with-headers / sort / clear sort / filter / clear filter.
+- **Keyboard navigation** — arrow keys, page up/down, select all, copy, copy-with-headers, configurable per platform.
+- **Status bar** — shows click position, scroll offsets, cell coordinates, and hover info.
 
 ## Configuration
 
-All formatting and behavior is externally configurable via `GridConfig` with per-column overrides:
+All formatting and behavior is externally configurable via `GridConfig` with per-column `ColumnOverride`:
 
-- **Numbers** — decimal places, negative red, parentheses, thousands separators, alignment
-- **Dates** — format string (`%Y-%m-%d`), timezone offset, natural language relative dates ("2 days ago", "in 3 weeks") with configurable precision
-- **Booleans** — custom true/false text, alignment
-- **Strings** — case (upper/lower/title), max length, truncation (ellipsis/cutoff/wrap), alignment
-- **Replacement rules** — find/replace pairs applied before or after formatting
-- **Key bindings** — select all, copy, copy with headers, page up/down, context menu modifier
+- **Numbers** — decimal places, negative red, parentheses, thousands separators, alignment. Integer cells are formatted without a `f64` round-trip so values larger than `2^53` stay exact.
+- **Dates** — format string with `%Y %m %d %H %M %S %y %B %b %A %a` tokens; timezone offset; natural language relative dates ("2 days ago", "in 3 weeks") with frozen-clock testing hooks.
+- **Booleans** — custom true/false text, alignment.
+- **Strings** — case (upper/lower/title/none), max length in **characters**, truncation (ellipsis / cut-off / wrap), alignment. Truncation respects char boundaries so multi-byte input never panics.
+- **Replacement rules** — find/replace pairs applied before or after formatting.
+- **Key bindings** — `SELECT ALL`, `COPY`, `COPY WITH HEADERS`, `PAGE UP`, `PAGE DOWN`, context-menu modifier. `KeyBinding::matches` is strict about modifier sets (an unrequested modifier disqualifies the binding).
 
 ## Workspace
 
@@ -53,25 +53,28 @@ sqlly-datatable/
 ## Usage
 
 ```rust
-use sqlly_datatable::{SqllyDataTable, GridConfig, GridData, ColumnKind};
+use gpui::{App, Bounds, WindowBounds, WindowOptions, px, size};
+use sqlly_datatable::{
+    CellValue, Column, ColumnKind, GridConfig, GridData, SqllyDataTable,
+};
 
-let data = GridData::new(/* columns, rows */);
-let config = GridConfig::default();
+let data = GridData::new(
+    vec![Column { name: "amount".into(), kind: ColumnKind::Decimal, width: 200.0 }],
+    vec![
+        vec![CellValue::Decimal(17968.20)],
+        vec![CellValue::Decimal(717.84)],
+    ],
+).expect("rectangular data");
 
 let view = SqllyDataTable::builder(data)
-    .config(config)
+    .config(GridConfig::default())
     .build(cx);
-
-// Use in a GPUI window
-cx.open_window(options, move |_window, cx| {
-    cx.new(|_cx| SqllyDataTable::new(view.state.clone()))
-});
 ```
 
 ### Per-column overrides
 
 ```rust
-use sqlly_datatable::{GridConfig, ColumnOverride, NumberFormat};
+use sqlly_datatable::{ColumnOverride, GridConfig, NumberFormat};
 
 let mut config = GridConfig::default();
 config.column_overrides = vec![
@@ -83,11 +86,37 @@ config.column_overrides = vec![
 ];
 ```
 
+### Sort, filter, sort deterministically
+
+`compare_cells` returns a total ordering that handles `NaN`, mixed numeric
+kinds, and cross-type comparisons deterministically — useful if you want to
+sort outside the widget too.
+
+```rust
+use sqlly_datatable::compare_cells;
+let mut rows: Vec<&CellValue> = /* ... */;
+rows.sort_by(|a, b| compare_cells(a, b).reverse());
+```
+
 ## Run the sample
 
 ```sh
 cargo run -p sqlly-datatable-sample
 ```
+
+The sample uses `GridData::new` — if you change column count, update the
+rows to match.
+
+## Optional: bundle as a macOS `.app`
+
+`bundle.sh` is no longer invoked automatically from `build.rs`. After a
+release build (`cargo build -p sqlly-datatable-sample --release`) you can run
+
+```sh
+(cd crates/sqlly-datatable-sample && sh bundle.sh)
+```
+
+to package the binary as `SqllyDataTableSample.app`.
 
 ## License
 

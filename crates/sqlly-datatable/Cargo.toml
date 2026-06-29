@@ -3,7 +3,15 @@ name = "sqlly-datatable"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "A configurable data grid component for GPUI"
+rust-version.workspace = true
+description = "Configurable virtualized data grid component for the GPUI toolkit."
+keywords = ["ui", "grid", "datagrid", "gpui", "table"]
+categories = ["gui", "data-structures"]
+repository = "https://github.com/mattvanhorn/sqlly-datatable"
+documentation = "https://docs.rs/sqlly-datatable"
+
+[lints]
+workspace = true
 
 [dependencies]
 gpui = { version = "0.2" }

@@ -3,10 +3,16 @@ name = "sqlly-datatable-sample"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+description = "Sample application demonstrating the sqlly-datatable virtualized grid."
+publish = false
 
 [[bin]]
 name = "sqlly-datatable-sample"
 path = "src/main.rs"
+
+[lints]
+workspace = true
 
 [dependencies]
 gpui = { version = "0.2" }
