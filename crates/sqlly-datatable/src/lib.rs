@@ -61,6 +61,8 @@ pub use data::{
     compare_cells, sample_data, CellValue, Column, ColumnKind, GridData, GridDataError,
 };
 pub use grid::{
-    ContextMenu, GridState, GridTheme, HitResult, MenuAction, MenuItem, ScrollbarAxis, Selection,
-    SortDirection, SqllyDataTable, SqllyDataTableBuilder,
+    ContextMenu, ContextMenuItem, ContextMenuProvider, ContextMenuRequest, ContextMenuSelection,
+    ContextMenuTarget, GridState, GridTheme, HitResult, MenuAction, MenuItem, ScrollbarAxis,
+    SelectedCellContext, SelectedRowContext, Selection, SortDirection, SqllyDataTable,
+    SqllyDataTableBuilder,
 };

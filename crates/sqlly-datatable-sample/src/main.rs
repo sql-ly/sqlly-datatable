@@ -1,6 +1,7 @@
-use gpui::{prelude::*, px, size, App, Bounds, WindowBounds, WindowOptions};
+use gpui::{prelude::*, px, size, App, Bounds, ClipboardItem, WindowBounds, WindowOptions};
 use sqlly_datatable::{
-    Column, ColumnKind, ColumnOverride, GridConfig, GridData, NumberFormat, SqllyDataTable,
+    Column, ColumnKind, ColumnOverride, ContextMenuItem, ContextMenuProvider, ContextMenuRequest,
+    GridConfig, GridData, GridState, NumberFormat, SqllyDataTable,
 };
 
 fn main() {
@@ -11,7 +12,10 @@ fn main() {
     application.run(move |cx: &mut App| {
         cx.activate(true);
 
-        let view = SqllyDataTable::builder(data).config(config).build(cx);
+        let view = SqllyDataTable::builder(data)
+            .config(config)
+            .context_menu_provider(SampleMenuProvider)
+            .build(cx);
         let focus = view.state.read(cx).focus_handle.clone();
 
         let options = WindowOptions {
@@ -141,4 +145,95 @@ fn sample_data() -> GridData {
 
     GridData::new(columns, rows).expect("rectangular sample data")
     // (allowed in a sample binary, not in the library)
+}
+
+/// Sample context-menu provider that demonstrates cell/row right-click menus.
+struct SampleMenuProvider;
+
+impl ContextMenuProvider for SampleMenuProvider {
+    fn menu_items(&self, request: &ContextMenuRequest) -> Vec<ContextMenuItem> {
+        let mut items = Vec::new();
+
+        if let Some(row) = request.clicked_row() {
+            if let Some(narrative) = row.value_by_name("narrative") {
+                items.push(ContextMenuItem::action(
+                    "copy-narrative",
+                    format!("Copy narrative: {narrative:?}"),
+                ));
+            }
+            if let Some(amount) = row.value_by_name("amount") {
+                items.push(ContextMenuItem::action(
+                    "copy-amount",
+                    format!("Copy amount: {amount:?}"),
+                ));
+            }
+            items.push(ContextMenuItem::separator());
+            items.push(ContextMenuItem::action(
+                "copy-row",
+                format!("Copy full row ({} cells)", row.values.len()),
+            ));
+        }
+
+        if !request.selected_cells().is_empty() {
+            items.push(ContextMenuItem::separator());
+            items.push(ContextMenuItem::action(
+                "copy-selection",
+                format!("Copy {} selected cell(s)", request.selected_cells().len()),
+            ));
+        }
+
+        // Compose built-in column-header actions when right-clicking headers.
+        if matches!(
+            request.target,
+            sqlly_datatable::ContextMenuTarget::ColumnHeader { .. }
+                | sqlly_datatable::ContextMenuTarget::SortButton { .. }
+        ) {
+            items.push(ContextMenuItem::separator());
+            items.extend(ContextMenuItem::standard_column_header_items());
+        }
+
+        if items.is_empty() {
+            items.push(ContextMenuItem::action("noop", "No action for this target"));
+        }
+
+        items
+    }
+
+    fn on_action(
+        &self,
+        action_id: &str,
+        request: &ContextMenuRequest,
+        _state: &mut GridState,
+        cx: &mut App,
+    ) {
+        let text = match action_id {
+            "copy-narrative" => request
+                .clicked_row()
+                .and_then(|r| r.value_by_name("narrative"))
+                .map(|v| format!("{v:?}"))
+                .unwrap_or_default(),
+            "copy-amount" => request
+                .clicked_row()
+                .and_then(|r| r.value_by_name("amount"))
+                .map(|v| format!("{v:?}"))
+                .unwrap_or_default(),
+            "copy-row" => request
+                .clicked_row()
+                .map(|r| {
+                    r.named_values()
+                        .map(|(name, val)| format!("{name}={val:?}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default(),
+            "copy-selection" => request
+                .selected_cells()
+                .iter()
+                .map(|c| format!("{}={:?}", c.column_name, c.value))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => return,
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
 }

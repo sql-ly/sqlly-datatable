@@ -16,7 +16,14 @@ use crate::grid::menu as menu_mod;
 #[allow(unused_imports)]
 pub(crate) use crate::grid::menu::{ContextMenu, MenuAction, MenuItem};
 use crate::grid::selection::{
-    screen_to_content, HitResult, ScrollbarAxis, Selection, SortDirection,
+    is_cell_selected, is_row_selected, screen_to_content, HitResult, ScrollbarAxis, Selection,
+    SortDirection,
+};
+
+use crate::grid::context_menu::{
+    ColumnContext, ContextMenuItem, ContextMenuProviderHandle, ContextMenuRequest,
+    ContextMenuSelection, ContextMenuTarget, PendingCustomContextMenuAction, SelectedCellContext,
+    SelectedRowContext,
 };
 
 /// Inline constructor / state mutators used by the widget's render loop.
@@ -178,6 +185,8 @@ pub struct GridState {
     pub context_menu: Option<ContextMenu>,
     pub filter_prompt: Option<FilterPrompt>,
     pub pending_action: Option<(MenuAction, usize)>,
+    pub(crate) pending_custom_context_menu_action: Option<PendingCustomContextMenuAction>,
+    pub(crate) context_menu_provider: Option<ContextMenuProviderHandle>,
     pub scrollbar_drag: Option<ScrollbarAxis>,
     pub scrollbar_drag_start_offset: f32,
     pub scrollbar_drag_start_pos: f32,
@@ -273,6 +282,8 @@ impl GridState {
             context_menu: None,
             filter_prompt: None,
             pending_action: None,
+            pending_custom_context_menu_action: None,
+            context_menu_provider: None,
             scrollbar_drag: None,
             scrollbar_drag_start_offset: 0.0,
             scrollbar_drag_start_pos: 0.0,
@@ -505,6 +516,208 @@ impl GridState {
     pub(crate) fn open_context_menu(&mut self, col: usize, anchor: Point<Pixels>) {
         self.context_menu = Some(menu_mod::ContextMenu::standard(col, anchor));
         self.filter_prompt = None;
+    }
+
+    /// Convert a hit-test result to a context-menu target. Returns `None`
+    /// for hits that don't map to a meaningful right-click target.
+    pub(crate) fn context_menu_target_from_hit(&self, hit: HitResult) -> Option<ContextMenuTarget> {
+        match hit {
+            HitResult::Cell(row, col) => {
+                let source_row = self.display_indices.get(row).copied().unwrap_or(row);
+                Some(ContextMenuTarget::Cell {
+                    display_row_index: row,
+                    source_row_index: source_row,
+                    column_index: col,
+                })
+            }
+            HitResult::RowHeader(row) => {
+                let source_row = self.display_indices.get(row).copied().unwrap_or(row);
+                Some(ContextMenuTarget::RowHeader {
+                    display_row_index: row,
+                    source_row_index: source_row,
+                })
+            }
+            HitResult::ColumnHeader(col) => {
+                Some(ContextMenuTarget::ColumnHeader { column_index: col })
+            }
+            HitResult::SortButton(col) => Some(ContextMenuTarget::SortButton { column_index: col }),
+            _ => None,
+        }
+    }
+
+    /// Compute the effective selection for a context-menu target. If the
+    /// target is inside the current selection, the selection is preserved.
+    /// If outside, the selection collapses to the target. Column-header
+    /// targets do not change selection.
+    pub(crate) fn effective_selection_for_context_target(
+        &self,
+        target: &ContextMenuTarget,
+    ) -> Selection {
+        match target {
+            ContextMenuTarget::Cell {
+                display_row_index,
+                column_index,
+                ..
+            } => {
+                if is_cell_selected(&self.selection, *display_row_index, *column_index) {
+                    self.selection.clone()
+                } else {
+                    Selection::Cell(*display_row_index, *column_index)
+                }
+            }
+            ContextMenuTarget::RowHeader {
+                display_row_index, ..
+            } => {
+                if is_row_selected(&self.selection, *display_row_index) {
+                    self.selection.clone()
+                } else {
+                    Selection::Row(*display_row_index)
+                }
+            }
+            ContextMenuTarget::ColumnHeader { .. } | ContextMenuTarget::SortButton { .. } => {
+                self.selection.clone()
+            }
+        }
+    }
+
+    /// Build an owned snapshot of the right-click context. All indices are
+    /// clamped to current display/column counts; empty data produces empty
+    /// vectors, never panics.
+    pub(crate) fn build_context_menu_request(
+        &self,
+        target: ContextMenuTarget,
+        selection: &Selection,
+    ) -> ContextMenuRequest {
+        let nrows = self.display_indices.len();
+        let ncols = self.data.columns.len();
+
+        let (r1, c1, r2, c2) = match selection.normalized_bounds() {
+            Some((r1, c1, r2, c2)) => {
+                let r1 = r1.min(nrows.saturating_sub(1));
+                let r2 = r2.min(nrows.saturating_sub(1));
+                let c1 = c1.min(ncols.saturating_sub(1));
+                let c2 = c2.min(ncols.saturating_sub(1));
+                (r1, c1, r2, c2)
+            }
+            None => match &target {
+                ContextMenuTarget::Cell {
+                    display_row_index,
+                    column_index,
+                    ..
+                } => (
+                    *display_row_index,
+                    *column_index,
+                    *display_row_index,
+                    *column_index,
+                ),
+                ContextMenuTarget::RowHeader {
+                    display_row_index, ..
+                } => (
+                    *display_row_index,
+                    0,
+                    *display_row_index,
+                    ncols.saturating_sub(1),
+                ),
+                ContextMenuTarget::ColumnHeader { column_index }
+                | ContextMenuTarget::SortButton { column_index } => {
+                    (0, *column_index, nrows.saturating_sub(1), *column_index)
+                }
+            },
+        };
+
+        let menu_selection = ContextMenuSelection {
+            row_start: r1,
+            row_end: r2,
+            column_start: c1,
+            column_end: c2,
+        };
+
+        let column_contexts: Vec<ColumnContext> = self
+            .data
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| ColumnContext {
+                index: i,
+                name: c.name.clone(),
+                kind: c.kind,
+            })
+            .collect();
+
+        let mut selected_cells = Vec::new();
+        let mut selected_rows = Vec::new();
+
+        for dr in r1..=r2 {
+            if nrows == 0 || dr >= nrows {
+                break;
+            }
+            let Some(source_row) = self.display_indices.get(dr).copied() else {
+                continue;
+            };
+            let Some(row_values) = self.data.rows.get(source_row) else {
+                continue;
+            };
+
+            selected_rows.push(SelectedRowContext {
+                display_row_index: dr,
+                source_row_index: source_row,
+                values: row_values.clone(),
+                columns: column_contexts.clone(),
+            });
+
+            for c in c1..=c2 {
+                if ncols == 0 || c >= ncols {
+                    break;
+                }
+                if let (Some(col), Some(value)) = (self.data.columns.get(c), row_values.get(c)) {
+                    selected_cells.push(SelectedCellContext {
+                        display_row_index: dr,
+                        source_row_index: source_row,
+                        column_index: c,
+                        column_name: col.name.clone(),
+                        value: value.clone(),
+                    });
+                }
+            }
+        }
+
+        ContextMenuRequest {
+            target,
+            selection: Some(menu_selection),
+            selected_cells,
+            selected_rows,
+        }
+    }
+
+    /// Execute a deferred custom context-menu action by invoking the
+    /// provider. The provider handle is cloned before the call to avoid
+    /// `&mut self` borrow conflicts.
+    pub(crate) fn execute_custom_context_menu_action(
+        &mut self,
+        pending: PendingCustomContextMenuAction,
+        cx: &mut App,
+    ) {
+        self.context_menu = None;
+        self.filter_prompt = None;
+
+        let Some(provider) = self.context_menu_provider.clone() else {
+            return;
+        };
+
+        provider.on_action(&pending.id, &pending.request, self, cx);
+    }
+
+    /// Convert public [`ContextMenuItem`]s to internal `MenuItem`s for the
+    /// rendering pipeline.
+    pub(crate) fn convert_context_menu_items(items: Vec<ContextMenuItem>) -> Vec<MenuItem> {
+        items
+            .into_iter()
+            .map(|item| match item {
+                ContextMenuItem::BuiltIn(action) => MenuItem::Action(action),
+                ContextMenuItem::Action { id, label } => MenuItem::Custom { id, label },
+                ContextMenuItem::Separator => MenuItem::Separator,
+            })
+            .collect()
     }
 
     pub fn execute_action(&mut self, action: MenuAction, col: usize, cx: &mut App) {
@@ -1193,6 +1406,332 @@ mod tests {
             assert!(!state.wants_edge_scroll_tick());
             state.is_dragging = true;
             assert!(state.wants_edge_scroll_tick());
+
+            cx.quit();
+        });
+    }
+
+    #[allow(clippy::expect_used, clippy::unwrap_used)]
+    #[test]
+    #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
+    fn context_menu_request_construction() {
+        use crate::grid::context_menu::ContextMenuTarget;
+
+        gpui::Application::new().run(|cx| {
+            let focus = cx.focus_handle();
+
+            // 3 rows, 2 columns. Sort descending so display_indices != source.
+            let mut state = GridState::new(
+                GridData::new(
+                    vec![
+                        Column::new("id", ColumnKind::Integer, 80.0),
+                        Column::new("name", ColumnKind::Text, 100.0),
+                    ],
+                    vec![
+                        vec![CellValue::Integer(1), CellValue::Text("alpha".into())],
+                        vec![CellValue::Integer(2), CellValue::Text("beta".into())],
+                        vec![CellValue::Integer(3), CellValue::Text("gamma".into())],
+                    ],
+                )
+                .expect("rectangular"),
+                crate::config::GridConfig::default(),
+                focus.clone(),
+            );
+            // Sort descending on column 0: display order is [2, 1, 0].
+            state.sort = Some((0, SortDirection::Descending));
+            state.recompute();
+            assert_eq!(state.display_indices, vec![2, 1, 0]);
+
+            // Cell target at display row 0 -> source row 2.
+            let target = ContextMenuTarget::Cell {
+                display_row_index: 0,
+                source_row_index: 2,
+                column_index: 1,
+            };
+            let sel = Selection::Cell(0, 1);
+            let req = state.build_context_menu_request(target, &sel);
+            assert_eq!(req.target.column_index(), Some(1));
+            assert_eq!(req.selected_cells.len(), 1);
+            assert_eq!(req.selected_cells[0].source_row_index, 2);
+            assert_eq!(req.selected_cells[0].column_name, "name");
+            assert_eq!(req.selected_cells[0].value, CellValue::Text("gamma".into()));
+            assert_eq!(req.selected_rows.len(), 1);
+            assert_eq!(req.selected_rows[0].source_row_index, 2);
+            assert_eq!(
+                req.selected_rows[0].value_by_name("id"),
+                Some(&CellValue::Integer(3))
+            );
+
+            // Cell-range selection (display rows 0-1, cols 0-1).
+            let target = ContextMenuTarget::Cell {
+                display_row_index: 0,
+                source_row_index: 2,
+                column_index: 0,
+            };
+            let sel = Selection::CellRange(0, 0, 1, 1);
+            let req = state.build_context_menu_request(target, &sel);
+            assert_eq!(req.selected_cells.len(), 4); // 2 rows x 2 cols
+            assert_eq!(req.selected_rows.len(), 2);
+            // Display row 0 -> source 2, display row 1 -> source 1.
+            assert_eq!(req.selected_rows[0].source_row_index, 2);
+            assert_eq!(req.selected_rows[1].source_row_index, 1);
+
+            // Row-range selection (display rows 0-2).
+            let target = ContextMenuTarget::RowHeader {
+                display_row_index: 1,
+                source_row_index: 1,
+            };
+            let sel = Selection::RowRange(0, 2);
+            let req = state.build_context_menu_request(target, &sel);
+            assert_eq!(req.selected_rows.len(), 3);
+            // Each row should have all column values.
+            assert_eq!(req.selected_rows[0].values.len(), 2);
+            assert_eq!(req.selected_cells.len(), 6); // 3 rows x 2 cols
+
+            // Column selection (all display rows, column 0).
+            let target = ContextMenuTarget::ColumnHeader { column_index: 0 };
+            let sel = Selection::Column(0);
+            let req = state.build_context_menu_request(target, &sel);
+            assert_eq!(req.selected_rows.len(), 3);
+            assert_eq!(req.selected_cells.len(), 3); // 3 rows x 1 col
+
+            // Empty data — no panic, empty vectors.
+            let empty_state = GridState::new(
+                GridData::new(vec![Column::new("x", ColumnKind::Integer, 80.0)], vec![])
+                    .expect("rectangular"),
+                crate::config::GridConfig::default(),
+                focus.clone(),
+            );
+            let target = ContextMenuTarget::Cell {
+                display_row_index: 0,
+                source_row_index: 0,
+                column_index: 0,
+            };
+            let req = empty_state.build_context_menu_request(target, &Selection::None);
+            assert!(req.selected_cells.is_empty());
+            assert!(req.selected_rows.is_empty());
+
+            cx.quit();
+        });
+    }
+
+    #[allow(clippy::expect_used, clippy::unwrap_used)]
+    #[test]
+    #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
+    fn effective_selection_for_context_target() {
+        gpui::Application::new().run(|cx| {
+            let focus = cx.focus_handle();
+            let mut state = GridState::new(
+                GridData::new(
+                    vec![
+                        Column::new("a", ColumnKind::Integer, 80.0),
+                        Column::new("b", ColumnKind::Integer, 80.0),
+                    ],
+                    vec![
+                        vec![CellValue::Integer(1), CellValue::Integer(2)],
+                        vec![CellValue::Integer(3), CellValue::Integer(4)],
+                    ],
+                )
+                .expect("rectangular"),
+                crate::config::GridConfig::default(),
+                focus,
+            );
+
+            // Outside current selection -> collapses to target cell.
+            state.selection = Selection::Cell(0, 0);
+            let target = ContextMenuTarget::Cell {
+                display_row_index: 1,
+                source_row_index: 1,
+                column_index: 1,
+            };
+            let eff = state.effective_selection_for_context_target(&target);
+            assert_eq!(eff, Selection::Cell(1, 1));
+
+            // Inside current selection -> keeps selection.
+            state.selection = Selection::CellRange(0, 0, 1, 1);
+            let target = ContextMenuTarget::Cell {
+                display_row_index: 1,
+                source_row_index: 1,
+                column_index: 1,
+            };
+            let eff = state.effective_selection_for_context_target(&target);
+            assert_eq!(eff, Selection::CellRange(0, 0, 1, 1));
+
+            // Row header outside -> collapses to row.
+            state.selection = Selection::Cell(0, 0);
+            let target = ContextMenuTarget::RowHeader {
+                display_row_index: 1,
+                source_row_index: 1,
+            };
+            let eff = state.effective_selection_for_context_target(&target);
+            assert_eq!(eff, Selection::Row(1));
+
+            // Row header inside row range -> keeps range.
+            state.selection = Selection::RowRange(0, 1);
+            let target = ContextMenuTarget::RowHeader {
+                display_row_index: 1,
+                source_row_index: 1,
+            };
+            let eff = state.effective_selection_for_context_target(&target);
+            assert_eq!(eff, Selection::RowRange(0, 1));
+
+            // Column header -> does not change selection.
+            state.selection = Selection::Cell(1, 1);
+            let target = ContextMenuTarget::ColumnHeader { column_index: 0 };
+            let eff = state.effective_selection_for_context_target(&target);
+            assert_eq!(eff, Selection::Cell(1, 1));
+
+            cx.quit();
+        });
+    }
+
+    #[allow(clippy::expect_used, clippy::unwrap_used)]
+    #[test]
+    #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
+    fn context_menu_target_from_hit_maps_correctly() {
+        gpui::Application::new().run(|cx| {
+            let focus = cx.focus_handle();
+            let state = GridState::new(
+                GridData::new(
+                    vec![Column::new("a", ColumnKind::Integer, 80.0)],
+                    vec![vec![CellValue::Integer(1)], vec![CellValue::Integer(2)]],
+                )
+                .expect("rectangular"),
+                crate::config::GridConfig::default(),
+                focus,
+            );
+
+            // Cell hit -> Cell target with source mapping.
+            let t = state
+                .context_menu_target_from_hit(HitResult::Cell(1, 0))
+                .unwrap();
+            assert_eq!(
+                t,
+                ContextMenuTarget::Cell {
+                    display_row_index: 1,
+                    source_row_index: 1,
+                    column_index: 0,
+                }
+            );
+
+            // Row header -> RowHeader target.
+            let t = state
+                .context_menu_target_from_hit(HitResult::RowHeader(0))
+                .unwrap();
+            assert_eq!(
+                t,
+                ContextMenuTarget::RowHeader {
+                    display_row_index: 0,
+                    source_row_index: 0,
+                }
+            );
+
+            // Column header -> ColumnHeader target.
+            let t = state
+                .context_menu_target_from_hit(HitResult::ColumnHeader(0))
+                .unwrap();
+            assert_eq!(t, ContextMenuTarget::ColumnHeader { column_index: 0 });
+
+            // Sort button -> SortButton target.
+            let t = state
+                .context_menu_target_from_hit(HitResult::SortButton(0))
+                .unwrap();
+            assert_eq!(t, ContextMenuTarget::SortButton { column_index: 0 });
+
+            // Unsupported hits -> None.
+            assert!(state
+                .context_menu_target_from_hit(HitResult::VerticalScrollbar)
+                .is_none());
+            assert!(state
+                .context_menu_target_from_hit(HitResult::None)
+                .is_none());
+
+            cx.quit();
+        });
+    }
+
+    #[allow(clippy::expect_used, clippy::unwrap_used)]
+    #[test]
+    #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
+    fn convert_context_menu_items_maps_variants() {
+        use crate::grid::context_menu::ContextMenuItem;
+
+        let items = vec![
+            ContextMenuItem::BuiltIn(MenuAction::SortAscending),
+            ContextMenuItem::action("copy", "Copy value"),
+            ContextMenuItem::separator(),
+        ];
+        let internal = GridState::convert_context_menu_items(items);
+        assert!(matches!(
+            internal[0],
+            MenuItem::Action(MenuAction::SortAscending)
+        ));
+        assert!(
+            matches!(&internal[1], MenuItem::Custom { id, label } if id == "copy" && label == "Copy value")
+        );
+        assert!(matches!(internal[2], MenuItem::Separator));
+    }
+
+    #[allow(clippy::expect_used, clippy::unwrap_used)]
+    #[test]
+    #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
+    fn execute_custom_context_menu_action_invokes_provider() {
+        use crate::grid::context_menu::{
+            ContextMenuProvider, ContextMenuProviderHandle, ContextMenuRequest,
+        };
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct TestProvider {
+            last_action: Arc<Mutex<Option<String>>>,
+        }
+        impl ContextMenuProvider for TestProvider {
+            fn menu_items(&self, _request: &ContextMenuRequest) -> Vec<ContextMenuItem> {
+                vec![ContextMenuItem::action("test", "Test")]
+            }
+            fn on_action(
+                &self,
+                action_id: &str,
+                _request: &ContextMenuRequest,
+                _state: &mut GridState,
+                _cx: &mut gpui::App,
+            ) {
+                *self.last_action.lock().unwrap() = Some(action_id.to_string());
+            }
+        }
+
+        gpui::Application::new().run(|cx| {
+            let focus = cx.focus_handle();
+            let mut state = GridState::new(
+                GridData::new(
+                    vec![Column::new("a", ColumnKind::Integer, 80.0)],
+                    vec![vec![CellValue::Integer(1)]],
+                )
+                .expect("rectangular"),
+                crate::config::GridConfig::default(),
+                focus,
+            );
+
+            let last = Arc::new(Mutex::new(None));
+            state.context_menu_provider = Some(ContextMenuProviderHandle::new(TestProvider {
+                last_action: last.clone(),
+            }));
+
+            let target = ContextMenuTarget::Cell {
+                display_row_index: 0,
+                source_row_index: 0,
+                column_index: 0,
+            };
+            let request = state.build_context_menu_request(target, &Selection::Cell(0, 0));
+            state.execute_custom_context_menu_action(
+                PendingCustomContextMenuAction {
+                    id: "test".into(),
+                    request,
+                },
+                cx,
+            );
+            assert_eq!(*last.lock().unwrap(), Some("test".to_string()));
+            assert!(state.context_menu.is_none());
 
             cx.quit();
         });

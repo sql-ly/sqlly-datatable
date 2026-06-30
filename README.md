@@ -25,7 +25,7 @@ A configurable data grid component for GPUI, built for the needs of [sqlly.app](
 - **Filtering** — per-column filter prompt via the right-click context menu. The filter is compared against the formatted value, case-insensitively.
 - **Column resizing** — drag column borders to resize; the cell `[r1..r2]` predicate normalizes reversed drag directions.
 - **Scrollbars** — horizontal and vertical, with scroll clamping and edge-scroll during drag selection. Auto-scroll is on-demand (only while a drag is active), so it isn't a 60 fps loop.
-- **Context menu** — right-click column headers for select / copy / copy-with-headers / sort / clear sort / filter / clear filter.
+- **Context menu** — right-click column headers for select / copy / copy-with-headers / sort / clear sort / filter / clear filter. Fully customizable via `ContextMenuProvider` (see below).
 - **Keyboard navigation** — arrow keys, page up/down, select all, copy, copy-with-headers, configurable per platform.
 - **Status bar** — shows click position, scroll offsets, cell coordinates, and hover info.
 
@@ -97,6 +97,86 @@ use sqlly_datatable::compare_cells;
 let mut rows: Vec<&CellValue> = /* ... */;
 rows.sort_by(|a, b| compare_cells(a, b).reverse());
 ```
+
+### Custom right-click context menus
+
+Implement `ContextMenuProvider` and register it on the builder to fully
+control the right-click menu for cells, row headers, and column headers.
+When a provider is registered, the built-in column-header menu is
+suppressed; use `ContextMenuItem::standard_column_header_items()` to
+compose built-in actions alongside custom ones.
+
+The provider receives an owned `ContextMenuRequest` snapshot captured at
+menu-open time. It includes:
+
+- **`target`** — what was right-clicked (cell, row header, column header,
+  sort button) with both display and source row indices.
+- **`selected_cells`** — every selected cell with column name and value.
+- **`selected_rows`** — every selected row with all cell values and column
+  metadata for name-based lookups (`value_by_name`, `named_values`).
+
+Right-click inside an existing selection preserves the selection; right-click
+outside collapses to the clicked target. The snapshot survives until the user
+clicks a menu item, so the provider's `on_action` sees exactly what was
+selected when the menu opened.
+
+```rust
+use sqlly_datatable::{
+    ContextMenuItem, ContextMenuProvider, ContextMenuRequest, ContextMenuTarget,
+    GridState, SqllyDataTable,
+};
+use gpui::App;
+
+struct MyMenuProvider;
+
+impl ContextMenuProvider for MyMenuProvider {
+    fn menu_items(&self, request: &ContextMenuRequest) -> Vec<ContextMenuItem> {
+        let mut items = Vec::new();
+        if let Some(row) = request.clicked_row() {
+            if let Some(value) = row.value_by_name("narrative") {
+                items.push(ContextMenuItem::action(
+                    "copy-narrative",
+                    format!("Copy: {value:?}"),
+                ));
+            }
+            items.push(ContextMenuItem::separator());
+            items.push(ContextMenuItem::action("inspect", "Inspect row"));
+        }
+        // Compose built-in sort/copy/filter for column-header right-clicks.
+        if matches!(
+            request.target,
+            ContextMenuTarget::ColumnHeader { .. } | ContextMenuTarget::SortButton { .. }
+        ) {
+            items.extend(ContextMenuItem::standard_column_header_items());
+        }
+        items
+    }
+
+    fn on_action(
+        &self,
+        action_id: &str,
+        request: &ContextMenuRequest,
+        _state: &mut GridState,
+        cx: &mut App,
+    ) {
+        if action_id == "copy-narrative" {
+            if let Some(row) = request.clicked_row() {
+                if let Some(value) = row.value_by_name("narrative") {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(format!("{value:?}")));
+                }
+            }
+        }
+    }
+}
+
+let view = SqllyDataTable::builder(data)
+    .context_menu_provider(MyMenuProvider)
+    .build(cx);
+```
+
+Column-name lookups are case-sensitive; if duplicate names exist, the first
+match wins. `GridData::column_index("name")` provides the same lookup outside
+the menu context.
 
 ## Run the sample
 

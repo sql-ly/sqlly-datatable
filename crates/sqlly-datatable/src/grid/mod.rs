@@ -3,6 +3,7 @@
 //! the 0.1.x API working; new code should prefer importing from the canonical
 //! `crate::grid::*` paths.
 
+pub mod context_menu;
 pub mod menu;
 pub mod paint;
 pub mod selection;
@@ -12,6 +13,10 @@ pub mod widget;
 
 // Flat re-exports so external code can write `use sqlly_datatable::GridState`
 // without mapping the internal split.
+pub use context_menu::{
+    ContextMenuItem, ContextMenuProvider, ContextMenuRequest, ContextMenuSelection,
+    ContextMenuTarget, SelectedCellContext, SelectedRowContext,
+};
 pub use menu::{ContextMenu, MenuAction, MenuItem};
 pub use selection::{HitResult, ScrollbarAxis, Selection, SortDirection};
 pub use state::{FilterPrompt, GridState};

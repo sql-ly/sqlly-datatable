@@ -481,16 +481,13 @@ fn paint_context_menu(
     font_size: Pixels,
     line_height: Pixels,
 ) {
-    use menu::{
-        label, MENU_BORDER, MENU_FONT_SIZE, MENU_INNER_PAD, MENU_ITEM_HEIGHT, MENU_PADDING_X,
-    };
+    use menu::{MENU_BORDER, MENU_FONT_SIZE, MENU_INNER_PAD, MENU_ITEM_HEIGHT, MENU_PADDING_X};
     let item_h = MENU_ITEM_HEIGHT;
     let pad_x = MENU_PADDING_X;
     let mut max_label_w = 0.0_f32;
     for item in &menu.items {
-        if let MenuItem::Action(a) = item {
-            let label = label(*a);
-            max_label_w = max_label_w.max(label.len() as f32 * cw);
+        if let Some(text) = item.label() {
+            max_label_w = max_label_w.max(text.chars().count() as f32 * cw);
         }
     }
     let menu_w = menu::MENU_MIN_WIDTH.max(max_label_w + pad_x * 2.0);
@@ -550,7 +547,7 @@ fn paint_context_menu(
                 let sep_y = iy + item_h * 0.5;
                 fill_quad(window, mx + 4.0, sep_y, menu_w - 8.0, 1.0, theme.grid_line);
             }
-            MenuItem::Action(action) => {
+            MenuItem::Action(_) | MenuItem::Custom { .. } => {
                 let hovered = menu.hovered == Some(cur);
                 if hovered {
                     fill_quad(
@@ -562,9 +559,9 @@ fn paint_context_menu(
                         theme.selection_bg,
                     );
                 }
-                let label_text = label(*action);
+                let label_text = item.label().unwrap_or("").to_owned();
                 let color = theme.text_fg;
-                let run = mk_run(label_text, color);
+                let run = mk_run(&label_text, color);
                 let shaped = text_system.shape_line(label_text.into(), font_size, &[run], None);
                 let _ = shaped.paint(
                     Point {

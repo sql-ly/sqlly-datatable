@@ -176,6 +176,13 @@ impl GridData {
     pub fn column_count(&self) -> usize {
         self.columns.len()
     }
+
+    /// Ordinal index of the first column whose name matches `name` exactly
+    /// (case-sensitive). If duplicate names exist, the first match wins.
+    #[must_use]
+    pub fn column_index(&self, name: &str) -> Option<usize> {
+        self.columns.iter().position(|col| col.name == name)
+    }
 }
 
 impl From<&str> for CellValue {
@@ -989,5 +996,49 @@ mod tests {
             "sample rows should be rectangular"
         );
         assert!(sample.row_count() > 0);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn column_index_exact_match() {
+        let data = GridData::new(
+            vec![
+                Column::new("alpha", ColumnKind::Integer, 80.0),
+                Column::new("beta", ColumnKind::Text, 80.0),
+                Column::new("gamma", ColumnKind::Decimal, 80.0),
+            ],
+            vec![vec![
+                CellValue::Integer(1),
+                CellValue::Text("x".into()),
+                CellValue::Decimal(1.0),
+            ]],
+        )
+        .expect("rectangular");
+        assert_eq!(data.column_index("alpha"), Some(0));
+        assert_eq!(data.column_index("beta"), Some(1));
+        assert_eq!(data.column_index("gamma"), Some(2));
+        assert_eq!(data.column_index("Alpha"), None);
+        assert_eq!(data.column_index("missing"), None);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn column_index_first_duplicate_wins() {
+        let data = GridData::new(
+            vec![
+                Column::new("dup", ColumnKind::Integer, 80.0),
+                Column::new("dup", ColumnKind::Integer, 80.0),
+            ],
+            vec![vec![CellValue::Integer(1), CellValue::Integer(2)]],
+        )
+        .expect("rectangular");
+        assert_eq!(data.column_index("dup"), Some(0));
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn column_index_empty_data_returns_none() {
+        let data = GridData::new(vec![], vec![]).expect("empty");
+        assert_eq!(data.column_index("anything"), None);
     }
 }

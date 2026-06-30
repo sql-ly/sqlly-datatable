@@ -4,6 +4,8 @@
 
 use gpui::{Hsla, Pixels, Point};
 
+use crate::grid::context_menu::ContextMenuRequest;
+
 /// Height, padding, and minimum width used to lay the menu out. Public so the
 /// state module's hit-testing math can stay in sync with paint.
 pub const MENU_FONT_SIZE: f32 = 14.0;
@@ -28,7 +30,26 @@ pub enum MenuAction {
 #[derive(Clone, Debug)]
 pub enum MenuItem {
     Action(MenuAction),
+    Custom { id: String, label: String },
     Separator,
+}
+
+impl MenuItem {
+    /// Display label for the item, or `None` for separators.
+    #[must_use]
+    pub fn label(&self) -> Option<&str> {
+        match self {
+            Self::Action(a) => Some(label(*a)),
+            Self::Custom { label, .. } => Some(label.as_str()),
+            Self::Separator => None,
+        }
+    }
+
+    /// `true` for action/custom items that participate in hover/click.
+    #[must_use]
+    pub fn is_selectable(&self) -> bool {
+        !matches!(self, Self::Separator)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -37,6 +58,7 @@ pub struct ContextMenu {
     pub anchor: Point<Pixels>,
     pub items: Vec<MenuItem>,
     pub hovered: Option<usize>,
+    pub request: Option<ContextMenuRequest>,
 }
 
 impl ContextMenu {
@@ -60,6 +82,26 @@ impl ContextMenu {
                 MenuItem::Action(MenuAction::ClearFilter),
             ],
             hovered: None,
+            request: None,
+        }
+    }
+
+    /// Construct a custom menu from provider-supplied items plus the
+    /// captured request snapshot. `col` is used for built-in action
+    /// dispatch when the provider composes `BuiltIn` items.
+    #[must_use]
+    pub fn custom(
+        col: usize,
+        anchor: Point<Pixels>,
+        items: Vec<MenuItem>,
+        request: ContextMenuRequest,
+    ) -> Self {
+        Self {
+            col,
+            anchor,
+            items,
+            hovered: None,
+            request: Some(request),
         }
     }
 
@@ -69,8 +111,8 @@ impl ContextMenu {
     pub fn width_for(&self, char_width: f32) -> f32 {
         let mut max_label_w = 0.0_f32;
         for item in &self.items {
-            if let MenuItem::Action(a) = item {
-                max_label_w = max_label_w.max(label(*a).len() as f32 * char_width);
+            if let Some(text) = item.label() {
+                max_label_w = max_label_w.max(text.chars().count() as f32 * char_width);
             }
         }
         MENU_MIN_WIDTH.max(max_label_w + MENU_PADDING_X * 2.0)
@@ -121,7 +163,7 @@ pub fn hover_at(menu: &ContextMenu, x: f32, y: f32, char_width: f32) -> Option<u
     for (cur_row, item) in menu.items.iter().enumerate() {
         if cur_row == idx {
             return match item {
-                MenuItem::Action(_) => action_index(&menu.items, idx),
+                MenuItem::Action(_) | MenuItem::Custom { .. } => action_index(&menu.items, idx),
                 MenuItem::Separator => None,
             };
         }
@@ -132,7 +174,7 @@ pub fn hover_at(menu: &ContextMenu, x: f32, y: f32, char_width: f32) -> Option<u
 fn action_index(items: &[MenuItem], row: usize) -> Option<usize> {
     let mut action_idx = 0;
     for (i, item) in items.iter().enumerate() {
-        if matches!(item, MenuItem::Action(_)) {
+        if item.is_selectable() {
             if i == row {
                 return Some(action_idx);
             }
@@ -191,6 +233,7 @@ mod tests {
                 MenuItem::Action(MenuAction::ClearSort) => "ClearSort",
                 MenuItem::Action(MenuAction::FilterPrompt) => "FilterPrompt",
                 MenuItem::Action(MenuAction::ClearFilter) => "ClearFilter",
+                MenuItem::Custom { .. } => "Custom",
             })
             .collect();
         assert_eq!(
@@ -291,5 +334,84 @@ mod tests {
         let m = menu_at(100.0, 100.0);
         let y: f32 = anchor_y(&m) + 1000.0;
         assert_eq!(hover_at(&m, 110.0, y, 8.0), None);
+    }
+
+    fn custom_menu_with_items(x: f32, y: f32, items: Vec<MenuItem>) -> ContextMenu {
+        ContextMenu {
+            col: 0,
+            anchor: point_from(x, y),
+            items,
+            hovered: None,
+            request: None,
+        }
+    }
+
+    #[test]
+    fn custom_item_contributes_to_width() {
+        let long_label = "A very long custom menu item label";
+        let items = vec![
+            MenuItem::Custom {
+                id: "a".into(),
+                label: long_label.into(),
+            },
+            MenuItem::Separator,
+        ];
+        let m = custom_menu_with_items(0.0, 0.0, items);
+        let w = m.width_for(8.0);
+        let expected = long_label.chars().count() as f32 * 8.0 + MENU_PADDING_X * 2.0;
+        assert_eq!(w, expected);
+    }
+
+    #[test]
+    fn custom_item_is_selectable_and_hoverable() {
+        let items = vec![
+            MenuItem::Custom {
+                id: "first".into(),
+                label: "First".into(),
+            },
+            MenuItem::Separator,
+            MenuItem::Custom {
+                id: "third".into(),
+                label: "Third".into(),
+            },
+        ];
+        let m = custom_menu_with_items(100.0, 100.0, items);
+        // First custom item at index 0.
+        let y: f32 = anchor_y(&m) + MENU_INNER_PAD;
+        assert_eq!(hover_at(&m, 110.0, y, 8.0), Some(0));
+        // Separator at row 1 returns None.
+        let y: f32 = anchor_y(&m) + MENU_INNER_PAD + 1.0 * MENU_ITEM_HEIGHT;
+        assert_eq!(hover_at(&m, 110.0, y, 8.0), None);
+        // Third item (second custom) at row 2 -> action index 1.
+        let y: f32 = anchor_y(&m) + MENU_INNER_PAD + 2.0 * MENU_ITEM_HEIGHT;
+        assert_eq!(hover_at(&m, 110.0, y, 8.0), Some(1));
+    }
+
+    #[test]
+    fn menu_item_label_helper() {
+        assert_eq!(
+            MenuItem::Action(MenuAction::SortAscending).label(),
+            Some("Sort Ascending")
+        );
+        assert_eq!(
+            MenuItem::Custom {
+                id: "x".into(),
+                label: "Hello".into()
+            }
+            .label(),
+            Some("Hello")
+        );
+        assert_eq!(MenuItem::Separator.label(), None);
+    }
+
+    #[test]
+    fn menu_item_is_selectable() {
+        assert!(MenuItem::Action(MenuAction::ClearFilter).is_selectable());
+        assert!(MenuItem::Custom {
+            id: "x".into(),
+            label: "y".into()
+        }
+        .is_selectable());
+        assert!(!MenuItem::Separator.is_selectable());
     }
 }

@@ -5,6 +5,9 @@
 
 use crate::config::GridConfig;
 use crate::data::GridData;
+use crate::grid::context_menu::{
+    ContextMenuProvider, ContextMenuProviderHandle, PendingCustomContextMenuAction,
+};
 use crate::grid::paint::{paint_grid, paint_status_bar, PaintData, StatusBarData};
 use crate::grid::state::state_inner;
 use crate::grid::state::{GridState, EDGE_SCROLL_TICK_MS};
@@ -35,6 +38,7 @@ impl SqllyDataTable {
         SqllyDataTableBuilder {
             data,
             config: GridConfig::default(),
+            context_menu_provider: None,
         }
     }
 }
@@ -43,6 +47,7 @@ impl SqllyDataTable {
 pub struct SqllyDataTableBuilder {
     data: GridData,
     config: GridConfig,
+    context_menu_provider: Option<ContextMenuProviderHandle>,
 }
 
 impl SqllyDataTableBuilder {
@@ -60,10 +65,27 @@ impl SqllyDataTableBuilder {
         self
     }
 
+    /// Register a custom right-click menu provider. When registered, the
+    /// provider fully controls the right-click menu for all targets (cells,
+    /// row headers, column headers). The built-in column-header menu is
+    /// suppressed; use
+    /// [`crate::grid::context_menu::ContextMenuItem::standard_column_header_items`]
+    /// to compose built-in actions.
+    #[must_use]
+    pub fn context_menu_provider(mut self, provider: impl ContextMenuProvider + 'static) -> Self {
+        self.context_menu_provider = Some(ContextMenuProviderHandle::new(provider));
+        self
+    }
+
     /// Build the widget inside the supplied [`gpui::App`].
     pub fn build(self, cx: &mut App) -> SqllyDataTable {
         let focus = cx.focus_handle();
-        let state = cx.new(|_cx| GridState::new(self.data, self.config, focus.clone()));
+        let provider = self.context_menu_provider;
+        let state = cx.new(|_cx| {
+            let mut s = GridState::new(self.data, self.config, focus.clone());
+            s.context_menu_provider = provider;
+            s
+        });
         SqllyDataTable { state }
     }
 }
@@ -94,6 +116,19 @@ impl Render for SqllyDataTable {
             self.state.update(cx, |s, cx| {
                 s.execute_action(action, col, cx);
                 s.pending_action = None;
+            });
+        }
+
+        // Process any pending custom context-menu action.
+        if let Some(pending) = self
+            .state
+            .read(cx)
+            .pending_custom_context_menu_action
+            .clone()
+        {
+            self.state.update(cx, |s, cx| {
+                s.pending_custom_context_menu_action = None;
+                s.execute_custom_context_menu_action(pending, cx);
             });
         }
 
@@ -175,14 +210,32 @@ impl Render for SqllyDataTable {
                                 {
                                     let mut cur = 0;
                                     for item in &menu.items {
-                                        if let MenuItem::Action(a) = item {
-                                            if cur == action_idx {
-                                                s.pending_action = Some((*a, menu.col));
-                                                s.context_menu = None;
-                                                cx.notify();
-                                                return;
+                                        match item {
+                                            MenuItem::Action(a) => {
+                                                if cur == action_idx {
+                                                    s.pending_action = Some((*a, menu.col));
+                                                    s.context_menu = None;
+                                                    cx.notify();
+                                                    return;
+                                                }
+                                                cur += 1;
                                             }
-                                            cur += 1;
+                                            MenuItem::Custom { id, .. } => {
+                                                if cur == action_idx {
+                                                    if let Some(request) = &menu.request {
+                                                        s.pending_custom_context_menu_action =
+                                                            Some(PendingCustomContextMenuAction {
+                                                                id: id.clone(),
+                                                                request: request.clone(),
+                                                            });
+                                                    }
+                                                    s.context_menu = None;
+                                                    cx.notify();
+                                                    return;
+                                                }
+                                                cur += 1;
+                                            }
+                                            MenuItem::Separator => {}
                                         }
                                     }
                                 }
@@ -202,15 +255,51 @@ impl Render for SqllyDataTable {
                     state_right.update(cx, |s, cx| {
                         let pos = event.position;
                         let hit = s.hit_test(pos);
-                        match hit {
-                            HitResult::ColumnHeader(col) | HitResult::SortButton(col) => {
-                                s.open_context_menu(col, pos);
+
+                        // No provider — existing built-in behavior.
+                        if s.context_menu_provider.is_none() {
+                            match hit {
+                                HitResult::ColumnHeader(col) | HitResult::SortButton(col) => {
+                                    s.open_context_menu(col, pos);
+                                }
+                                _ => {
+                                    s.context_menu = None;
+                                    s.filter_prompt = None;
+                                }
                             }
-                            _ => {
-                                s.context_menu = None;
-                                s.filter_prompt = None;
-                            }
+                            cx.notify();
+                            return;
                         }
+
+                        // Provider exists — build custom menu.
+                        let Some(target) = s.context_menu_target_from_hit(hit) else {
+                            s.context_menu = None;
+                            s.filter_prompt = None;
+                            cx.notify();
+                            return;
+                        };
+
+                        let effective = s.effective_selection_for_context_target(&target);
+                        if effective != s.selection {
+                            s.selection = effective.clone();
+                        }
+
+                        let request = s.build_context_menu_request(target, &effective);
+                        let col = request.target.column_index().unwrap_or(0);
+
+                        let Some(provider) = s.context_menu_provider.clone() else {
+                            return;
+                        };
+                        let public_items = provider.menu_items(&request);
+                        let items = GridState::convert_context_menu_items(public_items);
+
+                        if items.is_empty() {
+                            s.context_menu = None;
+                        } else {
+                            s.context_menu =
+                                Some(menu::ContextMenu::custom(col, pos, items, request));
+                        }
+                        s.filter_prompt = None;
                         cx.notify();
                     });
                 },
