@@ -194,13 +194,18 @@ impl Render for SqllyDataTable {
                 move |event: &MouseDownEvent, window, cx| {
                     window.focus(&focus_left);
                     state_mouse.update(cx, |s, cx| {
+                        // Normalize the absolute window pointer into the grid's
+                        // own frame once, up front. Everything downstream —
+                        // menu hit-testing and `handle_mouse_down` — works in
+                        // grid-relative coordinates.
+                        let rel = state_inner::to_grid_relative(event.position, s.bounds.origin);
                         if let Some(menu) = s.context_menu.clone() {
                             let cw = s.char_width;
-                            let (mx_rel, my_rel) = state_inner::screen_to_content(
-                                event.position,
-                                s.bounds.origin,
-                                s.scroll_handle.offset(),
-                            );
+                            // The menu anchor is stored grid-relative, so the
+                            // pointer compares directly against it (no origin,
+                            // no scroll).
+                            let mx_rel = f32::from(rel.x);
+                            let my_rel = f32::from(rel.y);
                             let w = menu.width_for(cw);
                             let total_h = menu.total_height();
                             let ax = f32::from(menu.anchor.x);
@@ -248,7 +253,7 @@ impl Render for SqllyDataTable {
                                 s.filter_prompt = None;
                             }
                         }
-                        s.handle_mouse_down(event.position, event.modifiers.shift);
+                        s.handle_mouse_down(rel, event.modifiers.shift);
                         cx.notify();
                     });
                 },
@@ -258,7 +263,7 @@ impl Render for SqllyDataTable {
                 move |event: &MouseDownEvent, window, cx| {
                     window.focus(&focus_right);
                     state_right.update(cx, |s, cx| {
-                        let pos = event.position;
+                        let pos = state_inner::to_grid_relative(event.position, s.bounds.origin);
                         let hit = s.hit_test(pos);
 
                         // No provider — existing built-in behavior.
@@ -311,7 +316,8 @@ impl Render for SqllyDataTable {
             )
             .on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
                 state_move.update(cx, |s, cx| {
-                    s.handle_mouse_move(event.position, event.pressed_button);
+                    let rel = state_inner::to_grid_relative(event.position, s.bounds.origin);
+                    s.handle_mouse_move(rel, event.pressed_button);
                     cx.notify();
                 });
             })

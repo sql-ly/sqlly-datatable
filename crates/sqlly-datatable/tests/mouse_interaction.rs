@@ -6,11 +6,39 @@
 
 #![allow(clippy::expect_used)]
 
-use gpui::{point, px, Modifiers, MouseButton, TestAppContext};
+use gpui::{
+    div, point, px, AppContext, Context, Entity, IntoElement, Modifiers, MouseButton,
+    ParentElement, Render, Styled, TestAppContext, Window,
+};
 use sqlly_datatable::{
     CellValue, Column, ColumnKind, ContextMenuItem, ContextMenuProvider, ContextMenuRequest,
     ContextMenuTarget, GridConfig, GridData, Selection, SqllyDataTable,
 };
+
+/// A wrapper view that renders the grid inset from the window's top-left by a
+/// fixed padding, forcing the grid's painted `bounds.origin` to be NON-ZERO.
+/// This reproduces the real app, where the results grid is nested deep in the
+/// layout (origin ~ (350, 1800)) rather than being the window root (origin 0,
+/// as in every other test here). Pointer coordinates arrive from GPUI in
+/// absolute window space; the widget must translate them into its own frame.
+struct Harness {
+    grid: Entity<SqllyDataTable>,
+}
+
+/// Padding applied to the grid inside the harness. Kept well within the
+/// 1920x1080 test window so the grid still has room for all rows/columns.
+const PAD_LEFT: f32 = 120.0;
+const PAD_TOP: f32 = 200.0;
+
+impl Render for Harness {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .pl(px(PAD_LEFT))
+            .pt(px(PAD_TOP))
+            .child(self.grid.clone())
+    }
+}
 
 /// Minimal provider mirroring how the app (`ResultGridMenuProvider`) drives the
 /// right-click menu: standard items for a column header, a custom action for a
@@ -323,5 +351,121 @@ fn click_row_header_selects_row(cx: &mut TestAppContext) {
         selection,
         Selection::Row(2),
         "clicking the row-header gutter should select that row, got {selection:?}"
+    );
+}
+
+// ----------------------------------------------------------------------------
+// Coordinate-frame tests: the grid may be nested anywhere in the window, so all
+// stored pointer positions (click_pos, drag_start, ...) MUST be expressed
+// relative to the grid's own top-left, not in absolute window coordinates.
+// These use the `Harness` wrapper to force a non-zero grid origin.
+// ----------------------------------------------------------------------------
+
+/// The reported bug: clicking 8px from the grid's top-left must record a
+/// click position of (8, 8) — grid-relative — NOT the absolute window/monitor
+/// coordinate (~128, 208). This is exactly what the status bar prints as
+/// `Click: (x, y)`.
+#[gpui::test]
+fn click_position_is_relative_to_grid_container(cx: &mut TestAppContext) {
+    let (harness, cx) = cx.add_window_view(|_window, cx| {
+        let grid = cx.new(|cx| {
+            SqllyDataTable::builder(sample())
+                .config(GridConfig::default())
+                .build(cx)
+        });
+        Harness { grid }
+    });
+    cx.run_until_parked();
+
+    let grid = harness.read_with(cx, |h, _cx| h.grid.clone());
+    let origin = grid.read_with(cx, |g, cx| g.state.read(cx).bounds.origin);
+
+    // Sanity: the grid really is offset from the window origin.
+    assert!(
+        f32::from(origin.x) >= PAD_LEFT && f32::from(origin.y) >= PAD_TOP,
+        "grid should be inset; origin was {origin:?}"
+    );
+
+    // Click 8px in from the grid's own top-left corner.
+    let x = f32::from(origin.x) + 8.0;
+    let y = f32::from(origin.y) + 8.0;
+    cx.simulate_click(point(px(x), px(y)), Modifiers::none());
+    cx.run_until_parked();
+
+    let click_pos = grid.read_with(cx, |g, cx| g.state.read(cx).click_pos);
+    assert_eq!(
+        click_pos,
+        Some(point(px(8.0), px(8.0))),
+        "click 8px from the grid's top-left should record grid-relative (8,8), got {click_pos:?}"
+    );
+}
+
+/// Cell hit-testing must remain correct at a non-zero origin: clicking inside
+/// the first data cell selects Cell(0,0) even when the grid is inset.
+#[gpui::test]
+fn cell_selection_correct_with_nonzero_origin(cx: &mut TestAppContext) {
+    let (harness, cx) = cx.add_window_view(|_window, cx| {
+        let grid = cx.new(|cx| {
+            SqllyDataTable::builder(sample())
+                .config(GridConfig::default())
+                .build(cx)
+        });
+        Harness { grid }
+    });
+    cx.run_until_parked();
+
+    let grid = harness.read_with(cx, |h, _cx| h.grid.clone());
+    let (origin, header_h, row_h) = grid.read_with(cx, |g, cx| {
+        let s = g.state.read(cx);
+        (s.bounds.origin, s.header_height, s.row_height)
+    });
+
+    // Row 0, column 0: past the 50px row-header gutter, first data row.
+    let x = f32::from(origin.x) + 90.0;
+    let y = f32::from(origin.y) + header_h + row_h * 0.5;
+    cx.simulate_click(point(px(x), px(y)), Modifiers::none());
+    cx.run_until_parked();
+
+    let selection = grid.read_with(cx, |g, cx| g.state.read(cx).selection.clone());
+    assert_eq!(
+        selection,
+        Selection::Cell(0, 0),
+        "cell hit-test must map correctly at a non-zero grid origin, got {selection:?}"
+    );
+}
+
+/// A drag begun on a cell must store its start position in the grid's own
+/// frame, so drag-range math stays correct regardless of nesting.
+#[gpui::test]
+fn drag_start_is_relative_to_grid_container(cx: &mut TestAppContext) {
+    let (harness, cx) = cx.add_window_view(|_window, cx| {
+        let grid = cx.new(|cx| {
+            SqllyDataTable::builder(sample())
+                .config(GridConfig::default())
+                .build(cx)
+        });
+        Harness { grid }
+    });
+    cx.run_until_parked();
+
+    let grid = harness.read_with(cx, |h, _cx| h.grid.clone());
+    let (origin, header_h, row_h) = grid.read_with(cx, |g, cx| {
+        let s = g.state.read(cx);
+        (s.bounds.origin, s.header_height, s.row_height)
+    });
+
+    // Press (mouse-down, no release) inside row 0 / col 0.
+    let rel_x = 90.0;
+    let rel_y = header_h + row_h * 0.5;
+    let x = f32::from(origin.x) + rel_x;
+    let y = f32::from(origin.y) + rel_y;
+    cx.simulate_mouse_down(point(px(x), px(y)), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+
+    let drag_start = grid.read_with(cx, |g, cx| g.state.read(cx).drag_start);
+    assert_eq!(
+        drag_start,
+        Some(point(px(rel_x), px(rel_y))),
+        "drag_start should be grid-relative ({rel_x},{rel_y}), got {drag_start:?}"
     );
 }

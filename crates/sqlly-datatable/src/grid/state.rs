@@ -16,8 +16,7 @@ use crate::grid::menu as menu_mod;
 #[allow(unused_imports)]
 pub(crate) use crate::grid::menu::{ContextMenu, MenuAction, MenuItem};
 use crate::grid::selection::{
-    is_cell_selected, is_row_selected, screen_to_content, HitResult, ScrollbarAxis, Selection,
-    SortDirection,
+    is_cell_selected, is_row_selected, HitResult, ScrollbarAxis, Selection, SortDirection,
 };
 
 use crate::grid::context_menu::{
@@ -34,6 +33,7 @@ pub mod state_inner {
         format_cell, CellValue, GridState, HitResult, Pixels, Point, ResolvedColumnFormat,
     };
     pub use crate::grid::selection::screen_to_content;
+    pub use crate::grid::selection::to_grid_relative;
     use std::fmt::Write as _;
 
     /// Returns the per-tick edge-scroll velocity in pixels (positive scrolls
@@ -64,7 +64,11 @@ pub mod state_inner {
             return false;
         };
         let bounds = state.bounds;
-        let (x, y) = screen_to_content(pos, bounds.origin, state.scroll_handle.offset());
+        // `pos` (last_mouse_pos) is grid-relative; fold in scroll to reach
+        // content space (origin already removed at the event boundary).
+        let scroll = state.scroll_handle.offset();
+        let x = f32::from(pos.x) + f32::from(scroll.x);
+        let y = f32::from(pos.y) + f32::from(scroll.y);
         let vw: f32 = bounds.size.width.into();
         let vh: f32 = bounds.size.height.into();
         let right_dist = vw - x;
@@ -372,12 +376,12 @@ impl GridState {
         if ch <= vh {
             return None;
         }
-        let ox: f32 = self.bounds.origin.x.into();
-        let oy: f32 = self.bounds.origin.y.into();
+        // Grid-relative track geometry (matches the grid-relative mouse coords
+        // passed to `scroll_to_vbar`).
         let sw: f32 = self.bounds.size.width.into();
         let sh: f32 = self.bounds.size.height.into();
-        let track_x = ox + sw - SCROLLBAR_SIZE;
-        let track_y = oy + self.header_height;
+        let track_x = sw - SCROLLBAR_SIZE;
+        let track_y = self.header_height;
         let track_h = sh - self.header_height - rh;
         let thumb_h = ((track_h * (vh / ch)).max(20.0)).min(track_h);
         Some((track_x, track_y, SCROLLBAR_SIZE, track_h, thumb_h))
@@ -391,12 +395,12 @@ impl GridState {
         if cw <= vw {
             return None;
         }
-        let ox: f32 = self.bounds.origin.x.into();
-        let oy: f32 = self.bounds.origin.y.into();
+        // Grid-relative track geometry (matches the grid-relative mouse coords
+        // passed to `scroll_to_hbar`).
         let sw: f32 = self.bounds.size.width.into();
         let sh: f32 = self.bounds.size.height.into();
-        let track_x = ox + self.row_header_width;
-        let track_y = oy + sh - SCROLLBAR_SIZE;
+        let track_x = self.row_header_width;
+        let track_y = sh - SCROLLBAR_SIZE;
         let track_w = sw - self.row_header_width - rw;
         let thumb_w = ((track_w * (vw / cw)).max(20.0)).min(track_w);
         Some((track_x, track_y, track_w, SCROLLBAR_SIZE, thumb_w))
@@ -871,14 +875,10 @@ impl GridState {
             Some(h) => h,
             None => return,
         };
-        let ox: f32 = self.bounds.origin.x.into();
-        let oy: f32 = self.bounds.origin.y.into();
-        let r2 = self.hit_test_content(
-            f32::from(end_world.x) - ox,
-            f32::from(end_world.y) - oy,
-            0.0,
-            0.0,
-        );
+        // `end_world` is already grid-relative + scroll (content space), since
+        // `drag_start`/`last_mouse_pos` are stored grid-relative. Feed it
+        // straight into content hit-testing with a zero scroll delta.
+        let r2 = self.hit_test_content(f32::from(end_world.x), f32::from(end_world.y), 0.0, 0.0);
         match (r1, r2) {
             (HitResult::Cell(r1c, c1), HitResult::Cell(r2c, c2)) => {
                 self.selection =
@@ -925,8 +925,9 @@ impl GridState {
         self.last_mouse_pos = Some(pos);
         if let Some(menu) = self.context_menu.clone() {
             let cw = self.char_width;
-            let (x_rel, y_rel) =
-                screen_to_content(pos, self.bounds.origin, self.scroll_handle.offset());
+            // `pos` and the menu anchor are both grid-relative.
+            let x_rel = f32::from(pos.x);
+            let y_rel = f32::from(pos.y);
             let hovered = menu_mod::hover_at(&menu, x_rel, y_rel, cw);
             if let Some(menu_mut) = self.context_menu.as_mut() {
                 menu_mut.hovered = hovered;
@@ -1162,7 +1163,10 @@ impl GridState {
         let (mx, my) = self.max_scroll();
         if let Some(menu) = &self.context_menu {
             let cw = self.char_width;
-            let (x_rel, y_rel) = screen_to_content(pos, bounds.origin, self.scroll_handle.offset());
+            // `pos` is grid-relative and the menu anchor is stored
+            // grid-relative, so compare directly — no origin, no scroll.
+            let x_rel = f32::from(pos.x);
+            let y_rel = f32::from(pos.y);
             if let Some(idx) = menu_mod::hover_at(menu, x_rel, y_rel, cw) {
                 return HitResult::ContextMenuItem(idx);
             }
@@ -1179,7 +1183,10 @@ impl GridState {
         {
             return HitResult::HorizontalScrollbar;
         }
-        let (cx, cy) = screen_to_content(pos, bounds.origin, self.scroll_handle.offset());
+        // `pos` is already grid-relative; only the scroll offset remains to be
+        // folded in to reach content space.
+        let cx = f32::from(pos.x) + sx;
+        let cy = f32::from(pos.y) + sy;
         if cx < 0.0 || cy < 0.0 || cx > bw || cy > bh {
             return HitResult::None;
         }

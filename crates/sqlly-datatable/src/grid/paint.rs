@@ -404,8 +404,10 @@ pub(crate) fn paint_grid(
     fill_quad(window, ox + rhw, oy, 1.0, sh, theme.grid_line);
 
     if let Some((start, current)) = data.drag_rect {
-        let (sx0, sy0) = (f32::from(start.x), f32::from(start.y));
-        let (sx1, sy1) = (f32::from(current.x), f32::from(current.y));
+        // `drag_rect` corners are grid-relative; shift by the grid origin to
+        // paint them in the window's absolute coordinate space.
+        let (sx0, sy0) = (ox + f32::from(start.x), oy + f32::from(start.y));
+        let (sx1, sy1) = (ox + f32::from(current.x), oy + f32::from(current.y));
         let (rx, ry) = (sx0.min(sx1), sy0.min(sy1));
         let (rw, rh) = ((sx1 - sx0).abs(), (sy1 - sy0).abs());
         window.paint_quad(PaintQuad {
@@ -492,8 +494,10 @@ fn paint_context_menu(
     }
     let menu_w = menu::MENU_MIN_WIDTH.max(max_label_w + pad_x * 2.0);
     let total_h = menu.total_height();
-    let ax = f32::from(menu.anchor.x);
-    let ay = f32::from(menu.anchor.y);
+    // The anchor is stored grid-relative; shift by the grid origin to place the
+    // menu in absolute window space (matching the ox/oy-based clamps below).
+    let ax = ox + f32::from(menu.anchor.x);
+    let ay = oy + f32::from(menu.anchor.y);
     let mut mx = ax;
     let mut my = ay;
     if mx + menu_w > ox + sw {
@@ -608,8 +612,10 @@ fn paint_filter_prompt(
     let label_w = label_text.chars().count() as f32 * (fs * 0.6);
     let w = min_w.max(label_w + pad_x * 2.0);
     let h = fs + pad_y * 2.0;
-    let ax = f32::from(prompt.anchor.x);
-    let ay = f32::from(prompt.anchor.y);
+    // Anchor is stored grid-relative (from last_mouse_pos); shift by the grid
+    // origin to paint in absolute window space.
+    let ax = ox + f32::from(prompt.anchor.x);
+    let ay = oy + f32::from(prompt.anchor.y);
     let mut mx = ax;
     let mut my = ay;
     if mx + w > ox + sw {

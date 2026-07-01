@@ -117,6 +117,24 @@ pub fn screen_to_content(
     (px - ox + sx, py - oy + sy)
 }
 
+/// Translate an absolute window-space pointer into the grid's OWN coordinate
+/// frame by subtracting the grid's painted `bounds.origin`. Every pointer
+/// value the widget hands to [`GridState`] is normalized through this at the
+/// event boundary, so all stored positions (`click_pos`, `drag_start`,
+/// `last_mouse_pos`, menu/prompt anchors) live in one consistent grid-relative
+/// frame regardless of where the widget is nested in the window. A grid at
+/// window origin (as in the sample app and older tests) is the identity case.
+#[must_use]
+pub fn to_grid_relative(
+    pos: Point<gpui::Pixels>,
+    bounds_origin: Point<gpui::Pixels>,
+) -> Point<gpui::Pixels> {
+    Point {
+        x: pos.x - bounds_origin.x,
+        y: pos.y - bounds_origin.y,
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
