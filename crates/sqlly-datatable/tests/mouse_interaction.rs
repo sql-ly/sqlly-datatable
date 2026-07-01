@@ -4,6 +4,8 @@
 //! a left click selects a cell, and a right click on a column header opens the
 //! built-in menu — no host wiring required.
 
+#![allow(clippy::expect_used)]
+
 use gpui::{point, px, Modifiers, MouseButton, TestAppContext};
 use sqlly_datatable::{
     CellValue, Column, ColumnKind, ContextMenuItem, ContextMenuProvider, ContextMenuRequest,
@@ -43,12 +45,7 @@ fn sample() -> GridData {
             },
         ],
         (0..30)
-            .map(|i| {
-                vec![
-                    CellValue::Integer(i),
-                    CellValue::Text(format!("row{i}")),
-                ]
-            })
+            .map(|i| vec![CellValue::Integer(i), CellValue::Text(format!("row{i}"))])
             .collect(),
     )
     .expect("rectangular data")

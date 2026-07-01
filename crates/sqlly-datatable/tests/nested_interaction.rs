@@ -3,6 +3,8 @@
 //! wrappers (as `sqlly-gpui`'s ResultsView + AppView do) breaks mouse routing
 //! to the grid. If a click here fails to select, the nesting is the culprit.
 
+#![allow(clippy::expect_used)]
+
 use gpui::{
     div, point, px, AppContext, Context, InteractiveElement, IntoElement, Modifiers, MouseButton,
     ParentElement, Render, ScrollWheelEvent, Styled, TestAppContext, Window,
@@ -14,8 +16,16 @@ use sqlly_datatable::{
 fn sample() -> GridData {
     GridData::new(
         vec![
-            Column { name: "id".into(), kind: ColumnKind::Integer, width: 100.0 },
-            Column { name: "name".into(), kind: ColumnKind::Text, width: 200.0 },
+            Column {
+                name: "id".into(),
+                kind: ColumnKind::Integer,
+                width: 100.0,
+            },
+            Column {
+                name: "name".into(),
+                kind: ColumnKind::Text,
+                width: 200.0,
+            },
         ],
         (0..30)
             .map(|i| vec![CellValue::Integer(i), CellValue::Text(format!("row{i}"))])
