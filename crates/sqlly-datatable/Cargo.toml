@@ -16,3 +16,6 @@ workspace = true
 [dependencies]
 gpui = { version = "0.2" }
 smol = "2.0"
+
+[dev-dependencies]
+gpui = { version = "0.2", features = ["test-support"] }

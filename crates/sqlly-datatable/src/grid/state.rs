@@ -159,6 +159,13 @@ pub struct GridState {
     pub resolved_formats: Vec<ResolvedColumnFormat>,
     pub display_indices: Vec<usize>,
     pub selection: Selection,
+    /// Fixed corner of a keyboard/shift range selection (row, col). Set when a
+    /// single cell is selected; held steady while shift+arrow moves the active
+    /// corner. Mirrors the Swift grid's `ResultGridCellRange.anchor`.
+    pub(crate) range_anchor: Option<(usize, usize)>,
+    /// Moving corner of a keyboard/shift range selection (row, col). Mirrors
+    /// the Swift grid's `ResultGridCellRange.extent`.
+    pub(crate) range_active: Option<(usize, usize)>,
     pub sort: Option<(usize, SortDirection)>,
     pub filters: Vec<String>,
     pub scroll_handle: ScrollHandle,
@@ -256,6 +263,8 @@ impl GridState {
             resolved_formats,
             display_indices,
             selection: Selection::None,
+            range_anchor: None,
+            range_active: None,
             sort: None,
             filters: vec![String::new(); col_count],
             scroll_handle: ScrollHandle::new(),
@@ -486,12 +495,25 @@ impl GridState {
             }
             HitResult::Cell(row, col) => {
                 self.selection = if shift {
-                    if let Selection::Cell(pr, pc) = self.selection {
-                        Selection::CellRange(pr.min(row), pc.min(col), pr.max(row), pc.max(col))
-                    } else {
-                        Selection::Cell(row, col)
-                    }
+                    // Extend from the existing anchor (Swift: anchor/extent).
+                    let anchor = self
+                        .range_anchor
+                        .or(match self.selection {
+                            Selection::Cell(pr, pc) => Some((pr, pc)),
+                            _ => None,
+                        })
+                        .unwrap_or((row, col));
+                    self.range_anchor = Some(anchor);
+                    self.range_active = Some((row, col));
+                    Selection::CellRange(
+                        anchor.0.min(row),
+                        anchor.1.min(col),
+                        anchor.0.max(row),
+                        anchor.1.max(col),
+                    )
                 } else {
+                    self.range_anchor = Some((row, col));
+                    self.range_active = Some((row, col));
                     Selection::Cell(row, col)
                 };
                 self.start_drag(pos);
@@ -499,6 +521,8 @@ impl GridState {
             }
             HitResult::Corner | HitResult::None => {
                 self.selection = Selection::None;
+                self.range_anchor = None;
+                self.range_active = None;
                 self.context_menu = None;
                 self.filter_prompt = None;
                 self.clear_drag();
@@ -1027,12 +1051,21 @@ impl GridState {
             }
             return;
         }
+        let shift = keystroke.modifiers.shift;
         match keystroke.key.as_str() {
+            "up" if shift => self.extend_selection(0, -1),
+            "down" if shift => self.extend_selection(0, 1),
+            "left" if shift => self.extend_selection(-1, 0),
+            "right" if shift => self.extend_selection(1, 0),
             "up" => self.move_selection(0, -1),
             "down" => self.move_selection(0, 1),
             "left" => self.move_selection(-1, 0),
             "right" => self.move_selection(1, 0),
-            "escape" => self.selection = Selection::None,
+            "escape" => {
+                self.selection = Selection::None;
+                self.range_anchor = None;
+                self.range_active = None;
+            }
             _ => {}
         }
     }
@@ -1050,6 +1083,8 @@ impl GridState {
                 let nr = (row as i32 + dy).clamp(0, last_row) as usize;
                 let nc = (col as i32 + dx).clamp(0, last_col) as usize;
                 self.selection = Selection::Cell(nr, nc);
+                self.range_anchor = Some((nr, nc));
+                self.range_active = Some((nr, nc));
             }
             Selection::Row(row) if dy != 0 => {
                 let nr = (row as i32 + dy).clamp(0, last_row) as usize;
@@ -1059,8 +1094,61 @@ impl GridState {
                 let nc = (col as i32 + dx).clamp(0, last_col) as usize;
                 self.selection = Selection::Column(nc);
             }
-            _ => self.selection = Selection::Cell(0, 0),
+            _ => {
+                self.selection = Selection::Cell(0, 0);
+                self.range_anchor = Some((0, 0));
+                self.range_active = Some((0, 0));
+            }
         }
+    }
+
+    /// Extend a rectangular cell selection by moving the active corner while
+    /// holding the anchor corner fixed (shift+arrow). Mirrors the Swift grid's
+    /// anchor/extent range model. Row and column selections are left unchanged.
+    fn extend_selection(&mut self, dx: i32, dy: i32) {
+        let nrows = self.display_indices.len() as i32;
+        let ncols = self.data.columns.len() as i32;
+        if nrows == 0 || ncols == 0 {
+            return;
+        }
+        let last_row = nrows - 1;
+        let last_col = ncols - 1;
+
+        // Seed anchor/active from the current selection when not already set.
+        if self.range_anchor.is_none() || self.range_active.is_none() {
+            match self.selection {
+                Selection::Cell(r, c) => {
+                    self.range_anchor = Some((r, c));
+                    self.range_active = Some((r, c));
+                }
+                Selection::CellRange(r1, c1, r2, c2) => {
+                    self.range_anchor = Some((r1, c1));
+                    self.range_active = Some((r2, c2));
+                }
+                _ => {
+                    self.range_anchor = Some((0, 0));
+                    self.range_active = Some((0, 0));
+                    self.selection = Selection::Cell(0, 0);
+                }
+            }
+        }
+
+        let anchor = self.range_anchor.unwrap_or((0, 0));
+        let active = self.range_active.unwrap_or(anchor);
+        let nr = (active.0 as i32 + dy).clamp(0, last_row) as usize;
+        let nc = (active.1 as i32 + dx).clamp(0, last_col) as usize;
+        self.range_active = Some((nr, nc));
+
+        self.selection = if (nr, nc) == anchor {
+            Selection::Cell(nr, nc)
+        } else {
+            Selection::CellRange(
+                anchor.0.min(nr),
+                anchor.1.min(nc),
+                anchor.0.max(nr),
+                anchor.1.max(nc),
+            )
+        };
     }
 
     pub(crate) fn hit_test(&self, pos: Point<Pixels>) -> HitResult {

@@ -107,7 +107,9 @@ impl Render for SqllyDataTable {
         let state_key = self.state.clone();
         let state_right = self.state.clone();
         let bg = self.state.read(cx).theme.bg;
-        let _focus_handle = self.state.read(cx).focus_handle.clone();
+        let focus_handle = self.state.read(cx).focus_handle.clone();
+        let focus_left = focus_handle.clone();
+        let focus_right = focus_handle.clone();
         let status_h = self.state.read(cx).status_bar_height;
 
         // Process any pending menu action from a previous mouse-down on a
@@ -155,6 +157,7 @@ impl Render for SqllyDataTable {
             .flex()
             .flex_col()
             .size_full()
+            .track_focus(&focus_handle)
             .bg(bg)
             .child(
                 canvas(
@@ -188,7 +191,8 @@ impl Render for SqllyDataTable {
             )
             .on_mouse_down(
                 MouseButton::Left,
-                move |event: &MouseDownEvent, _window, cx| {
+                move |event: &MouseDownEvent, window, cx| {
+                    window.focus(&focus_left);
                     state_mouse.update(cx, |s, cx| {
                         if let Some(menu) = s.context_menu.clone() {
                             let cw = s.char_width;
@@ -251,7 +255,8 @@ impl Render for SqllyDataTable {
             )
             .on_mouse_down(
                 MouseButton::Right,
-                move |event: &MouseDownEvent, _window, cx| {
+                move |event: &MouseDownEvent, window, cx| {
+                    window.focus(&focus_right);
                     state_right.update(cx, |s, cx| {
                         let pos = event.position;
                         let hit = s.hit_test(pos);
