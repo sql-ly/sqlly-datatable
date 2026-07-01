@@ -130,7 +130,7 @@ fn add_thousands_separator(s: &str) -> String {
 
 /// Format a Unix timestamp (seconds). When `fmt.relative` is set, the result
 /// is a "2 days ago" / "in 3 weeks" string relative to `SystemTime::now()`;
-/// use [`format_relative_date_at`] to inject a frozen clock for tests.
+/// use [`format_date_at`] to inject a frozen clock for tests.
 #[must_use]
 pub fn format_date(ts: i64, fmt: &DateFormat) -> String {
     let now = current_unix_seconds();

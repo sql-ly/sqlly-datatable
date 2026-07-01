@@ -14,7 +14,7 @@
 //! * Clipboard copy of any selection (with or without headers).
 //!
 //! The crate is intentionally GPUI-only on the UI side; the pure formatter in
-//! [`format`] is usable in any context (export pipelines, server-side preview,
+//! [`mod@format`] is usable in any context (export pipelines, server-side preview,
 //! etc.). All formatting is configurable per column by composing the
 //! [`config::GridConfig`] defaults with [`config::ColumnOverride`] entries.
 //!

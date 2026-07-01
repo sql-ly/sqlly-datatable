@@ -52,7 +52,7 @@ pub enum ColumnKind {
     Date,
     /// Boolean columns (`BooleanFormat`).
     Boolean,
-    /// Unknown / un-inferred kind. Falls back to [`StringFormat`] for display.
+    /// Unknown / un-inferred kind. Falls back to [`crate::config::StringFormat`] for display.
     None,
 }
 
