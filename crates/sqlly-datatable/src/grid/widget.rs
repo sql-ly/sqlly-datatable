@@ -161,10 +161,18 @@ impl Render for SqllyDataTable {
             .bg(bg)
             .child(
                 canvas(
-                    move |bounds, _window, cx| -> PaintData {
+                    move |bounds, window, cx| -> PaintData {
+                        let viewport = window.viewport_size();
                         state_canvas.update(cx, |s, cx| {
+                            let mut dirty = false;
                             if s.bounds != bounds {
                                 s.bounds = bounds;
+                                dirty = true;
+                            }
+                            if s.window_viewport != viewport {
+                                s.window_viewport = viewport;
+                            }
+                            if dirty {
                                 cx.notify();
                             }
                         });
@@ -201,21 +209,29 @@ impl Render for SqllyDataTable {
                         let rel = state_inner::to_grid_relative(event.position, s.bounds.origin);
                         if let Some(menu) = s.context_menu.clone() {
                             let cw = s.char_width;
-                            // The menu anchor is stored grid-relative, so the
-                            // pointer compares directly against it (no origin,
-                            // no scroll).
+                            // Resolve the menu's on-screen position exactly as
+                            // paint does (window viewport, flip up / shift left)
+                            // so hit-testing matches what the user sees.
+                            let grid_ox = f32::from(s.bounds.origin.x);
+                            let grid_oy = f32::from(s.bounds.origin.y);
+                            let viewport = window.viewport_size();
+                            let vw = f32::from(viewport.width);
+                            let vh = f32::from(viewport.height);
+                            let resolved =
+                                menu.resolved_position(grid_ox, grid_oy, vw, vh, cw);
                             let mx_rel = f32::from(rel.x);
                             let my_rel = f32::from(rel.y);
                             let w = menu.width_for(cw);
                             let total_h = menu.total_height();
-                            let ax = f32::from(menu.anchor.x);
-                            let ay = f32::from(menu.anchor.y);
+                            let ax = f32::from(resolved.x);
+                            let ay = f32::from(resolved.y);
                             if mx_rel >= ax
                                 && mx_rel <= ax + w
                                 && my_rel >= ay
                                 && my_rel <= ay + total_h
                             {
-                                if let Some(action_idx) = menu::hover_at(&menu, mx_rel, my_rel, cw)
+                                if let Some(action_idx) =
+                                    menu::hover_at_anchor(&menu, resolved, mx_rel, my_rel, cw)
                                 {
                                     let mut cur = 0;
                                     for item in &menu.items {

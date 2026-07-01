@@ -2,7 +2,7 @@
 //! resolution, and action labels live here so paint code only consumes the
 //! menu snapshot.
 
-use gpui::{Hsla, Pixels, Point};
+use gpui::{px, Hsla, Pixels, Point};
 
 use crate::grid::context_menu::ContextMenuRequest;
 
@@ -14,6 +14,9 @@ pub const MENU_PADDING_X: f32 = 12.0;
 pub const MENU_MIN_WIDTH: f32 = 180.0;
 pub const MENU_BORDER: f32 = 1.0;
 pub const MENU_INNER_PAD: f32 = 4.0;
+/// Gap kept between the menu and the window edge when it must be nudged
+/// on-screen. Small so the menu still visually hugs the pointer.
+pub const MENU_SCREEN_MARGIN: f32 = 4.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAction {
@@ -123,6 +126,67 @@ impl ContextMenu {
     pub fn total_height(&self) -> f32 {
         self.items.len() as f32 * MENU_ITEM_HEIGHT + MENU_INNER_PAD * 2.0
     }
+
+    /// Resolve the menu's final top-left corner in **grid-relative** space,
+    /// given the grid origin in window space (`grid_ox`, `grid_oy`) and the
+    /// window viewport size (`vw`, `vh`).
+    ///
+    /// The menu must never be clipped by the grid area — only the window edge
+    /// constrains it. Vertically it always opens *downward* from the anchor
+    /// unless the full menu would not fit below the anchor within the window,
+    /// in which case it flips to open *upward* (anchored so its bottom sits at
+    /// the anchor). Horizontally it shifts left to stay on-screen.
+    ///
+    /// Returned in grid-relative coordinates so it composes directly with
+    /// [`hover_at`] and the widget's grid-relative pointer math. Paint adds the
+    /// grid origin back to reach absolute window space.
+    #[must_use]
+    pub fn resolved_position(
+        &self,
+        grid_ox: f32,
+        grid_oy: f32,
+        vw: f32,
+        vh: f32,
+        char_width: f32,
+    ) -> Point<Pixels> {
+        let menu_w = self.width_for(char_width);
+        let menu_h = self.total_height();
+        // Desired top-left in absolute window space.
+        let ax = grid_ox + f32::from(self.anchor.x);
+        let ay = grid_oy + f32::from(self.anchor.y);
+
+        // Horizontal: keep the whole menu inside the window, never clipped by
+        // the grid. Prefer the anchor x; shift left if the right edge spills
+        // past the window; never let the left edge go off-screen.
+        let mut mx = ax;
+        if mx + menu_w > vw {
+            mx = vw - menu_w - MENU_SCREEN_MARGIN;
+        }
+        if mx < MENU_SCREEN_MARGIN {
+            mx = MENU_SCREEN_MARGIN;
+        }
+
+        // Vertical: open down by default. Flip up only when there is literally
+        // no room for the full menu below the anchor within the window.
+        let opens_down = ay + menu_h + MENU_SCREEN_MARGIN <= vh;
+        let mut my = if opens_down {
+            ay
+        } else {
+            // Open upward: anchor the menu's bottom at the click point.
+            ay - menu_h
+        };
+        // Final safety: never let the menu run off the top of the window. This
+        // can only trigger for a menu taller than the whole viewport.
+        if my < MENU_SCREEN_MARGIN {
+            my = MENU_SCREEN_MARGIN;
+        }
+
+        // Convert back to grid-relative space for downstream consumers.
+        Point {
+            x: px(mx - grid_ox),
+            y: px(my - grid_oy),
+        }
+    }
 }
 
 /// Maps an action to its user-facing label. Used by hit-testing, paint, and
@@ -144,11 +208,30 @@ pub fn label(action: MenuAction) -> &'static str {
 /// Index of the hovered action under `x` (content-space) given the
 /// caller's full `y`. The caller supplies `y` because the menu overlay is
 /// drawn outside the bounds; we don't double-correct it here.
+///
+/// Uses the menu's stored anchor. When the menu has been repositioned to stay
+/// on-screen (flip up / shift left), callers must use [`hover_at_anchor`] with
+/// the resolved top-left so hit-testing matches paint.
 #[must_use]
 pub fn hover_at(menu: &ContextMenu, x: f32, y: f32, char_width: f32) -> Option<usize> {
+    hover_at_anchor(menu, menu.anchor, x, y, char_width)
+}
+
+/// Like [`hover_at`] but tests against an explicit resolved top-left `anchor`
+/// (grid-relative) rather than the menu's stored anchor. Keeps hover/click
+/// hit-testing aligned with the on-screen position produced by
+/// [`ContextMenu::resolved_position`].
+#[must_use]
+pub fn hover_at_anchor(
+    menu: &ContextMenu,
+    anchor: Point<Pixels>,
+    x: f32,
+    y: f32,
+    char_width: f32,
+) -> Option<usize> {
     let w = menu.width_for(char_width);
-    let ax: f32 = menu.anchor.x.into();
-    let ay: f32 = menu.anchor.y.into();
+    let ax: f32 = anchor.x.into();
+    let ay: f32 = anchor.y.into();
     if x < ax || x > ax + w || y < ay {
         return None;
     }
@@ -203,7 +286,6 @@ pub fn background() -> Hsla {
 )]
 mod tests {
     use super::*;
-    use gpui::px;
 
     fn menu_at(x: f32, y: f32) -> ContextMenu {
         ContextMenu::standard(7, point_from(x, y))
@@ -413,5 +495,70 @@ mod tests {
         }
         .is_selectable());
         assert!(!MenuItem::Separator.is_selectable());
+    }
+
+    // --- resolved_position: never-clip + up/down flip ------------------------
+
+    /// With a large window and the anchor near the top, the menu opens straight
+    /// down from the anchor (position unchanged).
+    #[test]
+    fn resolved_opens_down_when_room_below() {
+        let m = menu_at(50.0, 30.0);
+        // grid origin at window (0,0), big window.
+        let p = m.resolved_position(0.0, 0.0, 2000.0, 2000.0, 8.0);
+        assert_eq!(f32::from(p.x), 50.0);
+        assert_eq!(f32::from(p.y), 30.0);
+    }
+
+    /// When the full menu would not fit below the anchor within the window, it
+    /// flips up: its bottom sits at the anchor (top = anchor_y - height).
+    #[test]
+    fn resolved_flips_up_when_no_room_below() {
+        let m = menu_at(50.0, 590.0);
+        let h = m.total_height();
+        // Window only 600 tall; anchor at y=590 leaves no room for the menu.
+        let p = m.resolved_position(0.0, 0.0, 2000.0, 600.0, 8.0);
+        assert_eq!(f32::from(p.y), 590.0 - h);
+    }
+
+    /// The menu is clamped to the *window* width, not the grid width — proving
+    /// it is never clipped by a grid area smaller than the window. Grid is only
+    /// 300 wide but the window is 2000 wide, so a menu near the grid's right
+    /// edge still extends past the grid without being pulled in.
+    #[test]
+    fn resolved_not_clipped_by_grid_only_by_window() {
+        let m = menu_at(280.0, 30.0);
+        let w = m.width_for(8.0);
+        // Grid origin at window (0,0); grid is 300 wide (sw), window 2000 wide.
+        let p = m.resolved_position(0.0, 0.0, 2000.0, 2000.0, 8.0);
+        // Stays at the anchor x — not shifted to fit inside the 300px grid.
+        assert_eq!(f32::from(p.x), 280.0);
+        // And its right edge is allowed to exceed the grid width (300).
+        assert!(f32::from(p.x) + w > 300.0);
+    }
+
+    /// When the anchor is close to the window's right edge, the menu shifts
+    /// left so its right edge stays inside the window.
+    #[test]
+    fn resolved_shifts_left_at_window_right_edge() {
+        let m = menu_at(1950.0, 30.0);
+        let w = m.width_for(8.0);
+        let vw = 2000.0;
+        let p = m.resolved_position(0.0, 0.0, vw, 2000.0, 8.0);
+        let right = f32::from(p.x) + w;
+        assert!(right <= vw, "menu right edge {right} must stay within {vw}");
+        assert_eq!(f32::from(p.x), vw - w - MENU_SCREEN_MARGIN);
+    }
+
+    /// The grid origin offset is honored: a grid placed at a window offset
+    /// shifts the absolute placement but the returned value stays grid-relative.
+    #[test]
+    fn resolved_accounts_for_grid_origin() {
+        let m = menu_at(10.0, 10.0);
+        // Grid origin at (100, 200) in the window; plenty of room below.
+        let p = m.resolved_position(100.0, 200.0, 2000.0, 2000.0, 8.0);
+        // Grid-relative result is unchanged because absolute (110,210) fits.
+        assert_eq!(f32::from(p.x), 10.0);
+        assert_eq!(f32::from(p.y), 10.0);
     }
 }

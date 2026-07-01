@@ -9,7 +9,9 @@ use crate::grid::state::state_inner::apply_edge_scroll;
 use crate::grid::theme::GridTheme;
 
 use crate::config::{GridConfig, ResolvedColumnFormat};
-use gpui::{px, App, Bounds, FocusHandle, Keystroke, MouseButton, Pixels, Point, ScrollHandle};
+use gpui::{
+    px, App, Bounds, FocusHandle, Keystroke, MouseButton, Pixels, Point, ScrollHandle, Size,
+};
 
 // Pull selection / menu types into scope unqualified for this module's impl.
 use crate::grid::menu as menu_mod;
@@ -36,23 +38,35 @@ pub mod state_inner {
     pub use crate::grid::selection::to_grid_relative;
     use std::fmt::Write as _;
 
-    /// Returns the per-tick edge-scroll velocity in pixels (positive scrolls
-    /// the content forward; the caller applies sign).
+    /// Per-tick edge-scroll velocity in pixels (positive scrolls the content
+    /// forward; the caller applies sign). Three staged bands spaced 30 px
+    /// apart, each a little faster than the last as the pointer approaches the
+    /// edge, with a final "really fast" tier inside 30 px. Ticks fire every
+    /// [`EDGE_SCROLL_TICK_MS`] (~60 fps), so px/sec ≈ px/tick × 62.5:
+    ///
+    /// | distance from edge | px/tick |  ~px/sec @ 60fps |
+    /// |--------------------|---------|------------------|
+    /// | > 90               | 0       | (no scroll)      |
+    /// | 60 ..= 90          | 0.25    | 16               |
+    /// | 30 ..= 60          | 0.5     | 31               |
+    /// | < 30               | 1       | 62 (really fast) |
+    /// | < 0 (past edge)    | 1       | (saturate)       |
+    const REALLY_FAST: f32 = 1.0;
     pub fn edge_scroll_speed(dist_from_edge: f32) -> f32 {
-        if dist_from_edge > 150.0 {
+        if dist_from_edge > 90.0 {
             return 0.0;
         }
         if dist_from_edge < 0.0 {
-            return (24.0 + (-dist_from_edge) * 0.6).min(80.0);
+            // Cursor dragged past the edge: saturate at the really-fast speed
+            // so going further out never exceeds the closest in-bounds band.
+            return REALLY_FAST;
         }
-        if dist_from_edge < 25.0 {
-            12.0
-        } else if dist_from_edge < 50.0 {
-            6.0
-        } else if dist_from_edge < 100.0 {
-            3.0
+        if dist_from_edge < 30.0 {
+            REALLY_FAST
+        } else if dist_from_edge < 60.0 {
+            0.5
         } else {
-            1.0
+            0.25
         }
     }
 
@@ -64,27 +78,32 @@ pub mod state_inner {
             return false;
         };
         let bounds = state.bounds;
-        // `pos` (last_mouse_pos) is grid-relative; fold in scroll to reach
-        // content space (origin already removed at the event boundary).
-        let scroll = state.scroll_handle.offset();
-        let x = f32::from(pos.x) + f32::from(scroll.x);
-        let y = f32::from(pos.y) + f32::from(scroll.y);
+        // `pos` (last_mouse_pos) is grid-relative, and the viewport edges are
+        // FIXED in that same frame — they don't move when the content scrolls
+        // underneath. So distance-from-edge MUST be measured grid-relative.
+        // Adding the scroll offset here (as this once did) slides the 90 px
+        // trigger bands along with the content: the forward band collapses to
+        // zero the moment any scrolling begins (instant max speed, no staged
+        // acceleration) and the reverse band grows past 90 px and never
+        // fires — so edge-scroll works only before you've scrolled at all.
         let vw: f32 = bounds.size.width.into();
         let vh: f32 = bounds.size.height.into();
-        let right_dist = vw - x;
-        let left_dist = x - state.row_header_width;
-        let bottom_dist = vh - y;
-        let top_dist = y - state.header_height;
+        let px: f32 = pos.x.into();
+        let py: f32 = pos.y.into();
+        let right_dist = vw - px;
+        let left_dist = px - state.row_header_width;
+        let bottom_dist = vh - py;
+        let top_dist = py - state.header_height;
         let mut dx = 0.0_f32;
         let mut dy = 0.0_f32;
-        if right_dist < 150.0 && right_dist <= left_dist {
+        if right_dist < 90.0 && right_dist <= left_dist {
             dx = edge_scroll_speed(right_dist);
-        } else if left_dist < 150.0 {
+        } else if left_dist < 90.0 {
             dx = -edge_scroll_speed(left_dist);
         }
-        if bottom_dist < 150.0 && bottom_dist <= top_dist {
+        if bottom_dist < 90.0 && bottom_dist <= top_dist {
             dy = edge_scroll_speed(bottom_dist);
-        } else if top_dist < 150.0 {
+        } else if top_dist < 90.0 {
             dy = -edge_scroll_speed(top_dist);
         }
         if dx == 0.0 && dy == 0.0 {
@@ -201,6 +220,10 @@ pub struct GridState {
     pub scrollbar_drag: Option<ScrollbarAxis>,
     pub scrollbar_drag_start_offset: f32,
     pub scrollbar_drag_start_pos: f32,
+    /// Full window viewport size (updated each paint). Used to position the
+    /// context menu against the window edges so it is never clipped by the
+    /// grid area and flips up only when there is no room below on-screen.
+    pub(crate) window_viewport: Size<Pixels>,
 }
 
 /// Filter-prompt input. Cursor is tracked as a **char count**, not a byte
@@ -300,6 +323,7 @@ impl GridState {
             scrollbar_drag: None,
             scrollbar_drag_start_offset: 0.0,
             scrollbar_drag_start_pos: 0.0,
+            window_viewport: Size::default(),
         }
     }
 
@@ -925,10 +949,16 @@ impl GridState {
         self.last_mouse_pos = Some(pos);
         if let Some(menu) = self.context_menu.clone() {
             let cw = self.char_width;
-            // `pos` and the menu anchor are both grid-relative.
+            // Resolve the menu's on-screen position (window viewport, flip up /
+            // shift left) so hover highlighting matches paint and click.
+            let grid_ox = f32::from(self.bounds.origin.x);
+            let grid_oy = f32::from(self.bounds.origin.y);
+            let vw = f32::from(self.window_viewport.width);
+            let vh = f32::from(self.window_viewport.height);
+            let resolved = menu.resolved_position(grid_ox, grid_oy, vw, vh, cw);
             let x_rel = f32::from(pos.x);
             let y_rel = f32::from(pos.y);
-            let hovered = menu_mod::hover_at(&menu, x_rel, y_rel, cw);
+            let hovered = menu_mod::hover_at_anchor(&menu, resolved, x_rel, y_rel, cw);
             if let Some(menu_mut) = self.context_menu.as_mut() {
                 menu_mut.hovered = hovered;
             }
@@ -1183,14 +1213,17 @@ impl GridState {
         {
             return HitResult::HorizontalScrollbar;
         }
-        // `pos` is already grid-relative; only the scroll offset remains to be
-        // folded in to reach content space.
-        let cx = f32::from(pos.x) + sx;
-        let cy = f32::from(pos.y) + sy;
-        if cx < 0.0 || cy < 0.0 || cx > bw || cy > bh {
+        // `pos` is grid-relative. `hit_test_content` folds the scroll offset in
+        // itself for each scrolling region, so pass `pos` directly — NOT
+        // content-space coordinates, which would double-apply the offset and
+        // also break the fixed header-region checks (`y < header_height`,
+        // `x < row_header_width`) that are evaluated in grid-relative space.
+        let px = f32::from(pos.x);
+        let py = f32::from(pos.y);
+        if px < 0.0 || py < 0.0 || px > bw || py > bh {
             return HitResult::None;
         }
-        self.hit_test_content(cx, cy, sx, sy)
+        self.hit_test_content(px, py, sx, sy)
     }
 
     fn hit_test_content(&self, x: f32, y: f32, sx: f32, sy: f32) -> HitResult {
@@ -1344,22 +1377,26 @@ mod tests {
 
     #[test]
     fn edge_scroll_speed_stops_outside_band() {
-        assert_eq!(edge_scroll_speed(200.0), 0.0);
-        assert_eq!(edge_scroll_speed(-100.0), 80.0); // clamps at cap
-        assert_eq!(edge_scroll_speed(0.0), 12.0); // < 25
-        assert_eq!(edge_scroll_speed(24.99), 12.0);
-        assert_eq!(edge_scroll_speed(25.0), 6.0); // < 50
-        assert_eq!(edge_scroll_speed(49.99), 6.0);
-        assert_eq!(edge_scroll_speed(50.0), 3.0); // < 100
-        assert_eq!(edge_scroll_speed(99.99), 3.0);
-        assert_eq!(edge_scroll_speed(100.0), 1.0); // < 150
-        assert_eq!(edge_scroll_speed(149.99), 1.0);
+        // Outside the 90 px trigger band: no scroll.
+        assert_eq!(edge_scroll_speed(120.0), 0.0);
+        assert_eq!(edge_scroll_speed(90.01), 0.0);
+        // 60 ..= 90 -> 0.25 px/tick (slowest band).
+        assert_eq!(edge_scroll_speed(90.0), 0.25);
+        assert_eq!(edge_scroll_speed(60.0), 0.25);
+        assert_eq!(edge_scroll_speed(59.99), 0.5);
+        // 30 ..= 60 -> 0.5 px/tick.
+        assert_eq!(edge_scroll_speed(30.0), 0.5);
+        assert_eq!(edge_scroll_speed(29.99), 1.0);
+        // < 30 -> 1 px/tick (really fast).
+        assert_eq!(edge_scroll_speed(0.0), 1.0);
+        assert_eq!(edge_scroll_speed(29.99), 1.0);
     }
 
     #[test]
     fn edge_scroll_speed_caps_negative_runaway() {
-        // -1000 should saturate to (24 + 600).min(80) = 80.
-        assert_eq!(edge_scroll_speed(-1000.0), 80.0);
+        // Past the edge: saturate at the really-fast speed (1), not higher.
+        assert_eq!(edge_scroll_speed(-100.0), 1.0);
+        assert_eq!(edge_scroll_speed(-1000.0), 1.0);
     }
 
     /// `GridState` requires a real GPUI `FocusHandle` from

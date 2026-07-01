@@ -493,24 +493,17 @@ fn paint_context_menu(
     }
     let menu_w = menu::MENU_MIN_WIDTH.max(max_label_w + pad_x * 2.0);
     let total_h = menu.total_height();
-    // The anchor is stored grid-relative; shift by the grid origin to place the
-    // menu in absolute window space (matching the ox/oy-based clamps below).
-    let ax = ox + f32::from(menu.anchor.x);
-    let ay = oy + f32::from(menu.anchor.y);
-    let mut mx = ax;
-    let mut my = ay;
-    if mx + menu_w > ox + sw {
-        mx = ox + sw - menu_w - 4.0;
-    }
-    if mx < ox + 2.0 {
-        mx = ox + 2.0;
-    }
-    if my + total_h > oy + sh {
-        my = oy + sh - total_h - 4.0;
-    }
-    if my < oy + 2.0 {
-        my = oy + 2.0;
-    }
+    // Resolve the menu position against the *window* viewport (not the grid
+    // area) so the menu is never clipped by the grid and flips up only when
+    // there is no room below it on-screen. The result is grid-relative; shift
+    // by the grid origin to reach absolute window space for painting.
+    let viewport = window.viewport_size();
+    let vw = f32::from(viewport.width);
+    let vh = f32::from(viewport.height);
+    let resolved = menu.resolved_position(ox, oy, vw, vh, cw);
+    let mx = ox + f32::from(resolved.x);
+    let my = oy + f32::from(resolved.y);
+    let _ = (sw, sh);
     let _ = fs;
     fill_quad(window, mx, my, menu_w, total_h, theme.menu_bg);
     fill_quad(window, mx, my, menu_w, MENU_BORDER, theme.grid_line);
