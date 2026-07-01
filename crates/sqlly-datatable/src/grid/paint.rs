@@ -22,7 +22,6 @@ use gpui::{
 use std::fmt::Write as _;
 
 const SCROLLBAR_THUMB_COLOR: Hsla = hsla_const(0.0, 0.0, 0.55, 1.0);
-const MENU_BG: Hsla = hsla_const(0.0, 0.0, 1.0, 1.0);
 const FILTER_PLACEHOLDER: &str = "Type to filter...";
 
 const fn hsla_const(h: f32, s: f32, l: f32, a: f32) -> Hsla {
@@ -513,7 +512,7 @@ fn paint_context_menu(
         my = oy + 2.0;
     }
     let _ = fs;
-    fill_quad(window, mx, my, menu_w, total_h, MENU_BG);
+    fill_quad(window, mx, my, menu_w, total_h, theme.menu_bg);
     fill_quad(window, mx, my, menu_w, MENU_BORDER, theme.grid_line);
     fill_quad(
         window,
@@ -560,11 +559,11 @@ fn paint_context_menu(
                         iy,
                         menu_w - 4.0,
                         item_h,
-                        theme.selection_bg,
+                        theme.menu_hover_bg,
                     );
                 }
                 let label_text = item.label().unwrap_or("").to_owned();
-                let color = theme.text_fg;
+                let color = theme.menu_fg;
                 let run = mk_run(&label_text, color);
                 let shaped = text_system.shape_line(label_text.into(), font_size, &[run], None);
                 let _ = shaped.paint(
@@ -624,7 +623,7 @@ fn paint_filter_prompt(
     if my + h > oy + sh {
         my = oy + sh - h - 4.0;
     }
-    fill_quad(window, mx, my, w, h, MENU_BG);
+    fill_quad(window, mx, my, w, h, theme.menu_bg);
     fill_quad(window, mx, my, w, 1.0, theme.grid_line);
     fill_quad(window, mx, my + h - 1.0, w, 1.0, theme.grid_line);
     fill_quad(window, mx, my, 1.0, h, theme.grid_line);
