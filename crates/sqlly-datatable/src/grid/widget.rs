@@ -15,10 +15,18 @@ use crate::grid::theme::GridTheme;
 use crate::grid::{menu, HitResult, MenuItem};
 
 use gpui::{
-    canvas, div, point, px, App, AppContext, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Render, ScrollWheelEvent, Styled, Window,
+    anchored, canvas, deferred, div, point, px, App, AppContext, Context, Entity, FocusHandle,
+    Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Render, ScrollWheelEvent, Styled, Window,
 };
+
+/// Draw order for the context-menu overlay. Deliberately far above any
+/// ordinary application UI so the menu — and, crucially, its event hitbox —
+/// sits on top of everything, even content painted outside the grid widget's
+/// own layout bounds (e.g. a host header above the grid). Deferred draws
+/// register their hitbox in a later pass, so this also fixes hover/click
+/// routing for menu items that visually overflow the grid area.
+const CONTEXT_MENU_PRIORITY: usize = 1_000_000;
 
 /// Top-level GPUI widget.
 pub struct SqllyDataTable {
@@ -206,76 +214,21 @@ impl Render for SqllyDataTable {
                 )
                 .h(px(status_h)),
             )
+            .children(render_context_menu_overlay(&self.state, cx))
             .on_mouse_down(
                 MouseButton::Left,
                 move |event: &MouseDownEvent, window, cx| {
                     window.focus(&focus_left);
                     state_mouse.update(cx, |s, cx| {
                         // Normalize the absolute window pointer into the grid's
-                        // own frame once, up front. Everything downstream —
-                        // menu hit-testing and `handle_mouse_down` — works in
-                        // grid-relative coordinates.
+                        // own frame. Menu hit-testing is handled by the deferred
+                        // overlay's own item handlers, so a left-click that
+                        // reaches the grid means the pointer was NOT on the menu;
+                        // dismiss any open menu and proceed with grid selection.
                         let rel = state_inner::to_grid_relative(event.position, s.bounds.origin);
-                        if let Some(menu) = s.context_menu.clone() {
-                            let cw = s.char_width;
-                            // Resolve the menu's on-screen position exactly as
-                            // paint does (window viewport, flip up / shift left)
-                            // so hit-testing matches what the user sees.
-                            let grid_ox = f32::from(s.bounds.origin.x);
-                            let grid_oy = f32::from(s.bounds.origin.y);
-                            let viewport = window.viewport_size();
-                            let vw = f32::from(viewport.width);
-                            let vh = f32::from(viewport.height);
-                            let resolved = menu.resolved_position(grid_ox, grid_oy, vw, vh, cw);
-                            let mx_rel = f32::from(rel.x);
-                            let my_rel = f32::from(rel.y);
-                            let w = menu.width_for(cw);
-                            let total_h = menu.total_height();
-                            let ax = f32::from(resolved.x);
-                            let ay = f32::from(resolved.y);
-                            if mx_rel >= ax
-                                && mx_rel <= ax + w
-                                && my_rel >= ay
-                                && my_rel <= ay + total_h
-                            {
-                                if let Some(action_idx) =
-                                    menu::hover_at_anchor(&menu, resolved, mx_rel, my_rel, cw)
-                                {
-                                    let mut cur = 0;
-                                    for item in &menu.items {
-                                        match item {
-                                            MenuItem::Action(a) => {
-                                                if cur == action_idx {
-                                                    s.pending_action = Some((*a, menu.col));
-                                                    s.context_menu = None;
-                                                    cx.notify();
-                                                    return;
-                                                }
-                                                cur += 1;
-                                            }
-                                            MenuItem::Custom { id, .. } => {
-                                                if cur == action_idx {
-                                                    if let Some(request) = &menu.request {
-                                                        s.pending_custom_context_menu_action =
-                                                            Some(PendingCustomContextMenuAction {
-                                                                id: id.clone(),
-                                                                request: request.clone(),
-                                                            });
-                                                    }
-                                                    s.context_menu = None;
-                                                    cx.notify();
-                                                    return;
-                                                }
-                                                cur += 1;
-                                            }
-                                            MenuItem::Separator => {}
-                                        }
-                                    }
-                                }
-                            } else {
-                                s.context_menu = None;
-                                s.filter_prompt = None;
-                            }
+                        if s.context_menu.is_some() {
+                            s.context_menu = None;
+                            s.filter_prompt = None;
                         }
                         s.handle_mouse_down(rel, event.modifiers.shift);
                         cx.notify();
@@ -394,4 +347,160 @@ impl Render for SqllyDataTable {
                 });
             })
     }
+}
+
+/// Build the context-menu overlay as a `deferred` + `anchored` element so it
+/// paints — and receives mouse events — on top of everything, including
+/// regions outside the grid widget's own layout bounds. Returns `None` when no
+/// menu is open.
+///
+/// Positioning reuses [`menu::ContextMenu::resolved_position`] (window-viewport
+/// aware: flips up when there's no room below, shifts left at the right edge),
+/// then converts to absolute window coordinates for `anchored().position(..)`.
+/// Each selectable row carries its own `on_mouse_down` (dispatch) and
+/// `on_mouse_move` (hover highlight) handlers; a full-screen backdrop behind
+/// the menu dismisses it on any outside click.
+fn render_context_menu_overlay(
+    state: &Entity<GridState>,
+    cx: &mut Context<SqllyDataTable>,
+) -> Option<impl IntoElement> {
+    let s = state.read(cx);
+    let menu = s.context_menu.clone()?;
+    let theme = s.theme.clone();
+    let cw = s.char_width;
+    let grid_ox = f32::from(s.bounds.origin.x);
+    let grid_oy = f32::from(s.bounds.origin.y);
+    let viewport = s.window_viewport;
+    let vw = f32::from(viewport.width);
+    let vh = f32::from(viewport.height);
+
+    let resolved = menu.resolved_position(grid_ox, grid_oy, vw, vh, cw);
+    let abs_x = grid_ox + f32::from(resolved.x);
+    let abs_y = grid_oy + f32::from(resolved.y);
+    let menu_w = menu.width_for(cw);
+
+    // Build one row per item. `selectable_idx` counts only Action/Custom items
+    // so it matches the `hovered` index convention used elsewhere.
+    let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(menu.items.len());
+    let mut selectable_idx = 0usize;
+    for item in &menu.items {
+        match item {
+            MenuItem::Separator => {
+                rows.push(
+                    div()
+                        .h(px(menu::MENU_ITEM_HEIGHT))
+                        .flex()
+                        .items_center()
+                        .child(div().mx(px(4.0)).h(px(1.0)).w_full().bg(theme.grid_line))
+                        .into_any_element(),
+                );
+            }
+            MenuItem::Action(_) | MenuItem::Custom { .. } => {
+                let this_idx = selectable_idx;
+                selectable_idx += 1;
+                let label = item.label().unwrap_or("").to_owned();
+                let hovered = menu.hovered == Some(this_idx);
+
+                // Dispatch: set the pending action and close the menu. The
+                // pending fields are drained at the top of `render` (they need
+                // App access for clipboard).
+                let action = match item {
+                    MenuItem::Action(a) => MenuDispatch::Builtin(*a, menu.col),
+                    MenuItem::Custom { id, .. } => {
+                        MenuDispatch::Custom(id.clone(), menu.request.clone())
+                    }
+                    MenuItem::Separator => unreachable!(),
+                };
+
+                let state_click = state.clone();
+                let state_hover = state.clone();
+                let mut row = div()
+                    .h(px(menu::MENU_ITEM_HEIGHT))
+                    .px(px(menu::MENU_PADDING_X))
+                    .flex()
+                    .items_center()
+                    .text_color(theme.menu_fg)
+                    .text_size(px(menu::MENU_FONT_SIZE))
+                    .child(label)
+                    .on_mouse_move(move |_e: &MouseMoveEvent, _window, cx| {
+                        state_hover.update(cx, |s, cx| {
+                            if let Some(m) = s.context_menu.as_mut() {
+                                if m.hovered != Some(this_idx) {
+                                    m.hovered = Some(this_idx);
+                                    cx.notify();
+                                }
+                            }
+                        });
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        move |_e: &MouseDownEvent, _window, cx| {
+                            state_click.update(cx, |s, cx| {
+                                match &action {
+                                    MenuDispatch::Builtin(a, col) => {
+                                        s.pending_action = Some((*a, *col));
+                                    }
+                                    MenuDispatch::Custom(id, request) => {
+                                        if let Some(request) = request {
+                                            s.pending_custom_context_menu_action =
+                                                Some(PendingCustomContextMenuAction {
+                                                    id: id.clone(),
+                                                    request: request.clone(),
+                                                });
+                                        }
+                                    }
+                                }
+                                s.context_menu = None;
+                                cx.notify();
+                            });
+                        },
+                    );
+                if hovered {
+                    row = row.bg(theme.menu_hover_bg);
+                }
+                rows.push(row.into_any_element());
+            }
+        }
+    }
+
+    let menu_body = div()
+        .absolute()
+        .flex()
+        .flex_col()
+        .w(px(menu_w))
+        .py(px(menu::MENU_INNER_PAD))
+        .bg(theme.menu_bg)
+        .border_1()
+        .border_color(theme.grid_line)
+        .children(rows);
+
+    // Full-window transparent backdrop: catches clicks outside the menu to
+    // dismiss it. Placed behind the menu within the same anchored overlay.
+    let state_backdrop = state.clone();
+    let overlay = deferred(anchored().position(point(px(abs_x), px(abs_y))).child(
+        div().occlude().child(menu_body).on_mouse_down_out(
+            move |_e: &MouseDownEvent, _window, cx| {
+                state_backdrop.update(cx, |s, cx| {
+                    if s.context_menu.is_some() {
+                        s.context_menu = None;
+                        s.filter_prompt = None;
+                        cx.notify();
+                    }
+                });
+            },
+        ),
+    ))
+    .with_priority(CONTEXT_MENU_PRIORITY);
+
+    Some(overlay)
+}
+
+/// What a menu row dispatches when clicked. Captured per-row so the click
+/// handler owns its data without borrowing the menu snapshot.
+enum MenuDispatch {
+    Builtin(menu::MenuAction, usize),
+    Custom(
+        String,
+        Option<crate::grid::context_menu::ContextMenuRequest>,
+    ),
 }

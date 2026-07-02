@@ -952,22 +952,11 @@ impl GridState {
             return;
         }
         self.last_mouse_pos = Some(pos);
-        if let Some(menu) = self.context_menu.clone() {
-            let cw = self.char_width;
-            // Resolve the menu's on-screen position (window viewport, flip up /
-            // shift left) so hover highlighting matches paint and click.
-            let grid_ox = f32::from(self.bounds.origin.x);
-            let grid_oy = f32::from(self.bounds.origin.y);
-            let vw = f32::from(self.window_viewport.width);
-            let vh = f32::from(self.window_viewport.height);
-            let resolved = menu.resolved_position(grid_ox, grid_oy, vw, vh, cw);
-            let x_rel = f32::from(pos.x);
-            let y_rel = f32::from(pos.y);
-            let hovered = menu_mod::hover_at_anchor(&menu, resolved, x_rel, y_rel, cw);
-            if let Some(menu_mut) = self.context_menu.as_mut() {
-                menu_mut.hovered = hovered;
-            }
-            self.hover_hit = Some(self.hit_test(pos));
+        if self.context_menu.is_some() {
+            // A menu is open. Hover highlighting is driven by the deferred
+            // overlay's per-item `on_mouse_move` handlers (widget.rs), which
+            // work even when the pointer is outside the grid's layout bounds.
+            // Don't run grid hit-testing or drag logic underneath the menu.
             return;
         }
         self.hover_hit = Some(self.hit_test(pos));

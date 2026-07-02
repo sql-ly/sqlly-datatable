@@ -1,4 +1,7 @@
-use gpui::{prelude::*, px, size, App, Bounds, ClipboardItem, WindowBounds, WindowOptions};
+use gpui::{
+    div, prelude::*, px, rgb, size, App, Bounds, ClipboardItem, Context, Entity, Window,
+    WindowBounds, WindowOptions,
+};
 use sqlly_datatable::{
     Column, ColumnKind, ColumnOverride, ContextMenuItem, ContextMenuProvider, ContextMenuRequest,
     GridConfig, GridData, GridState, NumberFormat, SqllyDataTable,
@@ -33,7 +36,8 @@ fn main() {
 
         let state = view.state.clone();
         match cx.open_window(options, move |_window, cx| {
-            cx.new(|_cx| SqllyDataTable::new(state.clone()))
+            let table = cx.new(|_cx| SqllyDataTable::new(state.clone()));
+            cx.new(|_cx| RootView { table })
         }) {
             Ok(window) => {
                 let _ = window.update(cx, |_view, window, _cx| {
@@ -50,6 +54,29 @@ fn main() {
             }
         }
     });
+}
+
+/// Root view that stacks a fixed 500px area above the data grid.
+struct RootView {
+    table: Entity<SqllyDataTable>,
+}
+
+impl Render for RootView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .child(
+                div()
+                    .h(px(500.0))
+                    .w_full()
+                    .flex_none()
+                    .bg(rgb(0x1e_1e_28))
+                    .child("500px area above the grid"),
+            )
+            .child(div().flex_1().min_h_0().child(self.table.clone()))
+    }
 }
 
 fn sample_config(data: &GridData) -> GridConfig {

@@ -8,7 +8,7 @@
 
 use crate::config::ResolvedColumnFormat;
 use crate::data::Column;
-use crate::grid::menu::{self, ContextMenu, MenuItem};
+use crate::grid::menu::{self};
 use crate::grid::selection::{
     is_cell_selected, is_column_selected, is_row_selected, HitResult, Selection, SortDirection,
 };
@@ -46,7 +46,6 @@ pub(crate) struct PaintData {
     pub(crate) char_width: f32,
     pub(crate) drag_rect: Option<(Point<Pixels>, Point<Pixels>)>,
     pub(crate) hover_hit: Option<HitResult>,
-    pub(crate) context_menu: Option<ContextMenu>,
     pub(crate) filter_prompt: Option<crate::grid::state::FilterPrompt>,
 }
 
@@ -73,7 +72,6 @@ impl PaintData {
             char_width: s.char_width,
             drag_rect: s.drag_screen_rect(),
             hover_hit: s.hover_hit,
-            context_menu: s.context_menu.clone(),
             filter_prompt: s.filter_prompt.clone(),
         }
     }
@@ -427,23 +425,10 @@ pub(crate) fn paint_grid(
 
     paint_scrollbars(data, window, ox, oy, sw, sh, theme);
 
-    if let Some(menu) = &data.context_menu {
-        paint_context_menu(
-            window,
-            cx,
-            menu,
-            ox,
-            oy,
-            sw,
-            sh,
-            fs,
-            cw,
-            theme,
-            &text_system,
-            font_size,
-            line_height,
-        );
-    }
+    // The context menu is no longer painted here. It is rendered as a
+    // `deferred` + `anchored` overlay in `widget.rs` so that it paints — and
+    // receives mouse events — on top of everything, including regions outside
+    // the grid widget's layout bounds (e.g. a host header above the grid).
     if let Some(prompt) = &data.filter_prompt {
         paint_filter_prompt(
             window,
@@ -464,114 +449,6 @@ pub(crate) fn paint_grid(
 
 fn text_w_approx(text: &str, char_width: f32) -> f32 {
     text.chars().count() as f32 * char_width
-}
-
-#[allow(clippy::too_many_arguments)]
-fn paint_context_menu(
-    window: &mut Window,
-    cx: &mut App,
-    menu: &ContextMenu,
-    ox: f32,
-    oy: f32,
-    sw: f32,
-    sh: f32,
-    fs: f32,
-    cw: f32,
-    theme: &GridTheme,
-    text_system: &WindowTextSystem,
-    font_size: Pixels,
-    line_height: Pixels,
-) {
-    use menu::{MENU_BORDER, MENU_FONT_SIZE, MENU_INNER_PAD, MENU_ITEM_HEIGHT, MENU_PADDING_X};
-    let item_h = MENU_ITEM_HEIGHT;
-    let pad_x = MENU_PADDING_X;
-    let mut max_label_w = 0.0_f32;
-    for item in &menu.items {
-        if let Some(text) = item.label() {
-            max_label_w = max_label_w.max(text.chars().count() as f32 * cw);
-        }
-    }
-    let menu_w = menu::MENU_MIN_WIDTH.max(max_label_w + pad_x * 2.0);
-    let total_h = menu.total_height();
-    // Resolve the menu position against the *window* viewport (not the grid
-    // area) so the menu is never clipped by the grid and flips up only when
-    // there is no room below it on-screen. The result is grid-relative; shift
-    // by the grid origin to reach absolute window space for painting.
-    let viewport = window.viewport_size();
-    let vw = f32::from(viewport.width);
-    let vh = f32::from(viewport.height);
-    let resolved = menu.resolved_position(ox, oy, vw, vh, cw);
-    let mx = ox + f32::from(resolved.x);
-    let my = oy + f32::from(resolved.y);
-    let _ = (sw, sh);
-    let _ = fs;
-    fill_quad(window, mx, my, menu_w, total_h, theme.menu_bg);
-    fill_quad(window, mx, my, menu_w, MENU_BORDER, theme.grid_line);
-    fill_quad(
-        window,
-        mx,
-        my + total_h - 1.0,
-        menu_w,
-        MENU_BORDER,
-        theme.grid_line,
-    );
-    fill_quad(window, mx, my, MENU_BORDER, total_h, theme.grid_line);
-    fill_quad(
-        window,
-        mx + menu_w - 1.0,
-        my,
-        MENU_BORDER,
-        total_h,
-        theme.grid_line,
-    );
-
-    let font = gpui::font("monospace");
-    let mk_run = |t: &str, color: Hsla| gpui::TextRun {
-        len: t.len(),
-        color,
-        font: font.clone(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    let _ = MENU_FONT_SIZE;
-    let mut cur = 0;
-    for (i, item) in menu.items.iter().enumerate() {
-        let iy = my + MENU_INNER_PAD + i as f32 * item_h;
-        match item {
-            MenuItem::Separator => {
-                let sep_y = iy + item_h * 0.5;
-                fill_quad(window, mx + 4.0, sep_y, menu_w - 8.0, 1.0, theme.grid_line);
-            }
-            MenuItem::Action(_) | MenuItem::Custom { .. } => {
-                let hovered = menu.hovered == Some(cur);
-                if hovered {
-                    fill_quad(
-                        window,
-                        mx + 2.0,
-                        iy,
-                        menu_w - 4.0,
-                        item_h,
-                        theme.menu_hover_bg,
-                    );
-                }
-                let label_text = item.label().unwrap_or("").to_owned();
-                let color = theme.menu_fg;
-                let run = mk_run(&label_text, color);
-                let shaped = text_system.shape_line(label_text.into(), font_size, &[run], None);
-                let _ = shaped.paint(
-                    Point {
-                        x: px(mx + pad_x),
-                        y: px(iy + (item_h - fs) * 0.5),
-                    },
-                    line_height,
-                    window,
-                    cx,
-                );
-                cur += 1;
-            }
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
