@@ -47,11 +47,11 @@ pub mod state_inner {
     /// | distance from edge | px/tick |  ~px/sec @ 60fps |
     /// |--------------------|---------|------------------|
     /// | > 90               | 0       | (no scroll)      |
-    /// | 60 ..= 90          | 0.25    | 16               |
-    /// | 30 ..= 60          | 0.5     | 31               |
-    /// | < 30               | 1       | 62 (really fast) |
-    /// | < 0 (past edge)    | 1       | (saturate)       |
-    const REALLY_FAST: f32 = 1.0;
+    /// | 60 ..= 90          | 4       | 250              |
+    /// | 30 ..= 60          | 8       | 500              |
+    /// | < 30               | 16      | 1000 (really fast)|
+    /// | < 0 (past edge)    | 16      | (saturate)       |
+    const REALLY_FAST: f32 = 16.0;
     pub fn edge_scroll_speed(dist_from_edge: f32) -> f32 {
         if dist_from_edge > 90.0 {
             return 0.0;
@@ -64,9 +64,9 @@ pub mod state_inner {
         if dist_from_edge < 30.0 {
             REALLY_FAST
         } else if dist_from_edge < 60.0 {
-            0.5
+            8.0
         } else {
-            0.25
+            4.0
         }
     }
 
@@ -224,6 +224,10 @@ pub struct GridState {
     /// context menu against the window edges so it is never clipped by the
     /// grid area and flips up only when there is no room below on-screen.
     pub(crate) window_viewport: Size<Pixels>,
+    /// `true` while a single edge-scroll timer task is running. Guards against
+    /// `render` spawning a new task on every frame/notify during a drag, which
+    /// would stack many concurrent 16 ms loops and multiply the scroll speed.
+    pub(crate) edge_scroll_active: bool,
 }
 
 /// Filter-prompt input. Cursor is tracked as a **char count**, not a byte
@@ -324,6 +328,7 @@ impl GridState {
             scrollbar_drag_start_offset: 0.0,
             scrollbar_drag_start_pos: 0.0,
             window_viewport: Size::default(),
+            edge_scroll_active: false,
         }
     }
 
@@ -1380,23 +1385,23 @@ mod tests {
         // Outside the 90 px trigger band: no scroll.
         assert_eq!(edge_scroll_speed(120.0), 0.0);
         assert_eq!(edge_scroll_speed(90.01), 0.0);
-        // 60 ..= 90 -> 0.25 px/tick (slowest band).
-        assert_eq!(edge_scroll_speed(90.0), 0.25);
-        assert_eq!(edge_scroll_speed(60.0), 0.25);
-        assert_eq!(edge_scroll_speed(59.99), 0.5);
-        // 30 ..= 60 -> 0.5 px/tick.
-        assert_eq!(edge_scroll_speed(30.0), 0.5);
-        assert_eq!(edge_scroll_speed(29.99), 1.0);
-        // < 30 -> 1 px/tick (really fast).
-        assert_eq!(edge_scroll_speed(0.0), 1.0);
-        assert_eq!(edge_scroll_speed(29.99), 1.0);
+        // 60 ..= 90 -> 4 px/tick (slowest band).
+        assert_eq!(edge_scroll_speed(90.0), 4.0);
+        assert_eq!(edge_scroll_speed(60.0), 4.0);
+        assert_eq!(edge_scroll_speed(59.99), 8.0);
+        // 30 ..= 60 -> 8 px/tick.
+        assert_eq!(edge_scroll_speed(30.0), 8.0);
+        assert_eq!(edge_scroll_speed(29.99), 16.0);
+        // < 30 -> 16 px/tick (really fast).
+        assert_eq!(edge_scroll_speed(0.0), 16.0);
+        assert_eq!(edge_scroll_speed(29.99), 16.0);
     }
 
     #[test]
     fn edge_scroll_speed_caps_negative_runaway() {
-        // Past the edge: saturate at the really-fast speed (1), not higher.
-        assert_eq!(edge_scroll_speed(-100.0), 1.0);
-        assert_eq!(edge_scroll_speed(-1000.0), 1.0);
+        // Past the edge: saturate at the really-fast speed (16), not higher.
+        assert_eq!(edge_scroll_speed(-100.0), 16.0);
+        assert_eq!(edge_scroll_speed(-1000.0), 16.0);
     }
 
     /// `GridState` requires a real GPUI `FocusHandle` from

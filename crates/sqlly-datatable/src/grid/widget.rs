@@ -134,21 +134,29 @@ impl Render for SqllyDataTable {
             });
         }
 
-        // Spawn an edge-scroll timer **only while a drag is in progress**.
-        // The task self-detaches when `wants_edge_scroll_tick` is false so it
-        // is no longer a 60 fps loop.
-        if self.state.read(cx).is_dragging {
+        // Spawn an edge-scroll timer **only while a drag is in progress**, and
+        // **only one at a time**. Without the `edge_scroll_active` guard,
+        // `render` would spawn a fresh 16 ms loop on every frame/notify during
+        // a drag — each successful tick calls `cx.notify()`, which re-renders
+        // and spawned yet another task, stacking concurrent loops that each
+        // apply a scroll delta per tick and multiply the effective speed
+        // without bound. The task clears the flag when it exits.
+        if self.state.read(cx).is_dragging && !self.state.read(cx).edge_scroll_active {
+            self.state.update(cx, |s, _cx| s.edge_scroll_active = true);
             let state_edge = self.state.clone();
-            cx.spawn(async move |_weak, cx| loop {
-                gpui::Timer::after(std::time::Duration::from_millis(EDGE_SCROLL_TICK_MS)).await;
-                let res = cx.update(|cx| state_edge.update(cx, |s, _cx| s.apply_edge_scroll()));
-                if let Ok(true) = res {
-                    let _ = state_edge.update(cx, |_s, cx| cx.notify());
+            cx.spawn(async move |_weak, cx| {
+                loop {
+                    gpui::Timer::after(std::time::Duration::from_millis(EDGE_SCROLL_TICK_MS)).await;
+                    let res = cx.update(|cx| state_edge.update(cx, |s, _cx| s.apply_edge_scroll()));
+                    if let Ok(true) = res {
+                        let _ = state_edge.update(cx, |_s, cx| cx.notify());
+                    }
+                    let dragging_res = cx.update(|cx| state_edge.read(cx).is_dragging);
+                    if !matches!(dragging_res, Ok(true)) {
+                        break;
+                    }
                 }
-                let dragging_res = cx.update(|cx| state_edge.read(cx).is_dragging);
-                if !matches!(dragging_res, Ok(true)) {
-                    break;
-                }
+                let _ = cx.update(|cx| state_edge.update(cx, |s, _cx| s.edge_scroll_active = false));
             })
             .detach();
         }
