@@ -358,14 +358,31 @@ pub(crate) fn paint_grid(
         );
         let btn_w = 20.0;
         let btn_x = x + w - btn_w;
-        let is_sorted = matches!(data.sort, Some((sc, _)) if sc == ci);
-        let btn_bg = if is_sorted {
-            hsla_const(0.58, 0.30, 0.70, 0.50)
-        } else {
-            hsla_const(0.0, 0.0, 0.88, 1.0)
-        };
-        fill_quad(window, btn_x, oy + 4.0, btn_w, hdr_h - 8.0, btn_bg);
-        fill_quad(window, btn_x, oy + 4.0, 1.0, hdr_h - 8.0, theme.grid_line);
+        // The sort button shares the column header's background color, set off
+        // from the header only by a 1px outline drawn around it.
+        let btn_bg = theme.header_bg;
+        let btn_y = oy + 4.0;
+        let btn_h = hdr_h - 8.0;
+        fill_quad(window, btn_x, btn_y, btn_w, btn_h, btn_bg);
+        // 1px outline around the button (top, bottom, left, right edges).
+        fill_quad(window, btn_x, btn_y, btn_w, 1.0, theme.grid_line);
+        fill_quad(
+            window,
+            btn_x,
+            btn_y + btn_h - 1.0,
+            btn_w,
+            1.0,
+            theme.grid_line,
+        );
+        fill_quad(window, btn_x, btn_y, 1.0, btn_h, theme.grid_line);
+        fill_quad(
+            window,
+            btn_x + btn_w - 1.0,
+            btn_y,
+            1.0,
+            btn_h,
+            theme.grid_line,
+        );
         let (ind, ind_color) = match data.sort {
             Some((sc, SortDirection::Ascending)) if sc == ci => ("^", theme.sort_indicator),
             Some((sc, SortDirection::Descending)) if sc == ci => ("v", theme.sort_indicator),

@@ -31,13 +31,25 @@ const CONTEXT_MENU_PRIORITY: usize = 1_000_000;
 /// Top-level GPUI widget.
 pub struct SqllyDataTable {
     pub state: Entity<GridState>,
+    /// When `true`, the grid swaps between the built-in light/dark
+    /// [`GridTheme`] palettes to follow the OS window appearance. Disabled
+    /// automatically when the caller supplies an explicit theme override.
+    follow_system_appearance: bool,
+    /// Retained appearance-observer subscription. Registered lazily on the
+    /// first render (that is where a `Window` is available); dropping it would
+    /// unregister the observer, so it is stored for the widget's lifetime.
+    appearance_subscription: Option<gpui::Subscription>,
 }
 
 impl SqllyDataTable {
     /// Wrap an existing `Entity<GridState>`.
     #[must_use]
     pub fn new(state: Entity<GridState>) -> Self {
-        Self { state }
+        Self {
+            state,
+            follow_system_appearance: true,
+            appearance_subscription: None,
+        }
     }
 
     /// Construct from `GridData` using the default [`GridConfig`].
@@ -47,6 +59,7 @@ impl SqllyDataTable {
             data,
             config: GridConfig::default(),
             context_menu_provider: None,
+            theme: None,
         }
     }
 }
@@ -56,6 +69,7 @@ pub struct SqllyDataTableBuilder {
     data: GridData,
     config: GridConfig,
     context_menu_provider: Option<ContextMenuProviderHandle>,
+    theme: Option<GridTheme>,
 }
 
 impl SqllyDataTableBuilder {
@@ -66,10 +80,11 @@ impl SqllyDataTableBuilder {
         self
     }
 
-    /// Override only the [`GridTheme`]. No-op for now; kept for symmetry.
+    /// Override the [`GridTheme`]. Supplying an explicit theme opts out of the
+    /// automatic OS light/dark following; the grid uses exactly this theme.
     #[must_use]
-    pub fn theme(self, theme: GridTheme) -> Self {
-        let _ = theme;
+    pub fn theme(mut self, theme: GridTheme) -> Self {
+        self.theme = Some(theme);
         self
     }
 
@@ -89,12 +104,21 @@ impl SqllyDataTableBuilder {
     pub fn build(self, cx: &mut App) -> SqllyDataTable {
         let focus = cx.focus_handle();
         let provider = self.context_menu_provider;
+        let theme_override = self.theme;
+        let follow_system_appearance = theme_override.is_none();
         let state = cx.new(|_cx| {
             let mut s = GridState::new(self.data, self.config, focus.clone());
             s.context_menu_provider = provider;
+            if let Some(theme) = theme_override {
+                s.theme = theme;
+            }
             s
         });
-        SqllyDataTable { state }
+        SqllyDataTable {
+            state,
+            follow_system_appearance,
+            appearance_subscription: None,
+        }
     }
 }
 
@@ -105,7 +129,25 @@ impl Focusable for SqllyDataTable {
 }
 
 impl Render for SqllyDataTable {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        // Follow the OS light/dark appearance: set the initial theme from the
+        // current window appearance and register a one-time observer that
+        // swaps the grid theme whenever the system appearance changes. Skipped
+        // when the caller supplied an explicit theme override.
+        if self.follow_system_appearance && self.appearance_subscription.is_none() {
+            let initial = GridTheme::for_appearance(window.appearance());
+            self.state.update(cx, |s, _cx| s.theme = initial);
+            let state_appearance = self.state.clone();
+            self.appearance_subscription =
+                Some(window.observe_window_appearance(move |window, cx| {
+                    let theme = GridTheme::for_appearance(window.appearance());
+                    state_appearance.update(cx, |s, cx| {
+                        s.theme = theme;
+                        cx.notify();
+                    });
+                }));
+        }
+
         let state_canvas = self.state.clone();
         let state_status = self.state.clone();
         let state_mouse = self.state.clone();

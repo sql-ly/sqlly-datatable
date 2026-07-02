@@ -2,7 +2,7 @@
 //! white; downstream code that wants a dark mode or accent palette can
 //! construct a custom theme and pass it on the [`crate::grid::GridState`].
 
-use gpui::Hsla;
+use gpui::{Hsla, WindowAppearance};
 
 #[derive(Clone, Debug)]
 pub struct GridTheme {
@@ -54,6 +54,50 @@ fn hsla(h: f32, s: f32, l: f32, a: f32) -> Hsla {
     Hsla { h, s, l, a }
 }
 
+impl GridTheme {
+    /// The light palette. Identical to [`GridTheme::default`]; provided as a
+    /// named constructor so callers can be explicit about intent.
+    #[must_use]
+    pub fn light() -> Self {
+        Self::default()
+    }
+
+    /// A dark palette tuned to pair with the light one: light text on dark
+    /// surfaces, matching accent hue (0.58) for selection/sort/menu-hover.
+    #[must_use]
+    pub fn dark() -> Self {
+        Self {
+            bg: hsla(0.0, 0.0, 0.12, 1.0),
+            header_bg: hsla(0.0, 0.0, 0.18, 1.0),
+            filter_bg: hsla(0.0, 0.0, 0.15, 1.0),
+            filter_active_bg: hsla(0.58, 0.40, 0.30, 1.0),
+            row_header_bg: hsla(0.0, 0.0, 0.16, 1.0),
+            selection_bg: hsla(0.58, 0.50, 0.45, 0.50),
+            alt_row_bg: hsla(0.0, 0.0, 0.15, 1.0),
+            grid_line: hsla(0.0, 0.0, 0.28, 1.0),
+            header_fg: hsla(0.0, 0.0, 0.80, 1.0),
+            text_fg: hsla(0.0, 0.0, 0.90, 1.0),
+            negative_fg: hsla(0.0, 0.70, 0.62, 1.0),
+            sort_indicator: hsla(0.58, 0.60, 0.68, 1.0),
+            filter_cursor: hsla(0.0, 0.0, 0.90, 1.0),
+            menu_bg: hsla(0.0, 0.0, 0.16, 1.0),
+            menu_hover_bg: hsla(0.58, 0.45, 0.38, 1.0),
+            menu_fg: hsla(0.0, 0.0, 0.90, 1.0),
+        }
+    }
+
+    /// Pick the palette that matches the OS window appearance. `Dark` and
+    /// `VibrantDark` resolve to [`GridTheme::dark`]; everything else to
+    /// [`GridTheme::light`].
+    #[must_use]
+    pub fn for_appearance(appearance: WindowAppearance) -> Self {
+        match appearance {
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::dark(),
+            WindowAppearance::Light | WindowAppearance::VibrantLight => Self::light(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,6 +121,52 @@ mod tests {
         assert_ne!(
             t.menu_fg, t.menu_bg,
             "menu label color must contrast with the menu background"
+        );
+    }
+
+    /// `light()` must equal the default palette, and `dark()` must be a
+    /// genuinely different, legible palette (dark surface, light text). This
+    /// guards the OS light/dark following.
+    #[test]
+    fn light_matches_default_and_dark_differs() {
+        assert_eq!(
+            GridTheme::light().bg,
+            GridTheme::default().bg,
+            "light() must alias the default palette"
+        );
+        let dark = GridTheme::dark();
+        assert_ne!(dark.bg, GridTheme::light().bg, "dark bg must differ");
+        // Dark surface should be darker than its text (light-on-dark).
+        assert!(
+            dark.bg.l < dark.text_fg.l,
+            "dark theme must be light text on a dark surface"
+        );
+        assert_eq!(dark.menu_bg.a, 1.0, "dark menu background must be opaque");
+        assert_ne!(
+            dark.menu_hover_bg, dark.menu_bg,
+            "dark menu hover fill must differ from the menu background"
+        );
+    }
+
+    /// `for_appearance` must map the two dark variants to the dark palette and
+    /// the two light variants to the light palette.
+    #[test]
+    fn for_appearance_maps_dark_and_light_variants() {
+        assert_eq!(
+            GridTheme::for_appearance(WindowAppearance::Dark).bg,
+            GridTheme::dark().bg
+        );
+        assert_eq!(
+            GridTheme::for_appearance(WindowAppearance::VibrantDark).bg,
+            GridTheme::dark().bg
+        );
+        assert_eq!(
+            GridTheme::for_appearance(WindowAppearance::Light).bg,
+            GridTheme::light().bg
+        );
+        assert_eq!(
+            GridTheme::for_appearance(WindowAppearance::VibrantLight).bg,
+            GridTheme::light().bg
         );
     }
 }
