@@ -156,7 +156,8 @@ impl Render for SqllyDataTable {
                         break;
                     }
                 }
-                let _ = cx.update(|cx| state_edge.update(cx, |s, _cx| s.edge_scroll_active = false));
+                let _ =
+                    cx.update(|cx| state_edge.update(cx, |s, _cx| s.edge_scroll_active = false));
             })
             .detach();
         }
@@ -225,8 +226,7 @@ impl Render for SqllyDataTable {
                             let viewport = window.viewport_size();
                             let vw = f32::from(viewport.width);
                             let vh = f32::from(viewport.height);
-                            let resolved =
-                                menu.resolved_position(grid_ox, grid_oy, vw, vh, cw);
+                            let resolved = menu.resolved_position(grid_ox, grid_oy, vw, vh, cw);
                             let mx_rel = f32::from(rel.x);
                             let my_rel = f32::from(rel.y);
                             let w = menu.width_for(cw);

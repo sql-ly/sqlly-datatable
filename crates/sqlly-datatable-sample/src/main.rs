@@ -205,28 +205,23 @@ impl ContextMenuProvider for SampleMenuProvider {
             ));
             items.push(ContextMenuItem::action(
                 "copy-row-csv",
-                format!(
-                    "Copy row as CSV ({} fields)",
-                    row.columns.len()
-                ),
+                format!("Copy row as CSV ({} fields)", row.columns.len()),
             ));
-            items.push(ContextMenuItem::action(
-                "copy-row-json",
-                "Copy row as JSON",
-            ));
+            items.push(ContextMenuItem::action("copy-row-json", "Copy row as JSON"));
             items.push(ContextMenuItem::action(
                 "row-cell-count",
-                format!("Row {} has {} cells", row.display_row_index, row.values.len()),
+                format!(
+                    "Row {} has {} cells",
+                    row.display_row_index,
+                    row.values.len()
+                ),
             ));
             items.push(ContextMenuItem::action(
                 "row-source-index",
                 format!("Source row index: {}", row.source_row_index),
             ));
             // --- 10 additional row items ---
-            items.push(ContextMenuItem::action(
-                "copy-row-tsv",
-                "Copy row as TSV",
-            ));
+            items.push(ContextMenuItem::action("copy-row-tsv", "Copy row as TSV"));
             items.push(ContextMenuItem::action(
                 "copy-row-keys",
                 format!("Copy column names ({})", row.columns.len()),
@@ -303,7 +298,10 @@ impl ContextMenuProvider for SampleMenuProvider {
             ));
             items.push(ContextMenuItem::action(
                 "copy-cell-coord",
-                format!("Copy coord (r{}, c{})", cell.display_row_index, cell.column_index),
+                format!(
+                    "Copy coord (r{}, c{})",
+                    cell.display_row_index, cell.column_index
+                ),
             ));
             items.push(ContextMenuItem::action(
                 "copy-cell-json",
@@ -464,7 +462,14 @@ impl ContextMenuProvider for SampleMenuProvider {
                 // Diagnostic items: reflect the clicked row's metadata.
                 request
                     .clicked_row()
-                    .map(|r| format!("row={} source={} cells={}", r.display_row_index, r.source_row_index, r.values.len()))
+                    .map(|r| {
+                        format!(
+                            "row={} source={} cells={}",
+                            r.display_row_index,
+                            r.source_row_index,
+                            r.values.len()
+                        )
+                    })
                     .unwrap_or_default()
             }
             "copy-cell" => request
@@ -473,7 +478,12 @@ impl ContextMenuProvider for SampleMenuProvider {
                 .unwrap_or_default(),
             "cell-location" => request
                 .clicked_cell()
-                .map(|c| format!("col={} ({}) row={}", c.column_index, c.column_name, c.display_row_index))
+                .map(|c| {
+                    format!(
+                        "col={} ({}) row={}",
+                        c.column_index, c.column_name, c.display_row_index
+                    )
+                })
                 .unwrap_or_default(),
             "copy-selection" => request
                 .selected_cells()
