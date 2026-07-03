@@ -16,6 +16,7 @@ use crate::config::{GridConfig, ResolvedColumnFormat};
 use gpui::{
     px, App, Bounds, FocusHandle, Keystroke, MouseButton, Pixels, Point, ScrollHandle, Size,
 };
+use std::sync::Arc;
 
 // Pull selection / menu types into scope unqualified for this module's impl.
 use crate::grid::menu as menu_mod;
@@ -184,7 +185,11 @@ pub struct GridState {
     /// `config`. Paint, copy, and filter read this directly instead of
     /// recomputing per cell.
     pub resolved_formats: Vec<ResolvedColumnFormat>,
-    pub display_indices: Vec<usize>,
+    /// Arc-wrapped row data so `PaintData::from_state` can clone cheaply
+    /// (O(1)) instead of deep-cloning every cell every frame. Rows are
+    /// immutable after `GridState::new`, so the Arc never needs rebuilding.
+    pub(crate) data_rows: Arc<Vec<Vec<CellValue>>>,
+    pub display_indices: Arc<Vec<usize>>,
     pub selection: Selection,
     /// Fixed corner of a keyboard/shift range selection (row, col). Set when a
     /// single cell is selected; held steady while shift+arrow moves the active
@@ -444,8 +449,8 @@ impl FilterPanel {
     }
 
     /// Indices into [`Self::distinct`] whose label matches the current search
-    /// box (case-insensitive substring). Drives both the rendered checklist
-    /// and the "(Select All)" toggle scope.
+    /// box (case-insensitive substring). Drives only which rows are rendered
+    /// in the checklist; it does not affect the "(Select All)" state.
     #[must_use]
     pub fn visible_indices(&self) -> Vec<usize> {
         let needle = self.search.value.to_lowercase();
@@ -457,11 +462,12 @@ impl FilterPanel {
             .collect()
     }
 
-    /// `true` when every currently visible value row is checked.
+    /// `true` when every distinct value row is checked. Deliberately
+    /// independent of the search box: typing in the search only narrows which
+    /// rows are *displayed*, it must never change the "(Select All)" state.
     #[must_use]
-    pub fn all_visible_checked(&self) -> bool {
-        let visible = self.visible_indices();
-        !visible.is_empty() && visible.iter().all(|&i| self.distinct[i].checked)
+    pub fn all_checked(&self) -> bool {
+        !self.distinct.is_empty() && self.distinct.iter().all(|r| r.checked)
     }
 
     /// Build the committed [`ColumnFilter`] from the working state. Returns an
@@ -595,11 +601,13 @@ impl GridState {
     pub fn new(data: GridData, config: GridConfig, focus_handle: FocusHandle) -> Self {
         let resolved_formats = config.resolve_all(&data.columns);
         let col_count = data.columns.len();
-        let display_indices = (0..data.rows.len()).collect();
+        let display_indices = Arc::new((0..data.rows.len()).collect::<Vec<_>>());
+        let data_rows = Arc::new(data.rows.clone());
         Self {
             data,
             config,
             resolved_formats,
+            data_rows,
             display_indices,
             selection: Selection::None,
             range_anchor: None,
@@ -683,7 +691,7 @@ impl GridState {
                 }
             });
         }
-        self.display_indices = indices;
+        self.display_indices = Arc::new(indices);
     }
 
     fn content_size(&self) -> (f32, f32) {
@@ -957,6 +965,12 @@ impl GridState {
     /// Build an owned snapshot of the right-click context. All indices are
     /// clamped to current display/column counts; empty data produces empty
     /// vectors, never panics.
+    ///
+    /// For column-oriented targets (`ColumnHeader`, `SortButton`, or an
+    /// explicit `Selection::Column`), `selected_rows` is intentionally left
+    /// empty: such a right-click selects a column, `clicked_row()` is `None`,
+    /// and cloning a full-row snapshot per row would be O(rows x cols).
+    /// Consumers should read the column's values from `selected_cells`.
     pub(crate) fn build_context_menu_request(
         &self,
         target: ContextMenuTarget,
@@ -1021,6 +1035,18 @@ impl GridState {
         let mut selected_cells = Vec::new();
         let mut selected_rows = Vec::new();
 
+        // A column-oriented right-click (column header, sort button, or an
+        // explicit whole-column selection) selects cells within one column,
+        // not whole rows. `clicked_row()` is always `None` for these targets,
+        // so materializing a full-row snapshot for every row is both
+        // semantically meaningless and, on large datasets, the dominant cost
+        // (O(rows x cols) clones). Skip `selected_rows` in that case and let
+        // consumers use `selected_cells` for the column's values.
+        let column_oriented = matches!(
+            target,
+            ContextMenuTarget::ColumnHeader { .. } | ContextMenuTarget::SortButton { .. }
+        ) || matches!(selection, Selection::Column(_));
+
         for dr in r1..=r2 {
             if nrows == 0 || dr >= nrows {
                 break;
@@ -1032,12 +1058,14 @@ impl GridState {
                 continue;
             };
 
-            selected_rows.push(SelectedRowContext {
-                display_row_index: dr,
-                source_row_index: source_row,
-                values: row_values.clone(),
-                columns: column_contexts.clone(),
-            });
+            if !column_oriented {
+                selected_rows.push(SelectedRowContext {
+                    display_row_index: dr,
+                    source_row_index: source_row,
+                    values: row_values.clone(),
+                    columns: column_contexts.clone(),
+                });
+            }
 
             for c in c1..=c2 {
                 if ncols == 0 || c >= ncols {
@@ -1146,14 +1174,21 @@ impl GridState {
     /// context-menu / header right-click position so the panel doesn't jump to
     /// the mouse's current location (which by now has moved to the menu item).
     /// Falls back to `last_mouse_pos` when `None`.
-    pub fn open_filter_panel(&mut self, col: usize, anchor: Option<Point<Pixels>>) {
+    pub fn open_filter_panel(&mut self, col: usize, _anchor: Option<Point<Pixels>>) {
         if col >= self.data.columns.len() {
             return;
         }
-        let anchor = anchor.unwrap_or(self.last_mouse_pos.unwrap_or(Point {
-            x: px(0.0),
+        let sx = f32::from(self.scroll_handle.offset().x);
+        let col_x = self.row_header_width
+            + self.data.columns[..col]
+                .iter()
+                .map(|c| c.width)
+                .sum::<f32>()
+            - sx;
+        let anchor = Point {
+            x: px(col_x + self.data.columns[col].width * 0.5),
             y: px(0.0),
-        }));
+        };
         let kind = self.data.columns[col].kind;
         let existing = self.filters.get(col).cloned().unwrap_or_default();
 
@@ -1268,15 +1303,15 @@ impl GridState {
         self.maybe_auto_apply();
     }
 
-    /// Toggle every currently visible (search-filtered) value row at once,
-    /// then auto-apply if enabled. Mirrors the "(Select All)" checkbox.
+    /// Toggle every distinct value row at once, then auto-apply if enabled.
+    /// Mirrors the "(Select All)" checkbox. Operates on all values regardless
+    /// of the active search, so searching never changes what "(Select All)"
+    /// does.
     pub fn toggle_filter_select_all(&mut self) {
         if let Some(panel) = &mut self.filter_panel {
-            let target = !panel.all_visible_checked();
-            for i in panel.visible_indices() {
-                if let Some(row) = panel.distinct.get_mut(i) {
-                    row.checked = target;
-                }
+            let target = !panel.all_checked();
+            for row in &mut panel.distinct {
+                row.checked = target;
             }
         }
         self.maybe_auto_apply();
@@ -1320,7 +1355,7 @@ impl GridState {
     fn column_text(&self, col: usize) -> String {
         let mut text = String::new();
         let fmt = &self.resolved_formats[col];
-        for &row_idx in &self.display_indices {
+        for &row_idx in self.display_indices.iter() {
             let cell = &self.data.rows[row_idx][col];
             let (s, _) = format_cell(cell, fmt);
             text.push_str(&s);
@@ -1957,14 +1992,14 @@ mod tests {
             };
             state.toggle_sort(0);
             state.recompute();
-            assert_eq!(state.display_indices, vec![0, 2]);
+            assert_eq!(state.display_indices.as_slice(), &[0, 2]);
             state.toggle_sort(0);
             state.recompute();
-            assert_eq!(state.display_indices, vec![2, 0]);
+            assert_eq!(state.display_indices.as_slice(), &[2, 0]);
             state.filters[0] = ColumnFilter::default();
             state.toggle_sort(0);
             state.recompute();
-            assert_eq!(state.display_indices, vec![0, 1, 2]);
+            assert_eq!(state.display_indices.as_slice(), &[0, 1, 2]);
 
             // toggle_sort_cycles_through_three_states
             let mut state = GridState::new(
@@ -2078,7 +2113,7 @@ mod tests {
             // Sort descending on column 0: display order is [2, 1, 0].
             state.sort = Some((0, SortDirection::Descending));
             state.recompute();
-            assert_eq!(state.display_indices, vec![2, 1, 0]);
+            assert_eq!(state.display_indices.as_slice(), &[2, 1, 0]);
 
             // Cell target at display row 0 -> source row 2.
             let target = ContextMenuTarget::Cell {
@@ -2126,11 +2161,13 @@ mod tests {
             assert_eq!(req.selected_rows[0].values.len(), 2);
             assert_eq!(req.selected_cells.len(), 6); // 3 rows x 2 cols
 
-            // Column selection (all display rows, column 0).
+            // Column selection (all display rows, column 0). Column-oriented
+            // targets do not populate `selected_rows` (see doc comment); the
+            // column's values are exposed via `selected_cells`.
             let target = ContextMenuTarget::ColumnHeader { column_index: 0 };
             let sel = Selection::Column(0);
             let req = state.build_context_menu_request(target, &sel);
-            assert_eq!(req.selected_rows.len(), 3);
+            assert!(req.selected_rows.is_empty());
             assert_eq!(req.selected_cells.len(), 3); // 3 rows x 1 col
 
             // Empty data — no panic, empty vectors.
@@ -2480,7 +2517,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_panel_all_visible_checked_reflects_search() {
+    fn filter_panel_all_checked_ignores_search() {
         let mut panel = FilterPanel {
             col: 0,
             anchor: Point {
@@ -2510,14 +2547,22 @@ mod tests {
                 },
             ],
         };
+        // Even though the search "al" hides beta (unchecked), "(Select All)"
+        // reflects the GLOBAL checked state, so it must be false.
         assert!(
-            panel.all_visible_checked(),
-            "alpha+gamma checked, beta hidden by search"
+            !panel.all_checked(),
+            "beta is unchecked, so not all values are checked (search is irrelevant)"
         );
 
-        // Uncheck alpha — now not all visible are checked.
-        panel.distinct[0].checked = false;
-        assert!(!panel.all_visible_checked());
+        // A search that matches nothing must not flip "(Select All)".
+        panel.search = TextInput::new("zzz".into());
+        for row in &mut panel.distinct {
+            row.checked = true;
+        }
+        assert!(
+            panel.all_checked(),
+            "all values checked -> Select All stays checked regardless of empty search"
+        );
     }
 
     #[allow(clippy::expect_used, clippy::unwrap_used)]
@@ -2561,16 +2606,16 @@ mod tests {
             state.toggle_filter_value(1);
             state.apply_filter_panel();
             assert_eq!(
-                state.display_indices,
-                vec![0, 2],
+                state.display_indices.as_slice(),
+                &[0, 2],
                 "beta should be filtered out"
             );
 
             // Clear the filter panel.
             state.clear_filter_panel();
             assert_eq!(
-                state.display_indices,
-                vec![0, 1, 2],
+                state.display_indices.as_slice(),
+                &[0, 1, 2],
                 "all rows visible after clear"
             );
             assert!(
@@ -2585,14 +2630,14 @@ mod tests {
             panel.operand_a = TextInput::new("a".into());
             state.apply_filter_panel();
             assert_eq!(
-                state.display_indices,
-                vec![0, 2],
+                state.display_indices.as_slice(),
+                &[0, 2],
                 "contains 'a' matches alpha and gamma"
             );
 
             // Clear and verify restored.
             state.clear_filter_panel();
-            assert_eq!(state.display_indices, vec![0, 1, 2]);
+            assert_eq!(state.display_indices.as_slice(), &[0, 1, 2]);
 
             cx.quit();
         });

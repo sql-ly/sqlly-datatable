@@ -143,7 +143,7 @@ fn sample_data() -> GridData {
         columns.push(Column::new(format!("field_{i:02}"), kind, width));
     }
 
-    // Deterministic pseudo-random generator — enough variety across 2000 rows
+    // Deterministic pseudo-random generator — enough variety across 100k rows
     // without pulling in the `rand` crate.
     let mut rng = Lcg::new(0x0123_4567_89AB_CDEF);
     let narratives = [
@@ -155,8 +155,8 @@ fn sample_data() -> GridData {
         "interés",
     ];
 
-    let mut rows = Vec::with_capacity(2000);
-    for r in 0..2000 {
+    let mut rows = Vec::with_capacity(100_000);
+    for r in 0..100_000 {
         let mut row = Vec::with_capacity(40);
         row.push(Decimal(rng.next_f64() * 20_000.0));
         row.push(Integer((r % 5) as i64 + 1));

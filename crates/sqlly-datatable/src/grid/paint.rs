@@ -16,6 +16,7 @@ use crate::grid::state::{state_inner, GridState, SCROLLBAR_SIZE};
 use crate::grid::theme::GridTheme;
 
 use gpui::{point, px, size, App, Bounds, CursorStyle, Hsla, PaintQuad, Pixels, Point, Window};
+use std::sync::Arc;
 
 const SCROLLBAR_THUMB_COLOR: Hsla = hsla_const(0.0, 0.0, 0.55, 1.0);
 
@@ -25,13 +26,13 @@ const fn hsla_const(h: f32, s: f32, l: f32, a: f32) -> Hsla {
 
 #[derive(Clone)]
 pub(crate) struct PaintData {
-    pub(crate) display_indices: Vec<usize>,
+    pub(crate) display_indices: Arc<Vec<usize>>,
     pub(crate) selection: Selection,
     pub(crate) sort: Option<(usize, SortDirection)>,
     pub(crate) theme: GridTheme,
     pub(crate) columns: Vec<Column>,
     pub(crate) resolved_formats: Vec<ResolvedColumnFormat>,
-    pub(crate) rows: Vec<Vec<crate::data::CellValue>>,
+    pub(crate) rows: Arc<Vec<Vec<crate::data::CellValue>>>,
     pub(crate) filters_active: Vec<bool>,
     pub(crate) scroll_offset: Point<Pixels>,
     pub(crate) row_height: f32,
@@ -46,17 +47,13 @@ pub(crate) struct PaintData {
 impl PaintData {
     pub(crate) fn from_state(s: &GridState) -> Self {
         Self {
-            display_indices: s.display_indices.clone(),
+            display_indices: Arc::clone(&s.display_indices),
             selection: s.selection.clone(),
             sort: s.sort,
             theme: s.theme.clone(),
             columns: s.data.columns.clone(),
             resolved_formats: s.resolved_formats.clone(),
-            // NOTE: cloning the entire row set is the dominant frame cost for
-            // large datasets. A future iteration can replace this with a
-            // shared Arc<GridData> plus per-frame Arc clones; the cached
-            // `resolved_formats` already remove the resolve_churn hotspot.
-            rows: s.data.rows.clone(),
+            rows: Arc::clone(&s.data_rows),
             filters_active: s.filters.iter().map(|f| f.is_active()).collect(),
             scroll_offset: s.scroll_handle.offset(),
             row_height: s.row_height,

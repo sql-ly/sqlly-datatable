@@ -145,6 +145,12 @@ impl SelectedRowContext {
 /// `source_`. The `selected_cells` and `selected_rows` vectors contain one
 /// entry per cell/row in the effective selection; for large selections this
 /// clones owned data.
+///
+/// For column-oriented targets (`ColumnHeader`, `SortButton`, or a
+/// `Selection::Column`), `selected_rows` is left empty — a column right-click
+/// is column-oriented (`clicked_row()` is `None`), so the column's values are
+/// exposed through `selected_cells` and full per-row snapshots are skipped to
+/// avoid O(rows x cols) cloning on large datasets.
 #[derive(Clone, Debug)]
 pub struct ContextMenuRequest {
     pub target: ContextMenuTarget,

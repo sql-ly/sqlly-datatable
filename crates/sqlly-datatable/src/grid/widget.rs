@@ -15,9 +15,9 @@ use crate::grid::theme::GridTheme;
 use crate::grid::{menu, HitResult, MenuItem, SortDirection};
 
 use gpui::{
-    anchored, canvas, deferred, div, point, px, App, AppContext, Context, Entity, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Render, ScrollWheelEvent,
+    anchored, canvas, deferred, div, point, px, App, AppContext, Context, Corner, Entity,
+    FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, ScrollWheelEvent,
     StatefulInteractiveElement, Styled, Window,
 };
 
@@ -808,7 +808,7 @@ fn render_filter_panel_overlay(
         .items_center()
         .gap(px(6.0))
         .cursor_pointer()
-        .child(checkbox(panel.all_visible_checked()))
+        .child(checkbox(panel.all_checked()))
         .child("(Select All)")
         .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
             st_all.update(cx, |s, cx| {
@@ -935,18 +935,21 @@ fn render_filter_panel_overlay(
         .child(buttons_row);
 
     let st_backdrop = state.clone();
-    let overlay = deferred(anchored().position(point(px(abs_x), px(abs_y))).child(
-        div().occlude().child(panel_body).on_mouse_down_out(
-            move |_e: &MouseDownEvent, _window, cx| {
-                st_backdrop.update(cx, |s, cx| {
-                    if s.filter_panel.is_some() {
-                        s.filter_panel = None;
-                        cx.notify();
-                    }
-                });
-            },
-        ),
-    ))
+    let overlay = deferred(
+        anchored()
+            .anchor(Corner::BottomLeft)
+            .position(point(px(abs_x), px(abs_y)))
+            .child(div().occlude().child(panel_body).on_mouse_down_out(
+                move |_e: &MouseDownEvent, _window, cx| {
+                    st_backdrop.update(cx, |s, cx| {
+                        if s.filter_panel.is_some() {
+                            s.filter_panel = None;
+                            cx.notify();
+                        }
+                    });
+                },
+            )),
+    )
     .with_priority(CONTEXT_MENU_PRIORITY);
 
     Some(overlay)
