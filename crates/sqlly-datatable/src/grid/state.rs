@@ -28,8 +28,7 @@ use crate::grid::selection::{
 
 use crate::grid::context_menu::{
     ColumnContext, ContextMenuItem, ContextMenuProviderHandle, ContextMenuRequest,
-    ContextMenuSelection, ContextMenuTarget, PendingCustomContextMenuAction, SelectedCellContext,
-    SelectedRowContext,
+    ContextMenuSelection, ContextMenuTarget, PendingCustomContextMenuAction,
 };
 
 /// Inline constructor / state mutators used by the widget's render loop.
@@ -242,6 +241,30 @@ pub struct GridState {
     /// `render` spawning a new task on every frame/notify during a drag, which
     /// would stack many concurrent 16 ms loops and multiply the scroll speed.
     pub(crate) edge_scroll_active: bool,
+    /// Shared, immutable column metadata (index/name/kind) built once in
+    /// `new()`. Cloned (O(1)) into every [`ContextMenuRequest`] so building a
+    /// right-click request never walks the columns.
+    pub(crate) column_meta: Arc<[ColumnContext]>,
+    /// Weak handle to this state's own entity, set in
+    /// [`SqllyDataTableBuilder::build`]. Lets [`GridState::spawn_background`]
+    /// deliver results back to `self` from an async task.
+    pub(crate) self_weak: Option<gpui::WeakEntity<GridState>>,
+    /// When `Some`, a background task is in progress and the widget paints a
+    /// loading overlay. Set by [`GridState::spawn_background`] /
+    /// [`GridState::set_busy`]; cleared on completion.
+    pub(crate) busy: Option<BusyState>,
+}
+
+/// State backing the built-in loading overlay shown while a background task
+/// runs. Construct indirectly via [`GridState::spawn_background`] or set
+/// directly with [`GridState::set_busy`].
+#[derive(Clone, Debug)]
+pub struct BusyState {
+    /// Text shown in the overlay (e.g. `"Exporting…"`).
+    pub label: String,
+    /// Optional determinate progress in `0.0..=1.0`. `None` renders an
+    /// indeterminate animated bar.
+    pub progress: Option<f32>,
 }
 
 /// A minimal single-line text input with a **char-based** cursor (not a byte
@@ -603,6 +626,16 @@ impl GridState {
         let col_count = data.columns.len();
         let display_indices = Arc::new((0..data.rows.len()).collect::<Vec<_>>());
         let data_rows = Arc::new(data.rows.clone());
+        let column_meta: Arc<[ColumnContext]> = data
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(index, col)| ColumnContext {
+                index,
+                name: col.name.clone(),
+                kind: col.kind,
+            })
+            .collect();
         Self {
             data,
             config,
@@ -646,6 +679,9 @@ impl GridState {
             scrollbar_drag_start_pos: 0.0,
             window_viewport: Size::default(),
             edge_scroll_active: false,
+            column_meta,
+            self_weak: None,
+            busy: None,
         }
     }
 
@@ -660,6 +696,100 @@ impl GridState {
     /// offset, and hovered cell coordinates.
     pub fn set_debug_bar_enabled(&mut self, enabled: bool) {
         self.debug_bar_enabled = enabled;
+    }
+
+    /// Whether a background task is currently running (the loading overlay is
+    /// shown).
+    #[must_use]
+    pub fn is_busy(&self) -> bool {
+        self.busy.is_some()
+    }
+
+    /// The current busy state, if any.
+    #[must_use]
+    pub fn busy(&self) -> Option<&BusyState> {
+        self.busy.as_ref()
+    }
+
+    /// Show the loading overlay with the given label and indeterminate
+    /// progress. Call [`GridState::clear_busy`] to hide it. For work that
+    /// should run off the UI thread, prefer [`GridState::spawn_background`],
+    /// which manages this automatically.
+    pub fn set_busy(&mut self, label: impl Into<String>) {
+        self.busy = Some(BusyState {
+            label: label.into(),
+            progress: None,
+        });
+    }
+
+    /// Update the determinate progress (`0.0..=1.0`) of the current busy
+    /// state. No-op if not busy.
+    pub fn set_busy_progress(&mut self, progress: f32) {
+        if let Some(b) = self.busy.as_mut() {
+            b.progress = Some(progress.clamp(0.0, 1.0));
+        }
+    }
+
+    /// Hide the loading overlay.
+    pub fn clear_busy(&mut self) {
+        self.busy = None;
+    }
+
+    /// Run `work` on a background thread, showing the loading overlay labelled
+    /// `label` for the duration, then deliver the result back on the UI thread
+    /// via `on_done` (which receives `&mut GridState` and `&mut App`).
+    ///
+    /// This is the recommended way to do expensive work triggered from a
+    /// context-menu action (e.g. building an export from a large selection):
+    /// the right-click stays instant, the work does not block the UI, and a
+    /// loading indicator is shown until it completes.
+    ///
+    /// `work` and its result `R` must be `Send + 'static`; `on_done` runs on
+    /// the UI thread and need not be `Send`. A cloned [`ContextMenuRequest`]
+    /// can be moved into `work` (it is `Send + Sync + 'static`).
+    ///
+    /// If this state has no entity handle yet (constructed via
+    /// [`GridState::new`] directly, e.g. in tests rather than through the
+    /// builder), `work` runs synchronously as a fallback.
+    pub fn spawn_background<R, W, D>(
+        &mut self,
+        cx: &mut App,
+        label: impl Into<String>,
+        work: W,
+        on_done: D,
+    ) where
+        R: Send + 'static,
+        W: FnOnce() -> R + Send + 'static,
+        D: FnOnce(R, &mut GridState, &mut App) + 'static,
+    {
+        let Some(weak) = self.self_weak.clone() else {
+            // No entity handle: run synchronously so the callback still fires.
+            let result = work();
+            on_done(result, self, cx);
+            return;
+        };
+
+        self.busy = Some(BusyState {
+            label: label.into(),
+            progress: None,
+        });
+
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |cx| {
+            // Paint the overlay before starting the heavy work.
+            let _ = cx.update(|app| {
+                let _ = weak.update(app, |_s, c| c.notify());
+            });
+            let result = background.spawn(async move { work() }).await;
+            let _ = cx.update(|app| {
+                let _ = weak.update(app, |s, c| {
+                    s.busy = None;
+                    on_done(result, s, c);
+                    c.notify();
+                });
+            });
+        })
+        .detach();
     }
 
     fn rebuild_resolved_formats(&mut self) {
@@ -962,15 +1092,17 @@ impl GridState {
         }
     }
 
-    /// Build an owned snapshot of the right-click context. All indices are
-    /// clamped to current display/column counts; empty data produces empty
-    /// vectors, never panics.
+    /// Build a **lazy** snapshot of the right-click context. Construction is
+    /// O(1): it clamps the selection bounds and clones three shared [`Arc`]
+    /// handles (row data, display order, column metadata). No per-cell or
+    /// per-row data is cloned here, so right-clicking a huge selection is
+    /// instant; the owned snapshots are materialized on demand by
+    /// [`ContextMenuRequest`]'s accessors (ideally off the UI thread via
+    /// [`GridState::spawn_background`]).
     ///
     /// For column-oriented targets (`ColumnHeader`, `SortButton`, or an
-    /// explicit `Selection::Column`), `selected_rows` is intentionally left
-    /// empty: such a right-click selects a column, `clicked_row()` is `None`,
-    /// and cloning a full-row snapshot per row would be O(rows x cols).
-    /// Consumers should read the column's values from `selected_cells`.
+    /// explicit `Selection::Column`), the request is flagged column-oriented so
+    /// its row accessors stay empty (`clicked_row()` is `None`).
     pub(crate) fn build_context_menu_request(
         &self,
         target: ContextMenuTarget,
@@ -1020,75 +1152,23 @@ impl GridState {
             column_end: c2,
         };
 
-        let column_contexts: Vec<ColumnContext> = self
-            .data
-            .columns
-            .iter()
-            .enumerate()
-            .map(|(i, c)| ColumnContext {
-                index: i,
-                name: c.name.clone(),
-                kind: c.kind,
-            })
-            .collect();
-
-        let mut selected_cells = Vec::new();
-        let mut selected_rows = Vec::new();
-
         // A column-oriented right-click (column header, sort button, or an
         // explicit whole-column selection) selects cells within one column,
         // not whole rows. `clicked_row()` is always `None` for these targets,
-        // so materializing a full-row snapshot for every row is both
-        // semantically meaningless and, on large datasets, the dominant cost
-        // (O(rows x cols) clones). Skip `selected_rows` in that case and let
-        // consumers use `selected_cells` for the column's values.
+        // so the request's row accessors stay empty.
         let column_oriented = matches!(
             target,
             ContextMenuTarget::ColumnHeader { .. } | ContextMenuTarget::SortButton { .. }
         ) || matches!(selection, Selection::Column(_));
 
-        for dr in r1..=r2 {
-            if nrows == 0 || dr >= nrows {
-                break;
-            }
-            let Some(source_row) = self.display_indices.get(dr).copied() else {
-                continue;
-            };
-            let Some(row_values) = self.data.rows.get(source_row) else {
-                continue;
-            };
-
-            if !column_oriented {
-                selected_rows.push(SelectedRowContext {
-                    display_row_index: dr,
-                    source_row_index: source_row,
-                    values: row_values.clone(),
-                    columns: column_contexts.clone(),
-                });
-            }
-
-            for c in c1..=c2 {
-                if ncols == 0 || c >= ncols {
-                    break;
-                }
-                if let (Some(col), Some(value)) = (self.data.columns.get(c), row_values.get(c)) {
-                    selected_cells.push(SelectedCellContext {
-                        display_row_index: dr,
-                        source_row_index: source_row,
-                        column_index: c,
-                        column_name: col.name.clone(),
-                        value: value.clone(),
-                    });
-                }
-            }
-        }
-
-        ContextMenuRequest {
+        ContextMenuRequest::new(
             target,
-            selection: Some(menu_selection),
-            selected_cells,
-            selected_rows,
-        }
+            Some(menu_selection),
+            Arc::clone(&self.data_rows),
+            Arc::clone(&self.display_indices),
+            Arc::clone(&self.column_meta),
+            column_oriented,
+        )
     }
 
     /// Execute a deferred custom context-menu action by invoking the
@@ -2124,16 +2204,15 @@ mod tests {
             let sel = Selection::Cell(0, 1);
             let req = state.build_context_menu_request(target, &sel);
             assert_eq!(req.target.column_index(), Some(1));
-            assert_eq!(req.selected_cells.len(), 1);
-            assert_eq!(req.selected_cells[0].source_row_index, 2);
-            assert_eq!(req.selected_cells[0].column_name, "name");
-            assert_eq!(req.selected_cells[0].value, CellValue::Text("gamma".into()));
-            assert_eq!(req.selected_rows.len(), 1);
-            assert_eq!(req.selected_rows[0].source_row_index, 2);
-            assert_eq!(
-                req.selected_rows[0].value_by_name("id"),
-                Some(&CellValue::Integer(3))
-            );
+            let cells = req.selected_cells();
+            assert_eq!(cells.len(), 1);
+            assert_eq!(cells[0].source_row_index, 2);
+            assert_eq!(cells[0].column_name, "name");
+            assert_eq!(cells[0].value, CellValue::Text("gamma".into()));
+            let rows = req.selected_rows();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].source_row_index, 2);
+            assert_eq!(rows[0].value_by_name("id"), Some(&CellValue::Integer(3)));
 
             // Cell-range selection (display rows 0-1, cols 0-1).
             let target = ContextMenuTarget::Cell {
@@ -2143,11 +2222,12 @@ mod tests {
             };
             let sel = Selection::CellRange(0, 0, 1, 1);
             let req = state.build_context_menu_request(target, &sel);
-            assert_eq!(req.selected_cells.len(), 4); // 2 rows x 2 cols
-            assert_eq!(req.selected_rows.len(), 2);
+            assert_eq!(req.selected_cell_count(), 4); // 2 rows x 2 cols
+            let rows = req.selected_rows();
+            assert_eq!(rows.len(), 2);
             // Display row 0 -> source 2, display row 1 -> source 1.
-            assert_eq!(req.selected_rows[0].source_row_index, 2);
-            assert_eq!(req.selected_rows[1].source_row_index, 1);
+            assert_eq!(rows[0].source_row_index, 2);
+            assert_eq!(rows[1].source_row_index, 1);
 
             // Row-range selection (display rows 0-2).
             let target = ContextMenuTarget::RowHeader {
@@ -2156,10 +2236,11 @@ mod tests {
             };
             let sel = Selection::RowRange(0, 2);
             let req = state.build_context_menu_request(target, &sel);
-            assert_eq!(req.selected_rows.len(), 3);
+            let rows = req.selected_rows();
+            assert_eq!(rows.len(), 3);
             // Each row should have all column values.
-            assert_eq!(req.selected_rows[0].values.len(), 2);
-            assert_eq!(req.selected_cells.len(), 6); // 3 rows x 2 cols
+            assert_eq!(rows[0].values.len(), 2);
+            assert_eq!(req.selected_cell_count(), 6); // 3 rows x 2 cols
 
             // Column selection (all display rows, column 0). Column-oriented
             // targets do not populate `selected_rows` (see doc comment); the
@@ -2167,8 +2248,10 @@ mod tests {
             let target = ContextMenuTarget::ColumnHeader { column_index: 0 };
             let sel = Selection::Column(0);
             let req = state.build_context_menu_request(target, &sel);
-            assert!(req.selected_rows.is_empty());
-            assert_eq!(req.selected_cells.len(), 3); // 3 rows x 1 col
+            assert!(req.is_column_oriented());
+            assert_eq!(req.selected_row_count(), 0);
+            assert!(req.selected_rows().is_empty());
+            assert_eq!(req.selected_cells().len(), 3); // 3 rows x 1 col
 
             // Empty data — no panic, empty vectors.
             let empty_state = GridState::new(
@@ -2183,8 +2266,8 @@ mod tests {
                 column_index: 0,
             };
             let req = empty_state.build_context_menu_request(target, &Selection::None);
-            assert!(req.selected_cells.is_empty());
-            assert!(req.selected_rows.is_empty());
+            assert!(req.selected_cells().is_empty());
+            assert!(req.selected_rows().is_empty());
 
             cx.quit();
         });

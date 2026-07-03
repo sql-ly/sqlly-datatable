@@ -15,10 +15,11 @@ use crate::grid::theme::GridTheme;
 use crate::grid::{menu, HitResult, MenuItem, SortDirection};
 
 use gpui::{
-    anchored, canvas, deferred, div, point, px, App, AppContext, Context, Corner, Entity,
-    FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, ScrollWheelEvent,
-    StatefulInteractiveElement, Styled, Window,
+    anchored, canvas, deferred, div, hsla, point, pulsating_between, px, relative, Animation,
+    AnimationExt, App, AppContext, Context, Corner, Entity, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Render, ScrollWheelEvent, StatefulInteractiveElement, Styled,
+    Window,
 };
 
 /// Draw order for the context-menu overlay. Deliberately far above any
@@ -119,10 +120,11 @@ impl SqllyDataTableBuilder {
         let theme_override = self.theme;
         let debug_bar = self.debug_bar;
         let follow_system_appearance = theme_override.is_none();
-        let state = cx.new(|_cx| {
+        let state = cx.new(|cx| {
             let mut s = GridState::new(self.data, self.config, focus.clone());
             s.context_menu_provider = provider;
             s.debug_bar_enabled = debug_bar;
+            s.self_weak = Some(cx.weak_entity());
             if let Some(theme) = theme_override {
                 s.theme = theme;
             }
@@ -231,6 +233,7 @@ impl Render for SqllyDataTable {
             .flex()
             .flex_col()
             .size_full()
+            .relative()
             .track_focus(&focus_handle)
             .bg(bg)
             .child(
@@ -273,11 +276,17 @@ impl Render for SqllyDataTable {
             }))
             .children(render_context_menu_overlay(&self.state, cx))
             .children(render_filter_panel_overlay(&self.state, cx))
+            .children(render_busy_overlay(&self.state, cx))
             .on_mouse_down(
                 MouseButton::Left,
                 move |event: &MouseDownEvent, window, cx| {
                     window.focus(&focus_left);
                     state_mouse.update(cx, |s, cx| {
+                        // Ignore grid input while a background task is running;
+                        // the busy overlay is shown and occludes interaction.
+                        if s.busy.is_some() {
+                            return;
+                        }
                         // Normalize the absolute window pointer into the grid's
                         // own frame. Menu hit-testing is handled by the deferred
                         // overlay's own item handlers, so a left-click that
@@ -298,6 +307,9 @@ impl Render for SqllyDataTable {
                 move |event: &MouseDownEvent, window, cx| {
                     window.focus(&focus_right);
                     state_right.update(cx, |s, cx| {
+                        if s.busy.is_some() {
+                            return;
+                        }
                         let pos = state_inner::to_grid_relative(event.position, s.bounds.origin);
                         let hit = s.hit_test(pos);
 
@@ -951,6 +963,85 @@ fn render_filter_panel_overlay(
             )),
     )
     .with_priority(CONTEXT_MENU_PRIORITY);
+
+    Some(overlay)
+}
+
+/// Renders the loading overlay while a background task runs. Returns `None`
+/// when the grid is not busy. Painted as an absolute, input-occluding scrim
+/// over the whole grid area with a centered card showing the task label and a
+/// progress bar (determinate when progress is known, otherwise an animated
+/// indeterminate bar).
+fn render_busy_overlay(
+    state: &Entity<GridState>,
+    cx: &mut Context<SqllyDataTable>,
+) -> Option<impl IntoElement> {
+    let s = state.read(cx);
+    let busy = s.busy.clone()?;
+    let theme = s.theme.clone();
+    let track = theme.grid_line;
+    let accent = theme.sort_indicator;
+
+    let bar: gpui::AnyElement = if let Some(p) = busy.progress {
+        let p = p.clamp(0.0, 1.0);
+        div()
+            .h_full()
+            .w(relative(p))
+            .rounded(px(3.0))
+            .bg(accent)
+            .into_any_element()
+    } else {
+        div()
+            .h_full()
+            .w(relative(0.3))
+            .rounded(px(3.0))
+            .bg(accent)
+            .with_animation(
+                "busy-indeterminate",
+                Animation::new(std::time::Duration::from_millis(900))
+                    .repeat()
+                    .with_easing(pulsating_between(0.15, 0.85)),
+                |el, delta| el.w(relative(delta)),
+            )
+            .into_any_element()
+    };
+
+    let card = div()
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .p(px(16.0))
+        .min_w(px(220.0))
+        .rounded(px(8.0))
+        .bg(theme.menu_bg)
+        .border_1()
+        .border_color(theme.grid_line)
+        .child(
+            div()
+                .text_color(theme.menu_fg)
+                .text_size(px(14.0))
+                .child(busy.label.clone()),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(6.0))
+                .rounded(px(3.0))
+                .bg(track)
+                .child(bar),
+        );
+
+    let overlay = div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .occlude()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(hsla(0.0, 0.0, 0.0, 0.35))
+        .child(card);
 
     Some(overlay)
 }

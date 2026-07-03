@@ -355,18 +355,18 @@ impl ContextMenuProvider for SampleMenuProvider {
             ));
         }
 
-        if !request.selected_cells().is_empty() {
+        if request.selected_cell_count() > 0 {
             items.push(ContextMenuItem::separator());
             items.push(ContextMenuItem::action(
                 "copy-selection",
-                format!("Copy {} selected cell(s)", request.selected_cells().len()),
+                format!("Copy {} selected cell(s)", request.selected_cell_count()),
             ));
             items.push(ContextMenuItem::action(
                 "selection-summary",
                 format!(
                     "Selection spans {} row(s) × {} col(s)",
-                    request.selected_rows().len(),
-                    request.selected_cells().len()
+                    request.selected_row_count(),
+                    request.selected_cell_count()
                 ),
             ));
             // --- 10 additional selection items ---
@@ -396,11 +396,11 @@ impl ContextMenuProvider for SampleMenuProvider {
             ));
             items.push(ContextMenuItem::action(
                 "selection-cell-count",
-                format!("Selected cells: {}", request.selected_cells().len()),
+                format!("Selected cells: {}", request.selected_cell_count()),
             ));
             items.push(ContextMenuItem::action(
                 "selection-row-count",
-                format!("Selected rows: {}", request.selected_rows().len()),
+                format!("Selected rows: {}", request.selected_row_count()),
             ));
             items.push(ContextMenuItem::action(
                 "selection-distinct-columns",
@@ -433,19 +433,39 @@ impl ContextMenuProvider for SampleMenuProvider {
         &self,
         action_id: &str,
         request: &ContextMenuRequest,
-        _state: &mut GridState,
+        state: &mut GridState,
         cx: &mut App,
     ) {
+        // Heavy export runs off the main thread so the UI stays responsive and
+        // a loading indicator is shown while the CSV is assembled.
+        if action_id == "copy-selection-csv" {
+            let req = request.clone();
+            state.spawn_background(
+                cx,
+                "Exporting selection to CSV…",
+                move || {
+                    use std::fmt::Write as _;
+                    let mut out = String::new();
+                    req.for_each_selected_cell(|c| {
+                        let _ = writeln!(out, "{},{:?}", c.column_name, c.value);
+                    });
+                    out
+                },
+                |csv, _s, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(csv));
+                },
+            );
+            return;
+        }
+
         let text = match action_id {
             "copy-narrative" => request
                 .clicked_row()
-                .and_then(|r| r.value_by_name("narrative"))
-                .map(|v| format!("{v:?}"))
+                .and_then(|r| r.value_by_name("narrative").map(|v| format!("{v:?}")))
                 .unwrap_or_default(),
             "copy-amount" => request
                 .clicked_row()
-                .and_then(|r| r.value_by_name("amount"))
-                .map(|v| format!("{v:?}"))
+                .and_then(|r| r.value_by_name("amount").map(|v| format!("{v:?}")))
                 .unwrap_or_default(),
             "copy-row" => request
                 .clicked_row()
@@ -705,12 +725,6 @@ impl ContextMenuProvider for SampleMenuProvider {
                     .join(", ");
                 format!("[ {pairs} ]")
             }
-            "copy-selection-csv" => request
-                .selected_cells()
-                .iter()
-                .map(|c| format!("{},{:?}", c.column_name, c.value))
-                .collect::<Vec<_>>()
-                .join("\n"),
             "selection-numeric-sum" => {
                 sum_numeric(request.selected_cells().iter().map(|c| &c.value)).to_string()
             }
@@ -729,11 +743,8 @@ impl ContextMenuProvider for SampleMenuProvider {
             "selection-cell-count" => request.selected_cells().len().to_string(),
             "selection-row-count" => request.selected_rows().len().to_string(),
             "selection-distinct-columns" => {
-                let mut names: Vec<&str> = request
-                    .selected_cells()
-                    .iter()
-                    .map(|c| c.column_name.as_str())
-                    .collect();
+                let cells = request.selected_cells();
+                let mut names: Vec<&str> = cells.iter().map(|c| c.column_name.as_str()).collect();
                 names.sort_unstable();
                 names.dedup();
                 names.join(", ")

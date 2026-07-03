@@ -139,63 +139,220 @@ impl SelectedRowContext {
     }
 }
 
-/// Owned snapshot of the right-click context, captured at menu-open time.
+/// Lazy snapshot of the right-click context, captured at menu-open time.
+///
+/// Construction is O(1): the request holds shared ([`Arc`]) handles to the
+/// grid's row data, display order, and column metadata plus the normalized
+/// selection bounds. **No per-cell or per-row data is cloned when the menu
+/// opens**, so right-clicking a huge selection is instant.
+///
+/// The owned per-cell / per-row snapshots are materialized on demand:
+/// - [`clicked_cell`](Self::clicked_cell) / [`clicked_row`](Self::clicked_row)
+///   are cheap (a single cell / row).
+/// - [`for_each_selected_cell`](Self::for_each_selected_cell) /
+///   [`for_each_selected_row`](Self::for_each_selected_row) stream the
+///   selection without allocating a big intermediate `Vec` — prefer these in
+///   background work (e.g. building an export).
+/// - [`selected_cells`](Self::selected_cells) /
+///   [`selected_rows`](Self::selected_rows) collect into a `Vec` for
+///   convenience; these clone O(cells)/O(rows x cols) owned data and should
+///   be called off the UI thread for large selections (see
+///   [`GridState::spawn_background`](crate::grid::GridState::spawn_background)).
 ///
 /// All indices are display indices (post sort/filter) unless prefixed with
-/// `source_`. The `selected_cells` and `selected_rows` vectors contain one
-/// entry per cell/row in the effective selection; for large selections this
-/// clones owned data.
+/// `source_`.
 ///
 /// For column-oriented targets (`ColumnHeader`, `SortButton`, or a
-/// `Selection::Column`), `selected_rows` is left empty — a column right-click
-/// is column-oriented (`clicked_row()` is `None`), so the column's values are
-/// exposed through `selected_cells` and full per-row snapshots are skipped to
-/// avoid O(rows x cols) cloning on large datasets.
-#[derive(Clone, Debug)]
+/// `Selection::Column`), the row accessors are empty — a column right-click is
+/// column-oriented (`clicked_row()` is `None`), so the column's values are
+/// exposed through the cell accessors and full per-row snapshots are skipped.
+///
+/// The type is `Send + Sync + 'static` (it holds only `Arc`s and `Copy`
+/// bounds), so a clone can be moved into a background task.
+#[derive(Clone)]
 pub struct ContextMenuRequest {
     pub target: ContextMenuTarget,
     pub selection: Option<ContextMenuSelection>,
-    pub selected_cells: Vec<SelectedCellContext>,
-    pub selected_rows: Vec<SelectedRowContext>,
+    rows: Arc<Vec<Vec<CellValue>>>,
+    display_indices: Arc<Vec<usize>>,
+    columns: Arc<[ColumnContext]>,
+    column_oriented: bool,
+}
+
+impl fmt::Debug for ContextMenuRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextMenuRequest")
+            .field("target", &self.target)
+            .field("selection", &self.selection)
+            .field("column_oriented", &self.column_oriented)
+            .field("selected_cell_count", &self.selected_cell_count())
+            .field("selected_row_count", &self.selected_row_count())
+            .finish_non_exhaustive()
+    }
 }
 
 impl ContextMenuRequest {
+    /// Construct a lazy request. Internal: the widget builds this at
+    /// menu-open time from the grid's shared state.
+    pub(crate) fn new(
+        target: ContextMenuTarget,
+        selection: Option<ContextMenuSelection>,
+        rows: Arc<Vec<Vec<CellValue>>>,
+        display_indices: Arc<Vec<usize>>,
+        columns: Arc<[ColumnContext]>,
+        column_oriented: bool,
+    ) -> Self {
+        Self {
+            target,
+            selection,
+            rows,
+            display_indices,
+            columns,
+            column_oriented,
+        }
+    }
+
+    /// The inclusive selection bounds as `(row_start, col_start, row_end,
+    /// col_end)` in display/column space, or `None` when there is no
+    /// selection.
+    fn bounds(&self) -> Option<(usize, usize, usize, usize)> {
+        self.selection.as_ref().map(|s| {
+            (
+                s.row_start,
+                s.column_start,
+                s.row_end.min(self.display_indices.len().saturating_sub(1)),
+                s.column_end.min(self.columns.len().saturating_sub(1)),
+            )
+        })
+    }
+
+    /// Build the [`SelectedCellContext`] at a given display row / column,
+    /// resolving the source row through the display order. `None` if out of
+    /// bounds.
+    fn cell_at(&self, display_row: usize, column: usize) -> Option<SelectedCellContext> {
+        let &source_row_index = self.display_indices.get(display_row)?;
+        let value = self.rows.get(source_row_index)?.get(column)?.clone();
+        let col = self.columns.get(column)?;
+        Some(SelectedCellContext {
+            display_row_index: display_row,
+            source_row_index,
+            column_index: column,
+            column_name: col.name.clone(),
+            value,
+        })
+    }
+
+    /// Build the [`SelectedRowContext`] for a given display row. `None` if out
+    /// of bounds.
+    fn row_at(&self, display_row: usize) -> Option<SelectedRowContext> {
+        let &source_row_index = self.display_indices.get(display_row)?;
+        let values = self.rows.get(source_row_index)?.clone();
+        Some(SelectedRowContext {
+            display_row_index: display_row,
+            source_row_index,
+            values,
+            columns: self.columns.to_vec(),
+        })
+    }
+
     /// The specific cell under the cursor when the menu opened, if the
-    /// right-click landed on a data cell.
+    /// right-click landed on a data cell. Cheap (clones one cell).
     #[must_use]
-    pub fn clicked_cell(&self) -> Option<&SelectedCellContext> {
-        match &self.target {
+    pub fn clicked_cell(&self) -> Option<SelectedCellContext> {
+        match self.target {
             ContextMenuTarget::Cell {
                 display_row_index,
                 column_index,
                 ..
-            } => self.selected_cells.iter().find(|c| {
-                c.display_row_index == *display_row_index && c.column_index == *column_index
-            }),
+            } => self.cell_at(display_row_index, column_index),
             _ => None,
         }
     }
 
     /// The row under the cursor when the menu opened, if the right-click
-    /// landed on a cell or row header.
+    /// landed on a cell or row header. Cheap (clones one row).
     #[must_use]
-    pub fn clicked_row(&self) -> Option<&SelectedRowContext> {
+    pub fn clicked_row(&self) -> Option<SelectedRowContext> {
         let row = self.target.display_row_index()?;
-        self.selected_rows
-            .iter()
-            .find(|r| r.display_row_index == row)
+        self.row_at(row)
     }
 
-    /// All selected cells in the effective selection.
+    /// Number of cells in the effective selection. O(1) — computed from the
+    /// selection bounds without materializing anything.
     #[must_use]
-    pub fn selected_cells(&self) -> &[SelectedCellContext] {
-        &self.selected_cells
+    pub fn selected_cell_count(&self) -> usize {
+        self.bounds()
+            .map_or(0, |(r1, c1, r2, c2)| (r2 - r1 + 1) * (c2 - c1 + 1))
     }
 
-    /// All selected rows in the effective selection.
+    /// Number of rows in the effective selection. `0` for column-oriented
+    /// targets. O(1).
     #[must_use]
-    pub fn selected_rows(&self) -> &[SelectedRowContext] {
-        &self.selected_rows
+    pub fn selected_row_count(&self) -> usize {
+        if self.column_oriented {
+            return 0;
+        }
+        self.bounds().map_or(0, |(r1, _, r2, _)| r2 - r1 + 1)
+    }
+
+    /// Whether this request is column-oriented (a column-header/sort-button
+    /// right-click or a `Selection::Column`), in which case the row accessors
+    /// are empty.
+    #[must_use]
+    pub fn is_column_oriented(&self) -> bool {
+        self.column_oriented
+    }
+
+    /// Stream every selected cell without allocating an intermediate `Vec`.
+    /// Prefer this in background work.
+    pub fn for_each_selected_cell(&self, mut f: impl FnMut(SelectedCellContext)) {
+        let Some((r1, c1, r2, c2)) = self.bounds() else {
+            return;
+        };
+        for dr in r1..=r2 {
+            for c in c1..=c2 {
+                if let Some(cell) = self.cell_at(dr, c) {
+                    f(cell);
+                }
+            }
+        }
+    }
+
+    /// Stream every selected row without allocating an intermediate `Vec`.
+    /// Yields nothing for column-oriented targets. Prefer this in background
+    /// work.
+    pub fn for_each_selected_row(&self, mut f: impl FnMut(SelectedRowContext)) {
+        if self.column_oriented {
+            return;
+        }
+        let Some((r1, _, r2, _)) = self.bounds() else {
+            return;
+        };
+        for dr in r1..=r2 {
+            if let Some(r) = self.row_at(dr) {
+                f(r);
+            }
+        }
+    }
+
+    /// All selected cells in the effective selection, materialized into a
+    /// `Vec`. Clones O(cells) owned data — call off the UI thread for large
+    /// selections.
+    #[must_use]
+    pub fn selected_cells(&self) -> Vec<SelectedCellContext> {
+        let mut out = Vec::with_capacity(self.selected_cell_count());
+        self.for_each_selected_cell(|c| out.push(c));
+        out
+    }
+
+    /// All selected rows in the effective selection, materialized into a
+    /// `Vec` (empty for column-oriented targets). Clones O(rows x cols) owned
+    /// data — call off the UI thread for large selections.
+    #[must_use]
+    pub fn selected_rows(&self) -> Vec<SelectedRowContext> {
+        let mut out = Vec::with_capacity(self.selected_row_count());
+        self.for_each_selected_row(|r| out.push(r));
+        out
     }
 }
 
@@ -452,33 +609,51 @@ mod tests {
         ));
     }
 
+    fn cols() -> Arc<[ColumnContext]> {
+        Arc::from(vec![
+            ColumnContext {
+                index: 0,
+                name: "a".into(),
+                kind: ColumnKind::Integer,
+            },
+            ColumnContext {
+                index: 1,
+                name: "b".into(),
+                kind: ColumnKind::Text,
+            },
+        ])
+    }
+
+    fn sel(r1: usize, c1: usize, r2: usize, c2: usize) -> ContextMenuSelection {
+        ContextMenuSelection {
+            row_start: r1,
+            row_end: r2,
+            column_start: c1,
+            column_end: c2,
+        }
+    }
+
     #[test]
     fn clicked_cell_finds_target_cell() {
-        let request = ContextMenuRequest {
-            target: ContextMenuTarget::Cell {
+        let rows = Arc::new(vec![
+            vec![CellValue::Integer(1), CellValue::Text("x".into())],
+            vec![CellValue::Integer(2), CellValue::Text("y".into())],
+            vec![CellValue::Integer(3), CellValue::Text("z".into())],
+        ]);
+        // display order maps display row 1 -> source row 2
+        let display = Arc::new(vec![0usize, 2usize]);
+        let request = ContextMenuRequest::new(
+            ContextMenuTarget::Cell {
                 display_row_index: 1,
                 source_row_index: 2,
                 column_index: 0,
             },
-            selection: None,
-            selected_cells: vec![
-                SelectedCellContext {
-                    display_row_index: 0,
-                    source_row_index: 0,
-                    column_index: 0,
-                    column_name: "a".into(),
-                    value: CellValue::Integer(1),
-                },
-                SelectedCellContext {
-                    display_row_index: 1,
-                    source_row_index: 2,
-                    column_index: 0,
-                    column_name: "a".into(),
-                    value: CellValue::Integer(3),
-                },
-            ],
-            selected_rows: vec![],
-        };
+            Some(sel(0, 0, 1, 1)),
+            rows,
+            display,
+            cols(),
+            false,
+        );
         let clicked = request.clicked_cell().unwrap();
         assert_eq!(clicked.source_row_index, 2);
         assert_eq!(clicked.value, CellValue::Integer(3));
@@ -486,50 +661,101 @@ mod tests {
 
     #[test]
     fn clicked_cell_none_for_column_header_target() {
-        let request = ContextMenuRequest {
-            target: ContextMenuTarget::ColumnHeader { column_index: 0 },
-            selection: None,
-            selected_cells: vec![],
-            selected_rows: vec![],
-        };
+        let request = ContextMenuRequest::new(
+            ContextMenuTarget::ColumnHeader { column_index: 0 },
+            None,
+            Arc::new(vec![]),
+            Arc::new(vec![]),
+            cols(),
+            true,
+        );
         assert!(request.clicked_cell().is_none());
     }
 
     #[test]
     fn clicked_row_finds_target_for_row_header() {
-        let request = ContextMenuRequest {
-            target: ContextMenuTarget::RowHeader {
+        let rows = Arc::new(vec![
+            vec![CellValue::Integer(1), CellValue::Text("x".into())],
+            vec![CellValue::Integer(2), CellValue::Text("y".into())],
+            vec![CellValue::Integer(3), CellValue::Text("z".into())],
+        ]);
+        let display = Arc::new(vec![0usize, 2usize]);
+        let request = ContextMenuRequest::new(
+            ContextMenuTarget::RowHeader {
                 display_row_index: 1,
                 source_row_index: 2,
             },
-            selection: None,
-            selected_cells: vec![],
-            selected_rows: vec![
-                SelectedRowContext {
-                    display_row_index: 0,
-                    source_row_index: 0,
-                    values: vec![],
-                    columns: vec![],
-                },
-                SelectedRowContext {
-                    display_row_index: 1,
-                    source_row_index: 2,
-                    values: vec![],
-                    columns: vec![],
-                },
-            ],
-        };
-        assert_eq!(request.clicked_row().unwrap().source_row_index, 2);
+            Some(sel(0, 0, 1, 1)),
+            rows,
+            display,
+            cols(),
+            false,
+        );
+        let clicked = request.clicked_row().unwrap();
+        assert_eq!(clicked.source_row_index, 2);
+        assert_eq!(
+            clicked.values,
+            vec![CellValue::Integer(3), CellValue::Text("z".into())]
+        );
     }
 
     #[test]
     fn clicked_row_none_for_column_header() {
-        let request = ContextMenuRequest {
-            target: ContextMenuTarget::ColumnHeader { column_index: 0 },
-            selection: None,
-            selected_cells: vec![],
-            selected_rows: vec![],
-        };
+        let request = ContextMenuRequest::new(
+            ContextMenuTarget::ColumnHeader { column_index: 0 },
+            None,
+            Arc::new(vec![]),
+            Arc::new(vec![]),
+            cols(),
+            true,
+        );
         assert!(request.clicked_row().is_none());
+    }
+
+    #[test]
+    fn counts_are_computed_from_bounds() {
+        let rows = Arc::new(vec![
+            vec![CellValue::Integer(1), CellValue::Text("x".into())],
+            vec![CellValue::Integer(2), CellValue::Text("y".into())],
+        ]);
+        let display = Arc::new(vec![0usize, 1usize]);
+        let request = ContextMenuRequest::new(
+            ContextMenuTarget::Cell {
+                display_row_index: 0,
+                source_row_index: 0,
+                column_index: 0,
+            },
+            Some(sel(0, 0, 1, 1)),
+            rows,
+            display,
+            cols(),
+            false,
+        );
+        assert_eq!(request.selected_cell_count(), 4);
+        assert_eq!(request.selected_row_count(), 2);
+        assert_eq!(request.selected_cells().len(), 4);
+        assert_eq!(request.selected_rows().len(), 2);
+    }
+
+    #[test]
+    fn column_oriented_has_no_rows() {
+        let rows = Arc::new(vec![
+            vec![CellValue::Integer(1), CellValue::Text("x".into())],
+            vec![CellValue::Integer(2), CellValue::Text("y".into())],
+        ]);
+        let display = Arc::new(vec![0usize, 1usize]);
+        let request = ContextMenuRequest::new(
+            ContextMenuTarget::ColumnHeader { column_index: 0 },
+            Some(sel(0, 0, 1, 0)),
+            rows,
+            display,
+            cols(),
+            true,
+        );
+        assert_eq!(request.selected_row_count(), 0);
+        assert!(request.selected_rows().is_empty());
+        // cells for the column are still available
+        assert_eq!(request.selected_cell_count(), 2);
+        assert_eq!(request.selected_cells().len(), 2);
     }
 }
