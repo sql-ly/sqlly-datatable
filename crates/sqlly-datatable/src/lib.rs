@@ -7,8 +7,8 @@
 //! * Cell, row, column and rectangular drag selection.
 //! * Sorting on column headers, with a cycle through ascending, descending,
 //!   and unsorted.
-//! * Per-column text-based filtering via a built-in context menu and filter
-//!   prompt.
+//! * Per-column filtering via a rich filter panel (operator predicates,
+//!   value checklist, search) opened from the built-in context menu.
 //! * Configurable column resizing, mouse-driven scrollbars, and edge-scroll
 //!   during drag selection.
 //! * Clipboard copy of any selection (with or without headers).
@@ -49,6 +49,7 @@
 
 pub mod config;
 pub mod data;
+pub mod filter;
 pub mod format;
 pub mod grid;
 
@@ -60,9 +61,10 @@ pub use config::{
 pub use data::{
     compare_cells, sample_data, CellValue, Column, ColumnKind, GridData, GridDataError,
 };
+pub use filter::{ColumnFilter, FilterPredicate, NumberOp, TextOp};
 pub use grid::{
     ContextMenu, ContextMenuItem, ContextMenuProvider, ContextMenuRequest, ContextMenuSelection,
-    ContextMenuTarget, GridState, GridTheme, HitResult, MenuAction, MenuItem, ScrollbarAxis,
-    SelectedCellContext, SelectedRowContext, Selection, SortDirection, SqllyDataTable,
-    SqllyDataTableBuilder,
+    ContextMenuTarget, FilterPanel, GridState, GridTheme, HitResult, MenuAction, MenuItem,
+    ScrollbarAxis, SelectedCellContext, SelectedRowContext, Selection, SortDirection,
+    SqllyDataTable, SqllyDataTableBuilder,
 };

@@ -3,8 +3,12 @@
 //! cursor handling.
 
 use crate::compare_cells;
-use crate::data::{CellValue, GridData};
-use crate::format::{cell_matches_filter, format_cell};
+use crate::data::{CellValue, ColumnKind, GridData};
+use crate::filter::{
+    cell_passes_filter, parse_ymd_to_unix, uses_number_ops, ColumnFilter, FilterPredicate,
+    NumberOp, TextOp,
+};
+use crate::format::format_cell;
 use crate::grid::state::state_inner::apply_edge_scroll;
 use crate::grid::theme::GridTheme;
 
@@ -190,7 +194,7 @@ pub struct GridState {
     /// the Swift grid's `ResultGridCellRange.extent`.
     pub(crate) range_active: Option<(usize, usize)>,
     pub sort: Option<(usize, SortDirection)>,
-    pub filters: Vec<String>,
+    pub filters: Vec<ColumnFilter>,
     pub scroll_handle: ScrollHandle,
     pub focus_handle: FocusHandle,
     pub bounds: Bounds<Pixels>,
@@ -218,7 +222,7 @@ pub struct GridState {
     pub resize_start_x: f32,
     pub resize_start_width: f32,
     pub context_menu: Option<ContextMenu>,
-    pub filter_prompt: Option<FilterPrompt>,
+    pub filter_panel: Option<FilterPanel>,
     pub pending_action: Option<(MenuAction, usize)>,
     pub(crate) pending_custom_context_menu_action: Option<PendingCustomContextMenuAction>,
     pub(crate) context_menu_provider: Option<ContextMenuProviderHandle>,
@@ -235,37 +239,36 @@ pub struct GridState {
     pub(crate) edge_scroll_active: bool,
 }
 
-/// Filter-prompt input. Cursor is tracked as a **char count**, not a byte
-/// offset, so multi-byte input never panics on grapheme-misaligned inserts.
-#[derive(Clone, Debug)]
-pub struct FilterPrompt {
-    pub col: usize,
-    pub anchor: Point<Pixels>,
-    pub input: String,
+/// A minimal single-line text input with a **char-based** cursor (not a byte
+/// offset), so multi-byte input never panics on a grapheme-misaligned insert.
+/// Shared by the filter panel's search box and its operand fields.
+#[derive(Clone, Debug, Default)]
+pub struct TextInput {
+    /// Current text value.
+    pub value: String,
+    /// Cursor position measured in characters from the start.
     pub cursor_chars: usize,
 }
 
-impl FilterPrompt {
-    fn new(col: usize, anchor: Point<Pixels>, input: String) -> Self {
-        let cursor_chars = input.chars().count();
+impl TextInput {
+    fn new(value: String) -> Self {
+        let cursor_chars = value.chars().count();
         Self {
-            col,
-            anchor,
-            input,
+            value,
             cursor_chars,
         }
     }
 
     fn clamp_cursor(&mut self) {
-        let total = self.input.chars().count();
+        let total = self.value.chars().count();
         if self.cursor_chars > total {
             self.cursor_chars = total;
         }
     }
 
     fn insert_char(&mut self, ch: char) {
-        let byte_idx = byte_index_for_char(&self.input, self.cursor_chars);
-        self.input.insert(byte_idx, ch);
+        let byte_idx = byte_index_for_char(&self.value, self.cursor_chars);
+        self.value.insert(byte_idx, ch);
         self.cursor_chars += 1;
     }
 
@@ -273,10 +276,252 @@ impl FilterPrompt {
         if self.cursor_chars == 0 {
             return;
         }
-        let end = byte_index_for_char(&self.input, self.cursor_chars);
-        let start = byte_index_for_char(&self.input, self.cursor_chars - 1);
-        self.input.replace_range(start..end, "");
+        let end = byte_index_for_char(&self.value, self.cursor_chars);
+        let start = byte_index_for_char(&self.value, self.cursor_chars - 1);
+        self.value.replace_range(start..end, "");
         self.cursor_chars -= 1;
+    }
+
+    fn move_left(&mut self) {
+        if self.cursor_chars > 0 {
+            self.cursor_chars -= 1;
+        }
+    }
+
+    fn move_right(&mut self) {
+        self.clamp_cursor();
+        if self.cursor_chars < self.value.chars().count() {
+            self.cursor_chars += 1;
+        }
+    }
+}
+
+/// Which text field inside the filter panel currently receives typed keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilterInput {
+    /// The value-list search box.
+    Search,
+    /// The first operator operand (e.g. "greater than X", "between X …").
+    OperandA,
+    /// The second operator operand (the upper bound of a range).
+    OperandB,
+}
+
+/// One row in the filter panel's searchable value checklist.
+#[derive(Clone, Debug)]
+pub struct FilterValueRow {
+    /// The formatted value as displayed in the grid.
+    pub label: String,
+    /// Whether the value is currently included by the filter.
+    pub checked: bool,
+}
+
+/// Interactive state backing the Numbers-style per-column filter popover.
+///
+/// This is the *working* copy that the overlay edits; it is committed to
+/// [`GridState::filters`] automatically (auto-apply) as the user interacts
+/// with the panel. Rendered as a `deferred` + `anchored` GPUI overlay in
+/// `widget.rs`, mirroring the context-menu overlay.
+#[derive(Clone, Debug)]
+pub struct FilterPanel {
+    /// Target column index.
+    pub col: usize,
+    /// Grid-relative anchor point (from the triggering click).
+    pub anchor: Point<Pixels>,
+    /// Column kind; selects the text vs. numeric/date operator set.
+    pub kind: ColumnKind,
+    /// The value-list search box.
+    pub search: TextInput,
+    /// Selected operator index into [`Self::op_labels`]; `0` == "Choose One"
+    /// (no predicate).
+    pub op_index: usize,
+    /// Whether the operator dropdown is expanded.
+    pub op_menu_open: bool,
+    /// First operand input.
+    pub operand_a: TextInput,
+    /// Second operand input (range upper bound).
+    pub operand_b: TextInput,
+    /// Which text field currently has keyboard focus.
+    pub focus: FilterInput,
+    /// When set, edits apply to [`GridState::filters`] immediately.
+    pub auto_apply: bool,
+    /// All distinct formatted values for the column with their checked state.
+    pub distinct: Vec<FilterValueRow>,
+}
+
+/// Operator labels for text/string-like columns. Index `0` is the inert
+/// "Choose One" sentinel; the rest map 1:1 to [`TextOp`] via
+/// [`FilterPanel::text_op_for_index`].
+const TEXT_OP_LABELS: &[&str] = &[
+    "Choose One",
+    "contains",
+    "does not contain",
+    "begins with",
+    "ends with",
+    "is",
+    "is not",
+    "matches (regex)",
+];
+
+/// Operator labels for numeric/date columns. Index `0` is "Choose One".
+const NUMBER_OP_LABELS: &[&str] = &[
+    "Choose One",
+    "equal to",
+    "not equal to",
+    "greater than",
+    "greater than or equal to",
+    "less than",
+    "less than or equal to",
+    "between",
+    "not between",
+];
+
+impl FilterPanel {
+    /// Operator labels appropriate to this column's kind.
+    #[must_use]
+    pub fn op_labels(&self) -> &'static [&'static str] {
+        if uses_number_ops(self.kind) {
+            NUMBER_OP_LABELS
+        } else {
+            TEXT_OP_LABELS
+        }
+    }
+
+    /// The currently selected operator label.
+    #[must_use]
+    pub fn current_op_label(&self) -> &'static str {
+        self.op_labels()
+            .get(self.op_index)
+            .copied()
+            .unwrap_or("Choose One")
+    }
+
+    /// `true` when the selected operator needs at least one operand.
+    #[must_use]
+    pub fn needs_operand(&self) -> bool {
+        self.op_index != 0
+    }
+
+    /// `true` when the selected operator is a range needing a second operand.
+    #[must_use]
+    pub fn needs_second_operand(&self) -> bool {
+        uses_number_ops(self.kind) && matches!(self.op_index, 7 | 8)
+    }
+
+    fn text_op_for_index(index: usize) -> Option<TextOp> {
+        match index {
+            1 => Some(TextOp::Contains),
+            2 => Some(TextOp::DoesNotContain),
+            3 => Some(TextOp::BeginsWith),
+            4 => Some(TextOp::EndsWith),
+            5 => Some(TextOp::Is),
+            6 => Some(TextOp::IsNot),
+            7 => Some(TextOp::Matches),
+            _ => None,
+        }
+    }
+
+    fn number_op_for_index(index: usize) -> Option<NumberOp> {
+        match index {
+            1 => Some(NumberOp::Eq),
+            2 => Some(NumberOp::Ne),
+            3 => Some(NumberOp::Gt),
+            4 => Some(NumberOp::Ge),
+            5 => Some(NumberOp::Lt),
+            6 => Some(NumberOp::Le),
+            7 => Some(NumberOp::Between),
+            8 => Some(NumberOp::NotBetween),
+            _ => None,
+        }
+    }
+
+    fn active_input_mut(&mut self) -> &mut TextInput {
+        match self.focus {
+            FilterInput::Search => &mut self.search,
+            FilterInput::OperandA => &mut self.operand_a,
+            FilterInput::OperandB => &mut self.operand_b,
+        }
+    }
+
+    /// Indices into [`Self::distinct`] whose label matches the current search
+    /// box (case-insensitive substring). Drives both the rendered checklist
+    /// and the "(Select All)" toggle scope.
+    #[must_use]
+    pub fn visible_indices(&self) -> Vec<usize> {
+        let needle = self.search.value.to_lowercase();
+        self.distinct
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| needle.is_empty() || row.label.to_lowercase().contains(&needle))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// `true` when every currently visible value row is checked.
+    #[must_use]
+    pub fn all_visible_checked(&self) -> bool {
+        let visible = self.visible_indices();
+        !visible.is_empty() && visible.iter().all(|&i| self.distinct[i].checked)
+    }
+
+    /// Build the committed [`ColumnFilter`] from the working state. Returns an
+    /// inert filter when no predicate is set and all values are checked.
+    fn to_filter(&self) -> ColumnFilter {
+        let predicate = self.build_predicate();
+        let all_checked = self.distinct.iter().all(|r| r.checked);
+        let values = if all_checked {
+            None
+        } else {
+            Some(
+                self.distinct
+                    .iter()
+                    .filter(|r| r.checked)
+                    .map(|r| r.label.clone())
+                    .collect(),
+            )
+        };
+        ColumnFilter { predicate, values }
+    }
+
+    fn build_predicate(&self) -> FilterPredicate {
+        if self.op_index == 0 {
+            return FilterPredicate::None;
+        }
+        if uses_number_ops(self.kind) {
+            let Some(op) = Self::number_op_for_index(self.op_index) else {
+                return FilterPredicate::None;
+            };
+            let Some(a) = self.parse_number_operand(&self.operand_a.value) else {
+                return FilterPredicate::None;
+            };
+            let b = if self.needs_second_operand() {
+                self.parse_number_operand(&self.operand_b.value)
+                    .unwrap_or(a)
+            } else {
+                a
+            };
+            FilterPredicate::Number { op, a, b }
+        } else {
+            let Some(op) = Self::text_op_for_index(self.op_index) else {
+                return FilterPredicate::None;
+            };
+            FilterPredicate::Text {
+                op,
+                operand: self.operand_a.value.clone(),
+            }
+        }
+    }
+
+    fn parse_number_operand(&self, s: &str) -> Option<f64> {
+        let t = s.trim();
+        if t.is_empty() {
+            return None;
+        }
+        if self.kind == ColumnKind::Date {
+            return parse_ymd_to_unix(t).map(|v| v as f64);
+        }
+        // Tolerate thousands separators pasted from the grid's formatted view.
+        t.replace(',', "").parse::<f64>().ok()
     }
 }
 
@@ -285,6 +530,64 @@ fn byte_index_for_char(input: &str, char_idx: usize) -> usize {
         .char_indices()
         .nth(char_idx)
         .map_or(input.len(), |(idx, _)| idx)
+}
+
+/// Derive a panel operator index and its operand strings from an already
+/// committed predicate, so reopening a filter shows the same rule.
+fn seed_operator(kind: ColumnKind, predicate: &FilterPredicate) -> (usize, String, String) {
+    match predicate {
+        FilterPredicate::None => (0, String::new(), String::new()),
+        FilterPredicate::Text { op, operand } => {
+            (text_op_index(*op), operand.clone(), String::new())
+        }
+        FilterPredicate::Number { op, a, b } => {
+            let b_str = if matches!(op, NumberOp::Between | NumberOp::NotBetween) {
+                fmt_number_operand(kind, *b)
+            } else {
+                String::new()
+            };
+            (number_op_index(*op), fmt_number_operand(kind, *a), b_str)
+        }
+    }
+}
+
+fn text_op_index(op: TextOp) -> usize {
+    match op {
+        TextOp::Contains => 1,
+        TextOp::DoesNotContain => 2,
+        TextOp::BeginsWith => 3,
+        TextOp::EndsWith => 4,
+        TextOp::Is => 5,
+        TextOp::IsNot => 6,
+        TextOp::Matches => 7,
+    }
+}
+
+fn number_op_index(op: NumberOp) -> usize {
+    match op {
+        NumberOp::Eq => 1,
+        NumberOp::Ne => 2,
+        NumberOp::Gt => 3,
+        NumberOp::Ge => 4,
+        NumberOp::Lt => 5,
+        NumberOp::Le => 6,
+        NumberOp::Between => 7,
+        NumberOp::NotBetween => 8,
+    }
+}
+
+fn fmt_number_operand(kind: ColumnKind, v: f64) -> String {
+    if kind == ColumnKind::Date {
+        let secs = v as i64;
+        let fmt = crate::config::DateFormat {
+            format: "%Y-%m-%d".into(),
+            ..Default::default()
+        };
+        crate::format::format_date_at(secs, secs, &fmt)
+    } else {
+        // Display prints `50.0` as `50`, so integer operands stay clean.
+        v.to_string()
+    }
 }
 
 impl GridState {
@@ -302,7 +605,7 @@ impl GridState {
             range_anchor: None,
             range_active: None,
             sort: None,
-            filters: vec![String::new(); col_count],
+            filters: vec![ColumnFilter::default(); col_count],
             scroll_handle: ScrollHandle::new(),
             focus_handle,
             bounds: Bounds::default(),
@@ -326,7 +629,7 @@ impl GridState {
             resize_start_x: 0.0,
             resize_start_width: 0.0,
             context_menu: None,
-            filter_prompt: None,
+            filter_panel: None,
             pending_action: None,
             pending_custom_context_menu_action: None,
             context_menu_provider: None,
@@ -360,11 +663,11 @@ impl GridState {
             .filter(|&row_idx| {
                 self.data.columns.iter().enumerate().all(|(col_idx, _col)| {
                     let filter = &self.filters[col_idx];
-                    if filter.is_empty() {
+                    if !filter.is_active() {
                         return true;
                     }
                     let cell = &self.data.rows[row_idx][col_idx];
-                    cell_matches_filter(cell, &self.resolved_formats[col_idx], filter)
+                    cell_passes_filter(cell, &self.resolved_formats[col_idx], filter)
                 })
             })
             .collect();
@@ -571,7 +874,7 @@ impl GridState {
                 self.range_anchor = None;
                 self.range_active = None;
                 self.context_menu = None;
-                self.filter_prompt = None;
+                self.filter_panel = None;
                 self.clear_drag();
             }
         }
@@ -586,7 +889,7 @@ impl GridState {
 
     pub(crate) fn open_context_menu(&mut self, col: usize, anchor: Point<Pixels>) {
         self.context_menu = Some(menu_mod::ContextMenu::standard(col, anchor));
-        self.filter_prompt = None;
+        self.filter_panel = None;
     }
 
     /// Convert a hit-test result to a context-menu target. Returns `None`
@@ -769,7 +1072,7 @@ impl GridState {
         cx: &mut App,
     ) {
         self.context_menu = None;
-        self.filter_prompt = None;
+        self.filter_panel = None;
 
         let Some(provider) = self.context_menu_provider.clone() else {
             return;
@@ -820,21 +1123,198 @@ impl GridState {
                 self.recompute();
             }
             MenuAction::FilterPrompt => {
-                let anchor = self.last_mouse_pos.unwrap_or(Point {
-                    x: px(0.0),
-                    y: px(0.0),
-                });
-                let existing = self.filters.get(col).cloned().unwrap_or_default();
-                self.filter_prompt = Some(FilterPrompt::new(col, anchor, existing));
+                let anchor = self.context_menu.as_ref().map(|m| m.anchor);
+                self.open_filter_panel(col, anchor);
             }
             MenuAction::ClearFilter => {
                 if col < self.filters.len() {
-                    self.filters[col].clear();
+                    self.filters[col] = ColumnFilter::default();
                     self.recompute();
                 }
             }
         }
         self.context_menu = None;
+    }
+
+    /// Open the rich per-column filter popover for `col`, seeding its working
+    /// state from any filter already committed on that column. The overlay is
+    /// rendered by `widget.rs` as a `deferred` + `anchored` element so it can
+    /// paint and receive events outside the grid's own layout bounds, exactly
+    /// like the right-click context menu.
+    ///
+    /// `anchor` overrides the panel's spawn position; pass the original
+    /// context-menu / header right-click position so the panel doesn't jump to
+    /// the mouse's current location (which by now has moved to the menu item).
+    /// Falls back to `last_mouse_pos` when `None`.
+    pub fn open_filter_panel(&mut self, col: usize, anchor: Option<Point<Pixels>>) {
+        if col >= self.data.columns.len() {
+            return;
+        }
+        let anchor = anchor.unwrap_or(self.last_mouse_pos.unwrap_or(Point {
+            x: px(0.0),
+            y: px(0.0),
+        }));
+        let kind = self.data.columns[col].kind;
+        let existing = self.filters.get(col).cloned().unwrap_or_default();
+
+        // Distinct formatted values in natural cell order, deduped by label.
+        let distinct = {
+            let fmt = &self.resolved_formats[col];
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut pairs: Vec<(String, &CellValue)> = Vec::new();
+            for row in &self.data.rows {
+                let cell = &row[col];
+                let (label, _) = format_cell(cell, fmt);
+                if seen.insert(label.clone()) {
+                    pairs.push((label, cell));
+                }
+            }
+            pairs.sort_by(|(_, a), (_, b)| compare_cells(a, b));
+            pairs
+                .into_iter()
+                .map(|(label, _)| {
+                    let checked = match &existing.values {
+                        None => true,
+                        Some(set) => set.contains(&label),
+                    };
+                    FilterValueRow { label, checked }
+                })
+                .collect()
+        };
+
+        let (op_index, operand_a, operand_b) = seed_operator(kind, &existing.predicate);
+
+        self.context_menu = None;
+        self.filter_panel = Some(FilterPanel {
+            col,
+            anchor,
+            kind,
+            search: TextInput::default(),
+            op_index,
+            op_menu_open: false,
+            operand_a: TextInput::new(operand_a),
+            operand_b: TextInput::new(operand_b),
+            focus: FilterInput::Search,
+            auto_apply: true,
+            distinct,
+        });
+    }
+
+    /// Commit the panel's working state to [`Self::filters`] and re-filter.
+    /// Called automatically on every interaction (auto-apply).
+    pub fn apply_filter_panel(&mut self) {
+        let Some(panel) = &self.filter_panel else {
+            return;
+        };
+        let col = panel.col;
+        let filter = panel.to_filter();
+        if col < self.filters.len() {
+            self.filters[col] = filter;
+            self.recompute();
+        }
+    }
+
+    /// Apply immediately — the panel always auto-applies.
+    pub fn maybe_auto_apply(&mut self) {
+        if self.filter_panel.is_some() {
+            self.apply_filter_panel();
+        }
+    }
+
+    /// Reset both the committed filter for the panel's column and the panel's
+    /// working state (all values checked, no operator), then re-filter.
+    pub fn clear_filter_panel(&mut self) {
+        let mut target_col = None;
+        if let Some(panel) = &mut self.filter_panel {
+            panel.op_index = 0;
+            panel.op_menu_open = false;
+            panel.operand_a = TextInput::default();
+            panel.operand_b = TextInput::default();
+            panel.search = TextInput::default();
+            for row in &mut panel.distinct {
+                row.checked = true;
+            }
+            target_col = Some(panel.col);
+        }
+        if let Some(col) = target_col {
+            if col < self.filters.len() {
+                self.filters[col] = ColumnFilter::default();
+            }
+        }
+        self.recompute();
+    }
+
+    /// Set the sort direction on the panel's column (the panel's Sort buttons).
+    /// Clicking the already-active direction turns the sort off.
+    pub fn set_panel_sort(&mut self, direction: SortDirection) {
+        if let Some(panel) = &self.filter_panel {
+            let col = panel.col;
+            self.sort = match self.sort {
+                Some((c, d)) if c == col && d == direction => None,
+                _ => Some((col, direction)),
+            };
+            self.recompute();
+        }
+    }
+
+    /// Toggle the checked state of a single distinct value row (by index into
+    /// [`FilterPanel::distinct`]), then auto-apply if enabled.
+    pub fn toggle_filter_value(&mut self, index: usize) {
+        if let Some(panel) = &mut self.filter_panel {
+            if let Some(row) = panel.distinct.get_mut(index) {
+                row.checked = !row.checked;
+            }
+        }
+        self.maybe_auto_apply();
+    }
+
+    /// Toggle every currently visible (search-filtered) value row at once,
+    /// then auto-apply if enabled. Mirrors the "(Select All)" checkbox.
+    pub fn toggle_filter_select_all(&mut self) {
+        if let Some(panel) = &mut self.filter_panel {
+            let target = !panel.all_visible_checked();
+            for i in panel.visible_indices() {
+                if let Some(row) = panel.distinct.get_mut(i) {
+                    row.checked = target;
+                }
+            }
+        }
+        self.maybe_auto_apply();
+    }
+
+    /// Select an operator by its index in [`FilterPanel::op_labels`], close the
+    /// dropdown, and auto-apply if enabled.
+    pub fn set_filter_operator(&mut self, op_index: usize) {
+        if let Some(panel) = &mut self.filter_panel {
+            panel.op_index = op_index;
+            panel.op_menu_open = false;
+            if op_index != 0 {
+                panel.focus = FilterInput::OperandA;
+            }
+        }
+        self.maybe_auto_apply();
+    }
+
+    /// Toggle the operator dropdown's expanded state.
+    pub fn toggle_filter_op_menu(&mut self) {
+        if let Some(panel) = &mut self.filter_panel {
+            panel.op_menu_open = !panel.op_menu_open;
+        }
+    }
+
+    /// Point keyboard focus at one of the panel's text fields.
+    pub fn set_filter_focus(&mut self, focus: FilterInput) {
+        if let Some(panel) = &mut self.filter_panel {
+            panel.focus = focus;
+        }
+    }
+
+    /// Toggle the panel's auto-apply flag; kept for API completeness.
+    pub fn toggle_filter_auto_apply(&mut self) {
+        if let Some(panel) = &mut self.filter_panel {
+            panel.auto_apply = !panel.auto_apply;
+        }
+        self.maybe_auto_apply();
     }
 
     fn column_text(&self, col: usize) -> String {
@@ -1055,32 +1535,40 @@ impl GridState {
     }
 
     pub fn handle_key(&mut self, keystroke: &Keystroke) {
-        if let Some(prompt) = &mut self.filter_prompt {
+        if self.filter_panel.is_some() {
             match keystroke.key.as_str() {
-                "escape" => self.filter_prompt = None,
+                "escape" => {
+                    self.filter_panel = None;
+                    return;
+                }
                 "enter" => {
-                    let col = prompt.col;
-                    self.filters[col] = prompt.input.clone();
-                    self.filter_prompt = None;
-                    self.recompute();
+                    self.apply_filter_panel();
+                    return;
                 }
-                "backspace" => prompt.backspace(),
-                "left" => {
-                    if prompt.cursor_chars > 0 {
-                        prompt.cursor_chars -= 1;
+                _ => {}
+            }
+            let mut edited = false;
+            if let Some(panel) = &mut self.filter_panel {
+                let input = panel.active_input_mut();
+                match keystroke.key.as_str() {
+                    "backspace" => {
+                        input.backspace();
+                        edited = true;
+                    }
+                    "left" => input.move_left(),
+                    "right" => input.move_right(),
+                    _ => {
+                        if let Some(ch) = keystroke_to_char(keystroke) {
+                            input.insert_char(ch);
+                            edited = true;
+                        }
                     }
                 }
-                "right" => {
-                    prompt.clamp_cursor();
-                    if prompt.cursor_chars < prompt.input.chars().count() {
-                        prompt.cursor_chars += 1;
-                    }
-                }
-                _ => {
-                    if let Some(ch) = keystroke_to_char(keystroke) {
-                        prompt.insert_char(ch);
-                    }
-                }
+            }
+            // Typing into an operand re-applies live (search only narrows the
+            // rendered checklist, so re-applying is a harmless no-op there).
+            if edited {
+                self.maybe_auto_apply();
             }
             return;
         }
@@ -1322,65 +1810,69 @@ mod tests {
     use crate::data::{CellValue, Column, ColumnKind};
     use crate::grid::state::state_inner::{edge_scroll_speed, format_current_status};
 
-    fn anchor() -> Point<Pixels> {
-        Point {
-            x: px(0.0),
-            y: px(0.0),
-        }
-    }
-
-    fn prompt_with(text: &str, cursor: usize) -> FilterPrompt {
-        let mut p = FilterPrompt::new(0, anchor(), text.to_owned());
+    fn input_with(text: &str, cursor: usize) -> TextInput {
+        let mut p = TextInput::new(text.to_owned());
         p.cursor_chars = cursor;
         p
     }
 
     #[test]
-    fn filter_prompt_new_cursors_at_char_count_not_bytes() {
+    fn text_input_new_cursors_at_char_count_not_bytes() {
         // "hé🙂" is 3 chars but 7 bytes (h=1, é=2, 🙂=4).
-        let p = FilterPrompt::new(0, anchor(), "hé🙂".into());
+        let p = TextInput::new("hé🙂".into());
         assert_eq!(p.cursor_chars, 3);
-        assert_eq!(p.input.len(), 7);
+        assert_eq!(p.value.len(), 7);
     }
 
     #[test]
-    fn filter_prompt_insert_emoji_at_start_does_not_panic() {
-        let mut p = prompt_with("ab", 0);
+    fn text_input_insert_emoji_at_start_does_not_panic() {
+        let mut p = input_with("ab", 0);
         p.insert_char('\u{1F600}');
-        assert_eq!(p.input, "\u{1F600}ab");
+        assert_eq!(p.value, "\u{1F600}ab");
         assert_eq!(p.cursor_chars, 1);
     }
 
     #[test]
-    fn filter_prompt_insert_in_middle_keeps_cursor_at_char_position() {
-        let mut p = prompt_with("helloworld", 5);
+    fn text_input_insert_in_middle_keeps_cursor_at_char_position() {
+        let mut p = input_with("helloworld", 5);
         p.insert_char(' ');
-        assert_eq!(p.input, "hello world");
+        assert_eq!(p.value, "hello world");
         assert_eq!(p.cursor_chars, 6);
     }
 
     #[test]
-    fn filter_prompt_backspace_at_zero_is_noop() {
-        let mut p = prompt_with("abc", 0);
+    fn text_input_backspace_at_zero_is_noop() {
+        let mut p = input_with("abc", 0);
         p.backspace();
-        assert_eq!(p.input, "abc");
+        assert_eq!(p.value, "abc");
         assert_eq!(p.cursor_chars, 0);
     }
 
     #[test]
-    fn filter_prompt_backspace_removes_one_char_value() {
+    fn text_input_backspace_removes_one_char_value() {
         // Cursor sits after "hé" (2 chars); backspace should delete "é" only.
-        let mut p = prompt_with("héx", 2);
+        let mut p = input_with("héx", 2);
         p.backspace();
-        assert_eq!(p.input, "hx");
+        assert_eq!(p.value, "hx");
         assert_eq!(p.cursor_chars, 1);
     }
 
     #[test]
-    fn filter_prompt_clamp_cursor_pulls_back_past_end() {
-        let mut p = prompt_with("abc", 99);
+    fn text_input_clamp_cursor_pulls_back_past_end() {
+        let mut p = input_with("abc", 99);
         p.clamp_cursor();
         assert_eq!(p.cursor_chars, 3);
+    }
+
+    #[test]
+    fn text_input_move_left_and_right_respect_bounds() {
+        let mut p = input_with("ab", 2);
+        p.move_right();
+        assert_eq!(p.cursor_chars, 2);
+        p.move_left();
+        p.move_left();
+        p.move_left();
+        assert_eq!(p.cursor_chars, 0);
     }
 
     #[test]
@@ -1448,7 +1940,7 @@ mod tests {
                     vec![Column::new("name", ColumnKind::Text, 100.0)],
                     vec![
                         vec![CellValue::Text("alpha".into())],
-                        vec![CellValue::Text("beta".into())],
+                        vec![CellValue::Text("beeb".into())],
                         vec![CellValue::Text("gamma".into())],
                     ],
                 )
@@ -1456,14 +1948,20 @@ mod tests {
                 crate::config::GridConfig::default(),
                 focus.clone(),
             );
-            state.filters[0] = "a".into();
+            state.filters[0] = ColumnFilter {
+                predicate: FilterPredicate::Text {
+                    op: TextOp::Contains,
+                    operand: "a".into(),
+                },
+                values: None,
+            };
             state.toggle_sort(0);
             state.recompute();
             assert_eq!(state.display_indices, vec![0, 2]);
             state.toggle_sort(0);
             state.recompute();
             assert_eq!(state.display_indices, vec![2, 0]);
-            state.filters[0].clear();
+            state.filters[0] = ColumnFilter::default();
             state.toggle_sort(0);
             state.recompute();
             assert_eq!(state.display_indices, vec![0, 1, 2]);
@@ -1872,6 +2370,229 @@ mod tests {
             );
             assert_eq!(*last.lock().unwrap(), Some("test".to_string()));
             assert!(state.context_menu.is_none());
+
+            cx.quit();
+        });
+    }
+
+    #[test]
+    fn filter_panel_to_filter_with_all_checked_has_no_value_set() {
+        let panel = FilterPanel {
+            col: 0,
+            anchor: Point {
+                x: px(0.0),
+                y: px(0.0),
+            },
+            kind: ColumnKind::Text,
+            search: TextInput::default(),
+            op_index: 0,
+            op_menu_open: false,
+            operand_a: TextInput::default(),
+            operand_b: TextInput::default(),
+            focus: FilterInput::Search,
+            auto_apply: true,
+            distinct: vec![
+                FilterValueRow {
+                    label: "alpha".into(),
+                    checked: true,
+                },
+                FilterValueRow {
+                    label: "beta".into(),
+                    checked: true,
+                },
+            ],
+        };
+        let f = panel.to_filter();
+        assert!(f.values.is_none(), "all checked => no value allow-list");
+        assert!(
+            !f.is_active(),
+            "default predicate + all checked => inactive"
+        );
+    }
+
+    #[test]
+    fn filter_panel_to_filter_with_unchecked_value_builds_allow_set() {
+        let panel = FilterPanel {
+            col: 0,
+            anchor: Point {
+                x: px(0.0),
+                y: px(0.0),
+            },
+            kind: ColumnKind::Text,
+            search: TextInput::default(),
+            op_index: 0,
+            op_menu_open: false,
+            operand_a: TextInput::default(),
+            operand_b: TextInput::default(),
+            focus: FilterInput::Search,
+            auto_apply: true,
+            distinct: vec![
+                FilterValueRow {
+                    label: "alpha".into(),
+                    checked: true,
+                },
+                FilterValueRow {
+                    label: "beta".into(),
+                    checked: false,
+                },
+            ],
+        };
+        let f = panel.to_filter();
+        assert!(f.is_active(), "unchecked value => active filter");
+        let set = f.values.expect("should have a value set");
+        assert!(set.contains("alpha"));
+        assert!(!set.contains("beta"));
+    }
+
+    #[test]
+    fn filter_panel_visible_indices_respects_search() {
+        let panel = FilterPanel {
+            col: 0,
+            anchor: Point {
+                x: px(0.0),
+                y: px(0.0),
+            },
+            kind: ColumnKind::Text,
+            search: TextInput::new("al".into()),
+            op_index: 0,
+            op_menu_open: false,
+            operand_a: TextInput::default(),
+            operand_b: TextInput::default(),
+            focus: FilterInput::Search,
+            auto_apply: true,
+            distinct: vec![
+                FilterValueRow {
+                    label: "alpha".into(),
+                    checked: true,
+                },
+                FilterValueRow {
+                    label: "beta".into(),
+                    checked: true,
+                },
+                FilterValueRow {
+                    label: "gamma".into(),
+                    checked: true,
+                },
+            ],
+        };
+        let vis = panel.visible_indices();
+        assert_eq!(vis, vec![0], "search 'al' matches only alpha");
+    }
+
+    #[test]
+    fn filter_panel_all_visible_checked_reflects_search() {
+        let mut panel = FilterPanel {
+            col: 0,
+            anchor: Point {
+                x: px(0.0),
+                y: px(0.0),
+            },
+            kind: ColumnKind::Text,
+            search: TextInput::new("al".into()),
+            op_index: 0,
+            op_menu_open: false,
+            operand_a: TextInput::default(),
+            operand_b: TextInput::default(),
+            focus: FilterInput::Search,
+            auto_apply: true,
+            distinct: vec![
+                FilterValueRow {
+                    label: "alpha".into(),
+                    checked: true,
+                },
+                FilterValueRow {
+                    label: "beta".into(),
+                    checked: false,
+                },
+                FilterValueRow {
+                    label: "gamma".into(),
+                    checked: true,
+                },
+            ],
+        };
+        assert!(
+            panel.all_visible_checked(),
+            "alpha+gamma checked, beta hidden by search"
+        );
+
+        // Uncheck alpha — now not all visible are checked.
+        panel.distinct[0].checked = false;
+        assert!(!panel.all_visible_checked());
+    }
+
+    #[allow(clippy::expect_used, clippy::unwrap_used)]
+    #[test]
+    #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
+    fn filter_panel_open_apply_clear_state_flow() {
+        gpui::Application::new().run(|cx| {
+            let focus = cx.focus_handle();
+            let mut state = GridState::new(
+                GridData::new(
+                    vec![Column::new("name", ColumnKind::Text, 100.0)],
+                    vec![
+                        vec![CellValue::Text("alpha".into())],
+                        vec![CellValue::Text("beta".into())],
+                        vec![CellValue::Text("gamma".into())],
+                    ],
+                )
+                .expect("rectangular"),
+                crate::config::GridConfig::default(),
+                focus,
+            );
+
+            // Open filter panel for column 0 with an explicit anchor.
+            let anchor = Point {
+                x: px(50.0),
+                y: px(20.0),
+            };
+            state.open_filter_panel(0, Some(anchor));
+            let panel = state.filter_panel.as_ref().expect("panel should be open");
+            assert_eq!(panel.col, 0);
+            assert_eq!(panel.anchor, anchor);
+            assert_eq!(panel.distinct.len(), 3);
+            assert!(
+                panel.distinct.iter().all(|r| r.checked),
+                "all checked by default"
+            );
+            assert!(panel.auto_apply, "auto_apply defaults to true");
+            assert_eq!(panel.kind, ColumnKind::Text);
+
+            // Uncheck "beta" (index 1) and apply.
+            state.toggle_filter_value(1);
+            state.apply_filter_panel();
+            assert_eq!(
+                state.display_indices,
+                vec![0, 2],
+                "beta should be filtered out"
+            );
+
+            // Clear the filter panel.
+            state.clear_filter_panel();
+            assert_eq!(
+                state.display_indices,
+                vec![0, 1, 2],
+                "all rows visible after clear"
+            );
+            assert!(
+                state.filters[0] == ColumnFilter::default(),
+                "filter reset to default"
+            );
+
+            // Open with a text "contains" predicate.
+            state.open_filter_panel(0, Some(anchor));
+            let panel = state.filter_panel.as_mut().expect("panel open");
+            panel.op_index = 1; // "contains"
+            panel.operand_a = TextInput::new("a".into());
+            state.apply_filter_panel();
+            assert_eq!(
+                state.display_indices,
+                vec![0, 2],
+                "contains 'a' matches alpha and gamma"
+            );
+
+            // Clear and verify restored.
+            state.clear_filter_panel();
+            assert_eq!(state.display_indices, vec![0, 1, 2]);
 
             cx.quit();
         });

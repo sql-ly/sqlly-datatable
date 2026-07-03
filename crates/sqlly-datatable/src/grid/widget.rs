@@ -10,14 +10,15 @@ use crate::grid::context_menu::{
 };
 use crate::grid::paint::{paint_grid, paint_status_bar, PaintData, StatusBarData};
 use crate::grid::state::state_inner;
-use crate::grid::state::{GridState, EDGE_SCROLL_TICK_MS};
+use crate::grid::state::{FilterInput, GridState, EDGE_SCROLL_TICK_MS};
 use crate::grid::theme::GridTheme;
-use crate::grid::{menu, HitResult, MenuItem};
+use crate::grid::{menu, HitResult, MenuItem, SortDirection};
 
 use gpui::{
     anchored, canvas, deferred, div, point, px, App, AppContext, Context, Entity, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Render, ScrollWheelEvent, Styled, Window,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Render, ScrollWheelEvent,
+    StatefulInteractiveElement, Styled, Window,
 };
 
 /// Draw order for the context-menu overlay. Deliberately far above any
@@ -271,6 +272,7 @@ impl Render for SqllyDataTable {
                 .h(px(status_h))
             }))
             .children(render_context_menu_overlay(&self.state, cx))
+            .children(render_filter_panel_overlay(&self.state, cx))
             .on_mouse_down(
                 MouseButton::Left,
                 move |event: &MouseDownEvent, window, cx| {
@@ -282,9 +284,9 @@ impl Render for SqllyDataTable {
                         // reaches the grid means the pointer was NOT on the menu;
                         // dismiss any open menu and proceed with grid selection.
                         let rel = state_inner::to_grid_relative(event.position, s.bounds.origin);
-                        if s.context_menu.is_some() {
+                        if s.context_menu.is_some() || s.filter_panel.is_some() {
                             s.context_menu = None;
-                            s.filter_prompt = None;
+                            s.filter_panel = None;
                         }
                         s.handle_mouse_down(rel, event.modifiers.shift);
                         cx.notify();
@@ -307,7 +309,7 @@ impl Render for SqllyDataTable {
                                 }
                                 _ => {
                                     s.context_menu = None;
-                                    s.filter_prompt = None;
+                                    s.filter_panel = None;
                                 }
                             }
                             cx.notify();
@@ -317,7 +319,7 @@ impl Render for SqllyDataTable {
                         // Provider exists — build custom menu.
                         let Some(target) = s.context_menu_target_from_hit(hit) else {
                             s.context_menu = None;
-                            s.filter_prompt = None;
+                            s.filter_panel = None;
                             cx.notify();
                             return;
                         };
@@ -342,7 +344,7 @@ impl Render for SqllyDataTable {
                             s.context_menu =
                                 Some(menu::ContextMenu::custom(col, pos, items, request));
                         }
-                        s.filter_prompt = None;
+                        s.filter_panel = None;
                         cx.notify();
                     });
                 },
@@ -520,7 +522,6 @@ fn render_context_menu_overlay(
     }
 
     let menu_body = div()
-        .absolute()
         .flex()
         .flex_col()
         .w(px(menu_w))
@@ -539,7 +540,407 @@ fn render_context_menu_overlay(
                 state_backdrop.update(cx, |s, cx| {
                     if s.context_menu.is_some() {
                         s.context_menu = None;
-                        s.filter_prompt = None;
+                        s.filter_panel = None;
+                        cx.notify();
+                    }
+                });
+            },
+        ),
+    ))
+    .with_priority(CONTEXT_MENU_PRIORITY);
+
+    Some(overlay)
+}
+
+/// Fixed width of the filter popover, in pixels.
+const FILTER_PANEL_WIDTH: f32 = 300.0;
+/// Max number of distinct value rows rendered at once (search narrows the set).
+const FILTER_PANEL_MAX_ROWS: usize = 200;
+
+/// Build the Numbers-style per-column filter popover as a `deferred` +
+/// `anchored` overlay, using the exact mechanism as
+/// [`render_context_menu_overlay`] so it paints and receives events outside the
+/// grid's own layout bounds. Returns `None` when no panel is open.
+#[allow(clippy::too_many_lines)]
+fn render_filter_panel_overlay(
+    state: &Entity<GridState>,
+    cx: &mut Context<SqllyDataTable>,
+) -> Option<impl IntoElement> {
+    let s = state.read(cx);
+    let panel = s.filter_panel.clone()?;
+    let theme = s.theme.clone();
+    let col = panel.col;
+    let current_sort = s.sort;
+    let filter_active = s.filters.get(col).is_some_and(|f| f.is_active());
+    let grid_ox = f32::from(s.bounds.origin.x);
+    let grid_oy = f32::from(s.bounds.origin.y);
+
+    // Anchor (grid-relative) -> absolute window coords. The default
+    // `SwitchAnchor` fit mode on `anchored()` handles viewport-edge flipping
+    // automatically using the actual rendered height, so we don't need a
+    // manual estimate or flip calculation here.
+    let abs_x = grid_ox + f32::from(panel.anchor.x);
+    let abs_y = grid_oy + f32::from(panel.anchor.y);
+
+    // Palette (all `Hsla` are `Copy`, so they move freely into closures).
+    let c_bg = theme.menu_bg;
+    let c_line = theme.grid_line;
+    let c_fg = theme.menu_fg;
+    let c_accent = theme.sort_indicator;
+    let c_hover = theme.menu_hover_bg;
+    let c_muted = theme.muted_text;
+
+    let checkbox = move |checked: bool| {
+        let mut b = div()
+            .w(px(14.0))
+            .h(px(14.0))
+            .border_1()
+            .border_color(c_line)
+            .bg(c_bg)
+            .flex()
+            .items_center()
+            .justify_center();
+        if checked {
+            b = b.child(div().w(px(8.0)).h(px(8.0)).bg(c_accent));
+        }
+        b
+    };
+
+    // --- Sort row -----------------------------------------------------------
+    let (asc_active, desc_active) = match current_sort {
+        Some((c, SortDirection::Ascending)) if c == col => (true, false),
+        Some((c, SortDirection::Descending)) if c == col => (false, true),
+        _ => (false, false),
+    };
+    let st_asc = state.clone();
+    let st_desc = state.clone();
+    let sort_row = div()
+        .flex()
+        .gap(px(6.0))
+        .child(
+            div()
+                .flex_1()
+                .h(px(26.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(c_line)
+                .bg(if asc_active { c_accent } else { c_hover })
+                .cursor_pointer()
+                .child("Ascending")
+                .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                    st_asc.update(cx, |s, cx| {
+                        s.set_panel_sort(SortDirection::Ascending);
+                        cx.notify();
+                    });
+                }),
+        )
+        .child(
+            div()
+                .flex_1()
+                .h(px(26.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(c_line)
+                .bg(if desc_active { c_accent } else { c_hover })
+                .cursor_pointer()
+                .child("Descending")
+                .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                    st_desc.update(cx, |s, cx| {
+                        s.set_panel_sort(SortDirection::Descending);
+                        cx.notify();
+                    });
+                }),
+        );
+
+    // --- Operator dropdown --------------------------------------------------
+    let st_op_toggle = state.clone();
+    let op_button = div()
+        .h(px(26.0))
+        .px(px(8.0))
+        .flex()
+        .items_center()
+        .border_1()
+        .border_color(c_line)
+        .bg(c_bg)
+        .cursor_pointer()
+        .child(panel.current_op_label())
+        .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+            st_op_toggle.update(cx, |s, cx| {
+                s.toggle_filter_op_menu();
+                cx.notify();
+            });
+        });
+
+    let op_menu = panel.op_menu_open.then(|| {
+        let mut items: Vec<gpui::AnyElement> = Vec::new();
+        for (i, label) in panel.op_labels().iter().enumerate() {
+            let selected = i == panel.op_index;
+            let st_pick = state.clone();
+            items.push(
+                div()
+                    .h(px(24.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .bg(if selected { c_accent } else { c_bg })
+                    .cursor_pointer()
+                    .child(*label)
+                    .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                        st_pick.update(cx, |s, cx| {
+                            s.set_filter_operator(i);
+                            cx.notify();
+                        });
+                    })
+                    .into_any_element(),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .border_1()
+            .border_color(c_line)
+            .bg(c_bg)
+            .children(items)
+    });
+
+    // --- Operand field(s) ---------------------------------------------------
+    let operand_field = |value: &str, focused: bool, placeholder: &str, input: FilterInput| {
+        let st_focus = state.clone();
+        let (text, is_placeholder) = if value.is_empty() {
+            (placeholder.to_owned(), true)
+        } else {
+            (value.to_owned(), false)
+        };
+        div()
+            .h(px(26.0))
+            .px(px(6.0))
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .border_1()
+            .border_color(if focused { c_accent } else { c_line })
+            .bg(c_bg)
+            .cursor_pointer()
+            .child(
+                div()
+                    .text_color(if is_placeholder { c_muted } else { c_fg })
+                    .child(text),
+            )
+            .children(focused.then(|| div().w(px(1.0)).h(px(14.0)).bg(c_accent)))
+            .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                st_focus.update(cx, |s, cx| {
+                    s.set_filter_focus(input);
+                    cx.notify();
+                });
+            })
+    };
+
+    let operand_placeholder = if panel.kind == crate::data::ColumnKind::Date {
+        "YYYY-MM-DD"
+    } else if crate::filter::uses_number_ops(panel.kind) {
+        "value"
+    } else if panel.op_index == 7 {
+        // Text "matches" operator.
+        "regex"
+    } else {
+        "value"
+    };
+    let operands = panel.needs_operand().then(|| {
+        let mut row = div().flex().flex_col().gap(px(4.0)).child(operand_field(
+            &panel.operand_a.value,
+            panel.focus == FilterInput::OperandA,
+            operand_placeholder,
+            FilterInput::OperandA,
+        ));
+        if panel.needs_second_operand() {
+            row = row
+                .child(div().text_color(c_muted).text_size(px(11.0)).child("and"))
+                .child(operand_field(
+                    &panel.operand_b.value,
+                    panel.focus == FilterInput::OperandB,
+                    operand_placeholder,
+                    FilterInput::OperandB,
+                ));
+        }
+        row
+    });
+
+    // --- Search box ---------------------------------------------------------
+    let st_search = state.clone();
+    let search_focused = panel.focus == FilterInput::Search;
+    let (search_text, search_is_ph) = if panel.search.value.is_empty() {
+        ("Search".to_owned(), true)
+    } else {
+        (panel.search.value.clone(), false)
+    };
+    let search_box = div()
+        .h(px(26.0))
+        .px(px(6.0))
+        .flex()
+        .items_center()
+        .gap(px(2.0))
+        .border_1()
+        .border_color(if search_focused { c_accent } else { c_line })
+        .bg(c_bg)
+        .cursor_pointer()
+        .child(
+            div()
+                .text_color(if search_is_ph { c_muted } else { c_fg })
+                .child(search_text),
+        )
+        .children(search_focused.then(|| div().w(px(1.0)).h(px(14.0)).bg(c_accent)))
+        .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+            st_search.update(cx, |s, cx| {
+                s.set_filter_focus(FilterInput::Search);
+                cx.notify();
+            });
+        });
+
+    // --- (Select All) + value checklist ------------------------------------
+    let st_all = state.clone();
+    let select_all_row = div()
+        .h(px(24.0))
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .cursor_pointer()
+        .child(checkbox(panel.all_visible_checked()))
+        .child("(Select All)")
+        .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+            st_all.update(cx, |s, cx| {
+                s.toggle_filter_select_all();
+                cx.notify();
+            });
+        });
+
+    let visible = panel.visible_indices();
+    let mut value_rows: Vec<gpui::AnyElement> = Vec::new();
+    for &idx in visible.iter().take(FILTER_PANEL_MAX_ROWS) {
+        let row = &panel.distinct[idx];
+        let st_val = state.clone();
+        value_rows.push(
+            div()
+                .h(px(22.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .cursor_pointer()
+                .child(checkbox(row.checked))
+                .child(div().text_color(c_fg).child(row.label.clone()))
+                .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                    st_val.update(cx, |s, cx| {
+                        s.toggle_filter_value(idx);
+                        cx.notify();
+                    });
+                })
+                .into_any_element(),
+        );
+    }
+    let truncated = visible.len() > FILTER_PANEL_MAX_ROWS;
+    let value_list = div()
+        .id("filter-value-list")
+        .flex()
+        .flex_col()
+        .max_h(px(180.0))
+        .overflow_y_scroll()
+        .children(value_rows)
+        .children(truncated.then(|| {
+            div()
+                .text_color(c_muted)
+                .text_size(px(11.0))
+                .child("Refine search to see more…")
+        }));
+
+    // --- Clear (left, disabled when no active filter) + Close (right) -----
+    let st_clear = state.clone();
+    let st_close = state.clone();
+    let clear_bg = if filter_active { c_hover } else { c_bg };
+    let clear_fg = if filter_active { c_fg } else { c_muted };
+    let clear_border = if filter_active { c_line } else { c_muted };
+    let buttons_row = div()
+        .flex()
+        .gap(px(6.0))
+        .child(
+            div()
+                .flex_1()
+                .h(px(28.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(clear_border)
+                .bg(clear_bg)
+                .text_color(clear_fg)
+                .cursor_pointer()
+                .child("Clear Filter")
+                .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                    if !filter_active {
+                        return;
+                    }
+                    st_clear.update(cx, |s, cx| {
+                        s.clear_filter_panel();
+                        cx.notify();
+                    });
+                }),
+        )
+        .child(
+            div()
+                .flex_1()
+                .h(px(28.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(c_line)
+                .bg(c_hover)
+                .cursor_pointer()
+                .child("Close")
+                .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                    st_close.update(cx, |s, cx| {
+                        s.filter_panel = None;
+                        cx.notify();
+                    });
+                }),
+        );
+
+    let panel_body = div()
+        .flex()
+        .flex_col()
+        .w(px(FILTER_PANEL_WIDTH))
+        .p(px(10.0))
+        .gap(px(8.0))
+        .bg(c_bg)
+        .border_1()
+        .border_color(c_line)
+        .text_color(c_fg)
+        .text_size(px(13.0))
+        .child(div().text_color(c_muted).text_size(px(11.0)).child("Sort"))
+        .child(sort_row)
+        .child(
+            div()
+                .text_color(c_muted)
+                .text_size(px(11.0))
+                .child("Filter"),
+        )
+        .child(op_button)
+        .children(op_menu)
+        .children(operands)
+        .child(search_box)
+        .child(select_all_row)
+        .child(value_list)
+        .child(buttons_row);
+
+    let st_backdrop = state.clone();
+    let overlay = deferred(anchored().position(point(px(abs_x), px(abs_y))).child(
+        div().occlude().child(panel_body).on_mouse_down_out(
+            move |_e: &MouseDownEvent, _window, cx| {
+                st_backdrop.update(cx, |s, cx| {
+                    if s.filter_panel.is_some() {
+                        s.filter_panel = None;
                         cx.notify();
                     }
                 });

@@ -25,6 +25,10 @@ pub struct GridTheme {
     pub menu_hover_bg: Hsla,
     /// Foreground color for menu item labels.
     pub menu_fg: Hsla,
+    /// Muted text color for labels, placeholders, and secondary text inside
+    /// the filter panel and context menu. Chosen for legibility against
+    /// `menu_bg` / `bg` in both light and dark palettes.
+    pub muted_text: Hsla,
 }
 
 impl Default for GridTheme {
@@ -46,6 +50,7 @@ impl Default for GridTheme {
             menu_bg: hsla(0.0, 0.0, 1.0, 1.0),
             menu_hover_bg: hsla(0.58, 0.45, 0.85, 1.0),
             menu_fg: hsla(0.0, 0.0, 0.1, 1.0),
+            muted_text: hsla(0.0, 0.0, 0.5, 1.0),
         }
     }
 }
@@ -83,6 +88,7 @@ impl GridTheme {
             menu_bg: hsla(0.0, 0.0, 0.16, 1.0),
             menu_hover_bg: hsla(0.58, 0.45, 0.38, 1.0),
             menu_fg: hsla(0.0, 0.0, 0.90, 1.0),
+            muted_text: hsla(0.0, 0.0, 0.55, 1.0),
         }
     }
 

@@ -15,14 +15,9 @@ use crate::grid::selection::{
 use crate::grid::state::{state_inner, GridState, SCROLLBAR_SIZE};
 use crate::grid::theme::GridTheme;
 
-use gpui::{
-    point, px, size, App, Bounds, CursorStyle, Hsla, PaintQuad, Pixels, Point, Window,
-    WindowTextSystem,
-};
-use std::fmt::Write as _;
+use gpui::{point, px, size, App, Bounds, CursorStyle, Hsla, PaintQuad, Pixels, Point, Window};
 
 const SCROLLBAR_THUMB_COLOR: Hsla = hsla_const(0.0, 0.0, 0.55, 1.0);
-const FILTER_PLACEHOLDER: &str = "Type to filter...";
 
 const fn hsla_const(h: f32, s: f32, l: f32, a: f32) -> Hsla {
     Hsla { h, s, l, a }
@@ -37,7 +32,7 @@ pub(crate) struct PaintData {
     pub(crate) columns: Vec<Column>,
     pub(crate) resolved_formats: Vec<ResolvedColumnFormat>,
     pub(crate) rows: Vec<Vec<crate::data::CellValue>>,
-    pub(crate) filters: Vec<String>,
+    pub(crate) filters_active: Vec<bool>,
     pub(crate) scroll_offset: Point<Pixels>,
     pub(crate) row_height: f32,
     pub(crate) header_height: f32,
@@ -46,7 +41,6 @@ pub(crate) struct PaintData {
     pub(crate) char_width: f32,
     pub(crate) drag_rect: Option<(Point<Pixels>, Point<Pixels>)>,
     pub(crate) hover_hit: Option<HitResult>,
-    pub(crate) filter_prompt: Option<crate::grid::state::FilterPrompt>,
 }
 
 impl PaintData {
@@ -63,7 +57,7 @@ impl PaintData {
             // shared Arc<GridData> plus per-frame Arc clones; the cached
             // `resolved_formats` already remove the resolve_churn hotspot.
             rows: s.data.rows.clone(),
-            filters: s.filters.clone(),
+            filters_active: s.filters.iter().map(|f| f.is_active()).collect(),
             scroll_offset: s.scroll_handle.offset(),
             row_height: s.row_height,
             header_height: s.header_height,
@@ -72,7 +66,6 @@ impl PaintData {
             char_width: s.char_width,
             drag_rect: s.drag_screen_rect(),
             hover_hit: s.hover_hit,
-            filter_prompt: s.filter_prompt.clone(),
         }
     }
 }
@@ -110,6 +103,16 @@ fn fill_quad(window: &mut Window, x: f32, y: f32, w: f32, h: f32, color: Hsla) {
         corner_radii: Default::default(),
         border_style: Default::default(),
     });
+}
+
+fn paint_filter_icon(window: &mut Window, x: f32, y: f32, color: Hsla) {
+    let rows: [(f32, f32); 5] = [(10.0, 2.0), (8.0, 2.0), (6.0, 2.0), (4.0, 2.0), (2.0, 4.0)];
+    let mut cy = y;
+    for (w, h) in rows {
+        let offset = (10.0 - w) * 0.5;
+        fill_quad(window, x + offset, cy, w, h, color);
+        cy += h;
+    }
 }
 
 pub(crate) fn paint_scrollbars(
@@ -397,15 +400,11 @@ pub(crate) fn paint_grid(
             ind_color,
             None,
         );
-        if !data.filters[ci].is_empty() {
-            let marker_w = 4.0;
-            let marker_x = btn_x - marker_w - 2.0;
-            fill_quad(
+        if data.filters_active[ci] {
+            paint_filter_icon(
                 window,
-                marker_x,
+                btn_x - 14.0,
                 oy + (hdr_h - 12.0) * 0.5,
-                marker_w,
-                12.0,
                 theme.sort_indicator,
             );
         }
@@ -445,126 +444,13 @@ pub(crate) fn paint_grid(
     // The context menu is no longer painted here. It is rendered as a
     // `deferred` + `anchored` overlay in `widget.rs` so that it paints — and
     // receives mouse events — on top of everything, including regions outside
-    // the grid widget's layout bounds (e.g. a host header above the grid).
-    if let Some(prompt) = &data.filter_prompt {
-        paint_filter_prompt(
-            window,
-            cx,
-            prompt,
-            ox,
-            oy,
-            sw,
-            sh,
-            fs,
-            theme,
-            &text_system,
-            font_size,
-            line_height,
-        );
-    }
+    // the grid widget's layout bounds (e.g. a host header above the grid). The
+    // filter panel uses the same overlay mechanism, so it is not painted here
+    // either.
 }
 
 fn text_w_approx(text: &str, char_width: f32) -> f32 {
     text.chars().count() as f32 * char_width
-}
-
-#[allow(clippy::too_many_arguments)]
-fn paint_filter_prompt(
-    window: &mut Window,
-    cx: &mut App,
-    prompt: &crate::grid::state::FilterPrompt,
-    ox: f32,
-    oy: f32,
-    sw: f32,
-    sh: f32,
-    fs: f32,
-    theme: &GridTheme,
-    text_system: &WindowTextSystem,
-    font_size: Pixels,
-    line_height: Pixels,
-) {
-    let pad_x = 8.0;
-    let pad_y = 6.0;
-    let min_w: f32 = 220.0;
-    let (text, preview_color) = if prompt.input.is_empty() {
-        (FILTER_PLACEHOLDER.to_owned(), theme.grid_line)
-    } else {
-        (prompt.input.clone(), theme.text_fg)
-    };
-    let mut label_text = String::with_capacity(8 + text.len());
-    let _ = write!(label_text, "Filter: {text}");
-    // Approximate width using a per-character heuristic. The same `fs * 0.6`
-    // width factor used elsewhere is consistent given the monospace font.
-    let label_w = label_text.chars().count() as f32 * (fs * 0.6);
-    let w = min_w.max(label_w + pad_x * 2.0);
-    let h = fs + pad_y * 2.0;
-    // Anchor is stored grid-relative (from last_mouse_pos); shift by the grid
-    // origin to paint in absolute window space.
-    let ax = ox + f32::from(prompt.anchor.x);
-    let ay = oy + f32::from(prompt.anchor.y);
-    let mut mx = ax;
-    let mut my = ay;
-    if mx + w > ox + sw {
-        mx = ox + sw - w - 4.0;
-    }
-    if my + h > oy + sh {
-        my = oy + sh - h - 4.0;
-    }
-    fill_quad(window, mx, my, w, h, theme.menu_bg);
-    fill_quad(window, mx, my, w, 1.0, theme.grid_line);
-    fill_quad(window, mx, my + h - 1.0, w, 1.0, theme.grid_line);
-    fill_quad(window, mx, my, 1.0, h, theme.grid_line);
-    fill_quad(window, mx + w - 1.0, my, 1.0, h, theme.grid_line);
-
-    let font = gpui::font("monospace");
-    let run = gpui::TextRun {
-        len: label_text.len(),
-        color: preview_color,
-        font: font.clone(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    let shaped = text_system.shape_line(label_text.clone().into(), font_size, &[run], None);
-    let _ = shaped.paint(
-        Point {
-            x: px(mx + pad_x),
-            y: px(my + pad_y),
-        },
-        line_height,
-        window,
-        cx,
-    );
-
-    let cur_x = if !prompt.input.is_empty() {
-        // Shape the prefix + cursor-side text to measure real width.
-        let prefix = "Filter: ";
-        let prefix_run = gpui::TextRun {
-            len: prefix.len(),
-            color: theme.text_fg,
-            font: font.clone(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let prefix_shaped = text_system.shape_line(prefix.into(), font_size, &[prefix_run], None);
-        let safe_chars = prompt.cursor_chars.min(prompt.input.chars().count());
-        let before_cursor: String = prompt.input.chars().take(safe_chars).collect();
-        let before_run = gpui::TextRun {
-            len: before_cursor.len(),
-            color: theme.text_fg,
-            font: font.clone(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let before_shaped =
-            text_system.shape_line(before_cursor.into(), font_size, &[before_run], None);
-        mx + pad_x + f32::from(prefix_shaped.width) + f32::from(before_shaped.width)
-    } else {
-        mx + pad_x + "Filter: ".chars().count() as f32 * (fs * 0.6)
-    };
-    fill_quad(window, cur_x, my + pad_y, 1.0, fs + 2.0, theme.text_fg);
 }
 
 pub(crate) fn paint_status_bar(
