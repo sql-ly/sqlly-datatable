@@ -206,6 +206,11 @@ pub struct GridState {
     pub scroll_at_click: Option<Point<Pixels>>,
     pub last_mouse_pos: Option<Point<Pixels>>,
     pub status_bar_height: f32,
+    /// When `true`, the debug status bar is painted at the bottom of the grid
+    /// showing click position, scroll offset, and hovered cell. Off by
+    /// default; enable via [`SqllyDataTableBuilder::debug_bar`] or
+    /// [`GridState::set_debug_bar_enabled`].
+    pub debug_bar_enabled: bool,
     pub click_pos: Option<Point<Pixels>>,
     pub click_hit: Option<HitResult>,
     pub hover_hit: Option<HitResult>,
@@ -313,6 +318,7 @@ impl GridState {
             scroll_at_click: None,
             last_mouse_pos: None,
             status_bar_height: 24.0,
+            debug_bar_enabled: false,
             click_pos: None,
             click_hit: None,
             hover_hit: None,
@@ -336,6 +342,13 @@ impl GridState {
         self.config = config;
         self.rebuild_resolved_formats();
         self.recompute();
+    }
+
+    /// Enable or disable the debug status bar at runtime. When enabled, a bar
+    /// is painted at the bottom of the grid showing click position, scroll
+    /// offset, and hovered cell coordinates.
+    pub fn set_debug_bar_enabled(&mut self, enabled: bool) {
+        self.debug_bar_enabled = enabled;
     }
 
     fn rebuild_resolved_formats(&mut self) {
@@ -507,7 +520,8 @@ impl GridState {
                 self.clear_drag();
             }
             HitResult::SortButton(col) => {
-                self.selection = Selection::Column(col);
+                // Clicking the sort button only toggles sort; it must not
+                // change the current selection (the column is not selected).
                 self.toggle_sort(col);
                 self.clear_drag();
             }

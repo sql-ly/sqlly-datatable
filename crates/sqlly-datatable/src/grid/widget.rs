@@ -60,6 +60,7 @@ impl SqllyDataTable {
             config: GridConfig::default(),
             context_menu_provider: None,
             theme: None,
+            debug_bar: false,
         }
     }
 }
@@ -70,6 +71,7 @@ pub struct SqllyDataTableBuilder {
     config: GridConfig,
     context_menu_provider: Option<ContextMenuProviderHandle>,
     theme: Option<GridTheme>,
+    debug_bar: bool,
 }
 
 impl SqllyDataTableBuilder {
@@ -100,15 +102,26 @@ impl SqllyDataTableBuilder {
         self
     }
 
+    /// Enable or disable the debug status bar. When enabled, a bar is painted
+    /// at the bottom of the grid showing click position, scroll offset, and
+    /// hovered cell coordinates. Off by default.
+    #[must_use]
+    pub fn debug_bar(mut self, enabled: bool) -> Self {
+        self.debug_bar = enabled;
+        self
+    }
+
     /// Build the widget inside the supplied [`gpui::App`].
     pub fn build(self, cx: &mut App) -> SqllyDataTable {
         let focus = cx.focus_handle();
         let provider = self.context_menu_provider;
         let theme_override = self.theme;
+        let debug_bar = self.debug_bar;
         let follow_system_appearance = theme_override.is_none();
         let state = cx.new(|_cx| {
             let mut s = GridState::new(self.data, self.config, focus.clone());
             s.context_menu_provider = provider;
+            s.debug_bar_enabled = debug_bar;
             if let Some(theme) = theme_override {
                 s.theme = theme;
             }
@@ -160,6 +173,7 @@ impl Render for SqllyDataTable {
         let focus_handle = self.state.read(cx).focus_handle.clone();
         let focus_left = focus_handle.clone();
         let focus_right = focus_handle.clone();
+        let debug_bar = self.state.read(cx).debug_bar_enabled;
         let status_h = self.state.read(cx).status_bar_height;
 
         // Process any pending menu action from a previous mouse-down on a
@@ -244,7 +258,7 @@ impl Render for SqllyDataTable {
                 )
                 .flex_1(),
             )
-            .child(
+            .children(debug_bar.then(|| {
                 canvas(
                     move |_bounds, _window, cx| -> StatusBarData {
                         let s = state_status.read(cx);
@@ -254,8 +268,8 @@ impl Render for SqllyDataTable {
                         paint_status_bar(&data, window, cx, bounds);
                     },
                 )
-                .h(px(status_h)),
-            )
+                .h(px(status_h))
+            }))
             .children(render_context_menu_overlay(&self.state, cx))
             .on_mouse_down(
                 MouseButton::Left,
