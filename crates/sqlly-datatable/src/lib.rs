@@ -63,8 +63,8 @@ pub use data::{
 };
 pub use filter::{ColumnFilter, FilterPredicate, NumberOp, TextOp};
 pub use grid::{
-    BusyState, ContextMenu, ContextMenuItem, ContextMenuProvider, ContextMenuRequest,
-    ContextMenuSelection, ContextMenuTarget, FilterPanel, GridState, GridTheme, HitResult,
-    MenuAction, MenuItem, ScrollbarAxis, SelectedCellContext, SelectedRowContext, Selection,
-    SortDirection, SqllyDataTable, SqllyDataTableBuilder,
+    BusyState, ColumnContext, ContextMenu, ContextMenuItem, ContextMenuProvider,
+    ContextMenuRequest, ContextMenuSelection, ContextMenuTarget, FilterPanel, GridState, GridTheme,
+    HitResult, MenuAction, MenuItem, ScrollbarAxis, SelectedCellContext, SelectedRowContext,
+    Selection, SortDirection, SqllyDataTable, SqllyDataTableBuilder,
 };

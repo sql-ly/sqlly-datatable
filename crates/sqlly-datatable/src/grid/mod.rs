@@ -14,7 +14,7 @@ pub mod widget;
 // Flat re-exports so external code can write `use sqlly_datatable::GridState`
 // without mapping the internal split.
 pub use context_menu::{
-    ContextMenuItem, ContextMenuProvider, ContextMenuRequest, ContextMenuSelection,
+    ColumnContext, ContextMenuItem, ContextMenuProvider, ContextMenuRequest, ContextMenuSelection,
     ContextMenuTarget, SelectedCellContext, SelectedRowContext,
 };
 pub use menu::{ContextMenu, MenuAction, MenuItem};

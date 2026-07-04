@@ -354,6 +354,27 @@ impl ContextMenuRequest {
         self.for_each_selected_row(|r| out.push(r));
         out
     }
+
+    /// Construct a request for testing. Builds the internal `Arc` shared
+    /// state from plain owned vectors so downstream test suites can create
+    /// `ContextMenuRequest` instances without the widget.
+    #[must_use]
+    pub fn for_test(
+        target: ContextMenuTarget,
+        selection: Option<ContextMenuSelection>,
+        rows: Vec<Vec<CellValue>>,
+        columns: Vec<ColumnContext>,
+    ) -> Self {
+        let display_indices: Vec<usize> = (0..rows.len()).collect();
+        Self {
+            target,
+            selection,
+            rows: Arc::new(rows),
+            display_indices: Arc::new(display_indices),
+            columns: columns.into(),
+            column_oriented: false,
+        }
+    }
 }
 
 /// Public menu item returned by a [`ContextMenuProvider`]. Distinct from the
