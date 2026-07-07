@@ -15,7 +15,9 @@ use crate::grid::selection::{
 use crate::grid::state::{state_inner, GridState, SCROLLBAR_SIZE};
 use crate::grid::theme::GridTheme;
 
-use gpui::{point, px, size, App, Bounds, CursorStyle, Hsla, PaintQuad, Pixels, Point, Window};
+use gpui::{
+    point, px, size, App, Bounds, ContentMask, CursorStyle, Hsla, PaintQuad, Pixels, Point, Window,
+};
 use std::sync::Arc;
 
 const SCROLLBAR_THUMB_COLOR: Hsla = hsla_const(0.0, 0.0, 0.55, 1.0);
@@ -145,6 +147,9 @@ pub(crate) fn paint_scrollbars(
         let track_h = sh - data.header_height - reserved_h;
         if track_h > 0.0 {
             fill_quad(window, track_x, track_y, SCROLLBAR_SIZE, track_h, track_bg);
+            // 1px separator so the track reads as a scrollbar gutter rather
+            // than blending into the last column.
+            fill_quad(window, track_x, track_y, 1.0, track_h, theme.grid_line);
             let thumb_h = ((track_h * (vh / content_h)).max(20.0)).min(track_h);
             let frac = if max_y > 0.0 { sy / max_y } else { 0.0 };
             let thumb_y = track_y + frac * (track_h - thumb_h);
@@ -164,6 +169,9 @@ pub(crate) fn paint_scrollbars(
         let track_w = sw - data.row_header_width - reserved_w;
         if track_w > 0.0 {
             fill_quad(window, track_x, track_y, track_w, SCROLLBAR_SIZE, track_bg);
+            // 1px separator so the track reads as a scrollbar gutter rather
+            // than blending into the bottom row.
+            fill_quad(window, track_x, track_y, track_w, 1.0, theme.grid_line);
             let thumb_w = ((track_w * (vw / content_w)).max(20.0)).min(track_w);
             let frac = if max_x > 0.0 { sx / max_x } else { 0.0 };
             let thumb_x = track_x + frac * (track_w - thumb_w);
@@ -260,20 +268,116 @@ pub(crate) fn paint_grid(
     let vis_rows = ((visible_h / row_h) as usize) + 1;
     let last_row = (first_row + vis_rows).min(data.display_indices.len());
 
-    for dr in first_row..last_row {
-        let y = oy + data_y + (dr as f32 * row_h) - sy;
-        if y + row_h < oy + data_y || y > oy + sh {
-            continue;
-        }
-        let row_idx = data.display_indices[dr];
-        let row_sel = is_row_selected(&data.selection, dr);
-        let alt = dr % 2 == 1;
-        if row_sel {
-            fill_quad(window, ox + rhw, y, sw - rhw, row_h, theme.selection_bg);
-        } else if alt {
-            fill_quad(window, ox + rhw, y, sw - rhw, row_h, theme.alt_row_bg);
-        }
+    // Scrollbar reservations — mirrors `paint_scrollbars`. Cell/header
+    // painting is clipped so partially visible rows/columns never bleed
+    // past the grid bounds or under the scrollbar strips.
+    let (content_w, content_h) = (
+        data.columns.iter().map(|c| c.width).sum::<f32>(),
+        data.display_indices.len() as f32 * row_h,
+    );
+    let rsv_w = if content_h > sh - hdr_h {
+        SCROLLBAR_SIZE
+    } else {
+        0.0
+    };
+    let rsv_h = if content_w > sw - rhw {
+        SCROLLBAR_SIZE
+    } else {
+        0.0
+    };
+    let clip = |x: f32, y: f32, w: f32, h: f32| {
+        Some(ContentMask {
+            bounds: Bounds {
+                origin: point(px(x), px(y)),
+                size: size(px(w.max(0.0)), px(h.max(0.0))),
+            },
+        })
+    };
 
+    let cells_clip = clip(ox + rhw, oy + data_y, sw - rhw - rsv_w, sh - data_y - rsv_h);
+    window.with_content_mask(cells_clip, |window| {
+        for dr in first_row..last_row {
+            let y = oy + data_y + (dr as f32 * row_h) - sy;
+            if y + row_h < oy + data_y || y > oy + sh {
+                continue;
+            }
+            let row_idx = data.display_indices[dr];
+            let row_sel = is_row_selected(&data.selection, dr);
+            let alt = dr % 2 == 1;
+            if row_sel {
+                fill_quad(window, ox + rhw, y, sw - rhw, row_h, theme.selection_bg);
+            } else if alt {
+                fill_quad(window, ox + rhw, y, sw - rhw, row_h, theme.alt_row_bg);
+            }
+
+            let mut col_x = rhw - sx;
+            for (ci, col) in data.columns.iter().enumerate() {
+                let x = ox + col_x;
+                let w = col.width;
+                if x + w < ox + rhw || x > ox + sw {
+                    col_x += w;
+                    continue;
+                }
+                let cell_sel = is_cell_selected(&data.selection, dr, ci);
+                if cell_sel {
+                    fill_quad(window, x, y, w, row_h, theme.selection_bg);
+                }
+                let cell = &data.rows[row_idx][ci];
+                let fmt = &data.resolved_formats[ci];
+                let (text, is_neg) = crate::format::format_cell(cell, fmt);
+                let color = if is_neg && fmt.number.show_negative_red {
+                    theme.negative_fg
+                } else {
+                    theme.text_fg
+                };
+                let text_w = text_w_approx(&text, cw);
+                let tx = match fmt.alignment() {
+                    crate::config::TextAlignment::Left => x + 8.0,
+                    crate::config::TextAlignment::Center => x + (w - text_w) * 0.5,
+                    crate::config::TextAlignment::Right => x + w - text_w - 8.0,
+                };
+                let ty = y + (row_h - fs) * 0.5;
+                paint_txt(window, cx, &text, tx, ty, color, Some(w - 16.0));
+                fill_quad(window, x + w, y, 1.0, row_h, theme.grid_line);
+                col_x += w;
+            }
+            fill_quad(window, ox, y + row_h, sw, 1.0, theme.grid_line);
+        }
+    });
+
+    let row_header_clip = clip(ox, oy + data_y, rhw, sh - data_y - rsv_h);
+    window.with_content_mask(row_header_clip, |window| {
+        for dr in first_row..last_row {
+            let y = oy + data_y + (dr as f32 * row_h) - sy;
+            if y + row_h < oy + data_y || y > oy + sh {
+                continue;
+            }
+            let row_sel = is_row_selected(&data.selection, dr);
+            let alt = dr % 2 == 1;
+            let rh_bg = if row_sel {
+                theme.selection_bg
+            } else if alt {
+                theme.alt_row_bg
+            } else {
+                theme.row_header_bg
+            };
+            fill_quad(window, ox, y, rhw, row_h, rh_bg);
+            paint_txt(
+                window,
+                cx,
+                &(dr + 1).to_string(),
+                ox + 6.0,
+                y + (row_h - fs) * 0.5,
+                theme.header_fg,
+                None,
+            );
+            fill_quad(window, ox, y + row_h, rhw, 1.0, theme.grid_line);
+        }
+    });
+
+    fill_quad(window, ox, oy, sw, hdr_h, theme.header_bg);
+    let header_clip = clip(ox + rhw, oy, sw - rhw - rsv_w, hdr_h);
+    window.with_content_mask(header_clip, |window| {
         let mut col_x = rhw - sx;
         for (ci, col) in data.columns.iter().enumerate() {
             let x = ox + col_x;
@@ -282,132 +386,71 @@ pub(crate) fn paint_grid(
                 col_x += w;
                 continue;
             }
-            let cell_sel = is_cell_selected(&data.selection, dr, ci);
-            if cell_sel {
-                fill_quad(window, x, y, w, row_h, theme.selection_bg);
+            if is_column_selected(&data.selection, ci) {
+                fill_quad(window, x, oy, w, hdr_h, theme.selection_bg);
             }
-            let cell = &data.rows[row_idx][ci];
-            let fmt = &data.resolved_formats[ci];
-            let (text, is_neg) = crate::format::format_cell(cell, fmt);
-            let color = if is_neg && fmt.number.show_negative_red {
-                theme.negative_fg
-            } else {
-                theme.text_fg
-            };
-            let text_w = text_w_approx(&text, cw);
-            let tx = match fmt.alignment() {
-                crate::config::TextAlignment::Left => x + 8.0,
-                crate::config::TextAlignment::Center => x + (w - text_w) * 0.5,
-                crate::config::TextAlignment::Right => x + w - text_w - 8.0,
-            };
-            let ty = y + (row_h - fs) * 0.5;
-            paint_txt(window, cx, &text, tx, ty, color, Some(w - 16.0));
-            fill_quad(window, x + w, y, 1.0, row_h, theme.grid_line);
-            col_x += w;
-        }
-        fill_quad(window, ox, y + row_h, sw, 1.0, theme.grid_line);
-    }
-
-    for dr in first_row..last_row {
-        let y = oy + data_y + (dr as f32 * row_h) - sy;
-        if y + row_h < oy + data_y || y > oy + sh {
-            continue;
-        }
-        let row_sel = is_row_selected(&data.selection, dr);
-        let alt = dr % 2 == 1;
-        let rh_bg = if row_sel {
-            theme.selection_bg
-        } else if alt {
-            theme.alt_row_bg
-        } else {
-            theme.row_header_bg
-        };
-        fill_quad(window, ox, y, rhw, row_h, rh_bg);
-        paint_txt(
-            window,
-            cx,
-            &(dr + 1).to_string(),
-            ox + 6.0,
-            y + (row_h - fs) * 0.5,
-            theme.header_fg,
-            None,
-        );
-        fill_quad(window, ox, y + row_h, rhw, 1.0, theme.grid_line);
-    }
-
-    fill_quad(window, ox, oy, sw, hdr_h, theme.header_bg);
-    let mut col_x = rhw - sx;
-    for (ci, col) in data.columns.iter().enumerate() {
-        let x = ox + col_x;
-        let w = col.width;
-        if x + w < ox + rhw || x > ox + sw {
-            col_x += w;
-            continue;
-        }
-        if is_column_selected(&data.selection, ci) {
-            fill_quad(window, x, oy, w, hdr_h, theme.selection_bg);
-        }
-        paint_txt(
-            window,
-            cx,
-            &col.name,
-            x + 8.0,
-            oy + (hdr_h - fs) * 0.5,
-            theme.header_fg,
-            Some(w - 28.0),
-        );
-        let btn_w = 20.0;
-        let btn_x = x + w - btn_w;
-        // The sort button shares the column header's background color, set off
-        // from the header only by a 1px outline drawn around it.
-        let btn_bg = theme.header_bg;
-        let btn_y = oy + 4.0;
-        let btn_h = hdr_h - 8.0;
-        fill_quad(window, btn_x, btn_y, btn_w, btn_h, btn_bg);
-        // 1px outline around the button (top, bottom, left, right edges).
-        fill_quad(window, btn_x, btn_y, btn_w, 1.0, theme.grid_line);
-        fill_quad(
-            window,
-            btn_x,
-            btn_y + btn_h - 1.0,
-            btn_w,
-            1.0,
-            theme.grid_line,
-        );
-        fill_quad(window, btn_x, btn_y, 1.0, btn_h, theme.grid_line);
-        fill_quad(
-            window,
-            btn_x + btn_w - 1.0,
-            btn_y,
-            1.0,
-            btn_h,
-            theme.grid_line,
-        );
-        let (ind, ind_color) = match data.sort {
-            Some((sc, SortDirection::Ascending)) if sc == ci => ("^", theme.sort_indicator),
-            Some((sc, SortDirection::Descending)) if sc == ci => ("v", theme.sort_indicator),
-            _ => ("-", theme.header_fg),
-        };
-        paint_txt(
-            window,
-            cx,
-            ind,
-            btn_x + (btn_w - cw) * 0.5,
-            oy + (hdr_h - fs) * 0.5,
-            ind_color,
-            None,
-        );
-        if data.filters_active[ci] {
-            paint_filter_icon(
+            paint_txt(
                 window,
-                btn_x - 14.0,
-                oy + (hdr_h - 12.0) * 0.5,
-                theme.sort_indicator,
+                cx,
+                &col.name,
+                x + 8.0,
+                oy + (hdr_h - fs) * 0.5,
+                theme.header_fg,
+                Some(w - 28.0),
             );
+            let btn_w = 20.0;
+            let btn_x = x + w - btn_w;
+            // The sort button shares the column header's background color, set off
+            // from the header only by a 1px outline drawn around it.
+            let btn_bg = theme.header_bg;
+            let btn_y = oy + 4.0;
+            let btn_h = hdr_h - 8.0;
+            fill_quad(window, btn_x, btn_y, btn_w, btn_h, btn_bg);
+            // 1px outline around the button (top, bottom, left, right edges).
+            fill_quad(window, btn_x, btn_y, btn_w, 1.0, theme.grid_line);
+            fill_quad(
+                window,
+                btn_x,
+                btn_y + btn_h - 1.0,
+                btn_w,
+                1.0,
+                theme.grid_line,
+            );
+            fill_quad(window, btn_x, btn_y, 1.0, btn_h, theme.grid_line);
+            fill_quad(
+                window,
+                btn_x + btn_w - 1.0,
+                btn_y,
+                1.0,
+                btn_h,
+                theme.grid_line,
+            );
+            let (ind, ind_color) = match data.sort {
+                Some((sc, SortDirection::Ascending)) if sc == ci => ("^", theme.sort_indicator),
+                Some((sc, SortDirection::Descending)) if sc == ci => ("v", theme.sort_indicator),
+                _ => ("-", theme.header_fg),
+            };
+            paint_txt(
+                window,
+                cx,
+                ind,
+                btn_x + (btn_w - cw) * 0.5,
+                oy + (hdr_h - fs) * 0.5,
+                ind_color,
+                None,
+            );
+            if data.filters_active[ci] {
+                paint_filter_icon(
+                    window,
+                    btn_x - 14.0,
+                    oy + (hdr_h - 12.0) * 0.5,
+                    theme.sort_indicator,
+                );
+            }
+            fill_quad(window, x + w, oy, 1.0, hdr_h, theme.grid_line);
+            col_x += w;
         }
-        fill_quad(window, x + w, oy, 1.0, hdr_h, theme.grid_line);
-        col_x += w;
-    }
+    });
     fill_quad(window, ox, oy, rhw, hdr_h, theme.row_header_bg);
 
     fill_quad(window, ox, oy + hdr_h, sw, 1.0, theme.grid_line);
@@ -415,24 +458,27 @@ pub(crate) fn paint_grid(
 
     if let Some((start, current)) = data.drag_rect {
         // `drag_rect` corners are grid-relative; shift by the grid origin to
-        // paint them in the window's absolute coordinate space.
+        // paint them in the window's absolute coordinate space. Clipped to the
+        // grid bounds so a drag past the edge cannot paint outside the grid.
         let (sx0, sy0) = (ox + f32::from(start.x), oy + f32::from(start.y));
         let (sx1, sy1) = (ox + f32::from(current.x), oy + f32::from(current.y));
         let (rx, ry) = (sx0.min(sx1), sy0.min(sy1));
         let (rw, rh) = ((sx1 - sx0).abs(), (sy1 - sy0).abs());
-        window.paint_quad(PaintQuad {
-            bounds: Bounds {
-                origin: Point {
-                    x: px(rx),
-                    y: px(ry),
+        window.with_content_mask(clip(ox, oy, sw, sh), |window| {
+            window.paint_quad(PaintQuad {
+                bounds: Bounds {
+                    origin: Point {
+                        x: px(rx),
+                        y: px(ry),
+                    },
+                    size: size(px(rw), px(rh)),
                 },
-                size: size(px(rw), px(rh)),
-            },
-            background: hsla_const(0.0, 0.0, 0.0, 0.0).into(),
-            border_color: hsla_const(0.0, 0.0, 0.0, 0.0),
-            border_widths: Default::default(),
-            corner_radii: Default::default(),
-            border_style: Default::default(),
+                background: hsla_const(0.0, 0.0, 0.0, 0.0).into(),
+                border_color: hsla_const(0.0, 0.0, 0.0, 0.0),
+                border_widths: Default::default(),
+                corner_radii: Default::default(),
+                border_style: Default::default(),
+            });
         });
     }
 
