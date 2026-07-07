@@ -3,7 +3,7 @@
 //! cursor handling.
 
 use crate::compare_cells;
-use crate::data::{CellValue, ColumnKind, GridData};
+use crate::data::{CellValue, ColumnKind, GridData, GridDataError};
 use crate::filter::{
     cell_passes_filter, parse_ymd_to_unix, uses_number_ops, ColumnFilter, FilterPredicate,
     NumberOp, TextOp,
@@ -689,6 +689,51 @@ impl GridState {
         self.config = config;
         self.rebuild_resolved_formats();
         self.recompute();
+    }
+
+    /// Append rows to the grid in place — the streaming-results fast path.
+    ///
+    /// Rows are validated against the rectangular invariant, then appended to
+    /// the canonical `data.rows`, the paint-path `data_rows` snapshot, and the
+    /// display order. With no active sort or per-column filter this is
+    /// O(new rows): the fresh indices are pushed onto `display_indices`
+    /// directly. When a sort or filter is active, [`GridState::recompute`]
+    /// re-derives the full display order so the new rows land in the right
+    /// place.
+    ///
+    /// The `data_rows` Arc is extended via [`Arc::make_mut`]; a clone only
+    /// occurs if a paint or context-menu snapshot is still alive, so repeated
+    /// appends stay cheap. Selection, scroll position, filters, and sort state
+    /// are untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GridDataError::RaggedRow`] (with the would-be absolute row
+    /// index) if any incoming row's length differs from the column count; the
+    /// grid is left unmodified in that case.
+    pub fn append_rows(&mut self, rows: Vec<Vec<CellValue>>) -> Result<(), GridDataError> {
+        let expected = self.data.columns.len();
+        let base = self.data.rows.len();
+        for (offset, row) in rows.iter().enumerate() {
+            if row.len() != expected {
+                return Err(GridDataError::RaggedRow {
+                    row_index: base + offset,
+                    expected,
+                    actual: row.len(),
+                });
+            }
+        }
+        if rows.is_empty() {
+            return Ok(());
+        }
+        Arc::make_mut(&mut self.data_rows).extend(rows.iter().cloned());
+        self.data.rows.extend(rows);
+        if self.sort.is_some() || self.filters.iter().any(ColumnFilter::is_active) {
+            self.recompute();
+        } else {
+            Arc::make_mut(&mut self.display_indices).extend(base..self.data.rows.len());
+        }
+        Ok(())
     }
 
     /// Enable or disable the debug status bar at runtime. When enabled, a bar
