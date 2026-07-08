@@ -175,11 +175,28 @@ pub const SCROLLBAR_SIZE: f32 = 20.0;
 /// Polling interval used to drive auto-scroll during drag.
 pub const EDGE_SCROLL_TICK_MS: u64 = 16;
 
+/// Windowed-row mode: the grid presents `total_rows` virtual rows (scrollbar,
+/// row numbers, hit-testing, selection all speak the virtual index space)
+/// while `data.rows` holds only a resident window of them starting at
+/// `offset`. The host pages rows in/out with [`GridState::set_row_window`] as
+/// the user scrolls, keeping memory O(window) for arbitrarily large sets.
+/// Sorting and filtering are disabled while a window is active — the grid
+/// only sees a slice of the data, so a resident-only sort would lie.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowWindow {
+    /// Total rows in the virtual set.
+    pub total_rows: usize,
+    /// Virtual index of `data.rows[0]`.
+    pub offset: usize,
+}
+
 /// Complete grid state owned by a GPUI `Entity<GridState>`.
 #[derive(Debug)]
 pub struct GridState {
     pub data: GridData,
     pub config: GridConfig,
+    /// When `Some`, the grid is in windowed-row mode (see [`RowWindow`]).
+    pub window: Option<RowWindow>,
     /// Cached resolved-format list, kept in sync with `data.columns` and
     /// `config`. Paint, copy, and filter read this directly instead of
     /// recomputing per cell.
@@ -639,6 +656,7 @@ impl GridState {
         Self {
             data,
             config,
+            window: None,
             resolved_formats,
             data_rows,
             display_indices,
@@ -733,7 +751,91 @@ impl GridState {
         } else {
             Arc::make_mut(&mut self.display_indices).extend(base..self.data.rows.len());
         }
+        if let Some(window) = &mut self.window {
+            window.total_rows += self.data.rows.len() - base;
+        }
         Ok(())
+    }
+
+    /// Number of rows the grid PRESENTS — the basis for the scrollbar, row
+    /// numbers, hit-testing, and selection clamping. Equal to the sort/filter
+    /// display order length normally, or the virtual total in windowed mode.
+    #[must_use]
+    pub fn display_row_count(&self) -> usize {
+        self.window
+            .map(|w| w.total_rows)
+            .unwrap_or(self.display_indices.len())
+    }
+
+    /// Maps a display-row index to an index into `data.rows`. Normal mode
+    /// goes through the sort/filter display order; windowed mode subtracts
+    /// the window offset. `None` when the display row is out of range or not
+    /// currently resident (windowed rows that have not been paged in).
+    #[must_use]
+    pub fn resident_row_for_display(&self, display_row: usize) -> Option<usize> {
+        match self.window {
+            Some(w) => display_row
+                .checked_sub(w.offset)
+                .filter(|r| *r < self.data.rows.len() && display_row < w.total_rows),
+            None => self.display_indices.get(display_row).copied(),
+        }
+    }
+
+    /// Enter (or update) windowed-row mode: the grid presents `total_rows`
+    /// virtual rows while holding only `rows` in memory, positioned so that
+    /// `rows[0]` is virtual row `offset`. Replaces the resident rows, the
+    /// paint snapshot, and the display order in one step; selection and
+    /// scroll position (both in virtual space) are untouched. Clears any
+    /// active sort/filter — they are unsupported while windowed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GridDataError::RaggedRow`] if any incoming row's length
+    /// differs from the column count; the grid is left unmodified.
+    pub fn set_row_window(
+        &mut self,
+        total_rows: usize,
+        offset: usize,
+        rows: Vec<Vec<CellValue>>,
+    ) -> Result<(), GridDataError> {
+        let expected = self.data.columns.len();
+        for (i, row) in rows.iter().enumerate() {
+            if row.len() != expected {
+                return Err(GridDataError::RaggedRow {
+                    row_index: offset + i,
+                    expected,
+                    actual: row.len(),
+                });
+            }
+        }
+        self.sort = None;
+        for filter in &mut self.filters {
+            *filter = ColumnFilter::default();
+        }
+        self.data_rows = Arc::new(rows.clone());
+        self.display_indices = Arc::new((0..rows.len()).collect());
+        self.data.rows = rows;
+        self.window = Some(RowWindow { total_rows, offset });
+        Ok(())
+    }
+
+    /// The half-open display-row range currently visible in the viewport,
+    /// derived from the scroll offset and painted bounds — the same math the
+    /// paint pass uses. Hosts drive window paging from this: when the range
+    /// nears the resident window's edges, page more rows in via
+    /// [`GridState::set_row_window`]. Returns `(0, 0)` before first paint.
+    #[must_use]
+    pub fn visible_row_range(&self) -> (usize, usize) {
+        let total = self.display_row_count();
+        let sy: f32 = self.scroll_handle.offset().y.into();
+        let vh: f32 = self.bounds.size.height.into();
+        let visible_h = vh - self.header_height;
+        if visible_h <= 0.0 || self.row_height <= 0.0 {
+            return (0, 0);
+        }
+        let first = ((sy / self.row_height) as usize).min(total);
+        let last = (first + (visible_h / self.row_height) as usize + 1).min(total);
+        (first, last)
     }
 
     /// Enable or disable the debug status bar at runtime. When enabled, a bar
@@ -842,6 +944,12 @@ impl GridState {
     }
 
     pub fn recompute(&mut self) {
+        // Windowed-row mode: sort/filter are unsupported, the display order
+        // is always the identity over the resident window.
+        if self.window.is_some() {
+            self.display_indices = Arc::new((0..self.data.rows.len()).collect());
+            return;
+        }
         let mut indices: Vec<usize> = (0..self.data.rows.len())
             .filter(|&row_idx| {
                 self.data.columns.iter().enumerate().all(|(col_idx, _col)| {
@@ -871,7 +979,7 @@ impl GridState {
 
     fn content_size(&self) -> (f32, f32) {
         let cw: f32 = self.data.columns.iter().map(|c| c.width).sum();
-        let ch = self.display_indices.len() as f32 * self.row_height;
+        let ch = self.display_row_count() as f32 * self.row_height;
         (cw, ch)
     }
 
@@ -970,6 +1078,11 @@ impl GridState {
     }
 
     pub fn toggle_sort(&mut self, col: usize) {
+        // Sorting is unsupported in windowed-row mode — only a slice of the
+        // set is resident, so a resident-only sort would present wrong data.
+        if self.window.is_some() {
+            return;
+        }
         self.sort = match self.sort {
             Some((c, SortDirection::Ascending)) if c == col => {
                 Some((col, SortDirection::Descending))
@@ -1080,7 +1193,7 @@ impl GridState {
     pub(crate) fn context_menu_target_from_hit(&self, hit: HitResult) -> Option<ContextMenuTarget> {
         match hit {
             HitResult::Cell(row, col) => {
-                let source_row = self.display_indices.get(row).copied().unwrap_or(row);
+                let source_row = self.resident_row_for_display(row).unwrap_or(row);
                 Some(ContextMenuTarget::Cell {
                     display_row_index: row,
                     source_row_index: source_row,
@@ -1088,7 +1201,7 @@ impl GridState {
                 })
             }
             HitResult::RowHeader(row) => {
-                let source_row = self.display_indices.get(row).copied().unwrap_or(row);
+                let source_row = self.resident_row_for_display(row).unwrap_or(row);
                 Some(ContextMenuTarget::RowHeader {
                     display_row_index: row,
                     source_row_index: source_row,
@@ -1153,6 +1266,47 @@ impl GridState {
         target: ContextMenuTarget,
         selection: &Selection,
     ) -> ContextMenuRequest {
+        // Windowed-row mode: the request's row data and display order cover
+        // only the RESIDENT window, so translate the virtual display rows in
+        // the target and selection into resident space (clamped to the
+        // window). Right-clicks land on visible — hence resident — rows, so
+        // this is lossless for the clicked cell; a selection reaching beyond
+        // the window is clamped to its resident part.
+        let mut target = target;
+        let mut selection = selection.clone();
+        if let Some(w) = self.window {
+            let resident_last = self.data.rows.len().saturating_sub(1);
+            let to_resident = |dr: usize| dr.saturating_sub(w.offset).min(resident_last);
+            target = match target {
+                ContextMenuTarget::Cell {
+                    display_row_index,
+                    source_row_index,
+                    column_index,
+                } => ContextMenuTarget::Cell {
+                    display_row_index: to_resident(display_row_index),
+                    source_row_index,
+                    column_index,
+                },
+                ContextMenuTarget::RowHeader {
+                    display_row_index,
+                    source_row_index,
+                } => ContextMenuTarget::RowHeader {
+                    display_row_index: to_resident(display_row_index),
+                    source_row_index,
+                },
+                other => other,
+            };
+            selection = match selection {
+                Selection::Cell(r, c) => Selection::Cell(to_resident(r), c),
+                Selection::Row(r) => Selection::Row(to_resident(r)),
+                Selection::CellRange(r1, c1, r2, c2) => {
+                    Selection::CellRange(to_resident(r1), c1, to_resident(r2), c2)
+                }
+                other => other,
+            };
+        }
+        let selection = &selection;
+
         let nrows = self.display_indices.len();
         let ncols = self.data.columns.len();
 
@@ -1637,7 +1791,7 @@ impl GridState {
     }
 
     pub fn select_all(&mut self) {
-        let nrows = self.display_indices.len();
+        let nrows = self.display_row_count();
         let ncols = self.data.columns.len();
         if nrows > 0 && ncols > 0 {
             self.selection = Selection::CellRange(0, 0, nrows - 1, ncols - 1);
@@ -1648,10 +1802,10 @@ impl GridState {
         let Some((raw_r1, raw_c1, raw_r2, raw_c2)) = self.selection.normalized_bounds() else {
             return;
         };
-        if self.display_indices.is_empty() || self.data.columns.is_empty() {
+        if self.display_row_count() == 0 || self.data.columns.is_empty() {
             return;
         }
-        let last_row = self.display_indices.len() - 1;
+        let last_row = self.display_row_count() - 1;
         let last_col = self.data.columns.len() - 1;
         let r1 = raw_r1.min(last_row);
         let r2 = raw_r2.min(last_row);
@@ -1668,7 +1822,9 @@ impl GridState {
             text.push('\n');
         }
         for dr in r1..=r2 {
-            let row_idx = self.display_indices[dr];
+            let Some(row_idx) = self.resident_row_for_display(dr) else {
+                continue;
+            };
             for c in c1..=c2 {
                 if c > c1 {
                     text.push('\t');
@@ -1758,7 +1914,7 @@ impl GridState {
     }
 
     fn move_selection(&mut self, dx: i32, dy: i32) {
-        let nrows = self.display_indices.len() as i32;
+        let nrows = self.display_row_count() as i32;
         let ncols = self.data.columns.len() as i32;
         if nrows == 0 || ncols == 0 {
             return;
@@ -1793,7 +1949,7 @@ impl GridState {
     /// holding the anchor corner fixed (shift+arrow). Mirrors the Swift grid's
     /// anchor/extent range model. Row and column selections are left unchanged.
     fn extend_selection(&mut self, dx: i32, dy: i32) {
-        let nrows = self.display_indices.len() as i32;
+        let nrows = self.display_row_count() as i32;
         let ncols = self.data.columns.len() as i32;
         if nrows == 0 || ncols == 0 {
             return;
@@ -1910,7 +2066,7 @@ impl GridState {
                 return HitResult::None;
             }
             let row_idx = (row_y / self.row_height) as usize;
-            if row_idx < self.display_indices.len() {
+            if row_idx < self.display_row_count() {
                 return HitResult::RowHeader(row_idx);
             }
             return HitResult::None;
@@ -1921,7 +2077,7 @@ impl GridState {
             return HitResult::None;
         }
         let row_idx = (row_y / self.row_height) as usize;
-        if row_idx >= self.display_indices.len() {
+        if row_idx >= self.display_row_count() {
             return HitResult::None;
         }
         let mut acc = 0.0;

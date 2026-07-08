@@ -29,6 +29,10 @@ const fn hsla_const(h: f32, s: f32, l: f32, a: f32) -> Hsla {
 #[derive(Clone)]
 pub(crate) struct PaintData {
     pub(crate) display_indices: Arc<Vec<usize>>,
+    /// Windowed-row mode (see [`crate::grid::state::RowWindow`]): the grid
+    /// presents `total_rows` virtual rows while `rows` holds only a resident
+    /// window starting at `offset`.
+    pub(crate) window: Option<crate::grid::state::RowWindow>,
     pub(crate) selection: Selection,
     pub(crate) sort: Option<(usize, SortDirection)>,
     pub(crate) theme: GridTheme,
@@ -50,6 +54,7 @@ impl PaintData {
     pub(crate) fn from_state(s: &GridState) -> Self {
         Self {
             display_indices: Arc::clone(&s.display_indices),
+            window: s.window,
             selection: s.selection.clone(),
             sort: s.sort,
             theme: s.theme.clone(),
@@ -65,6 +70,25 @@ impl PaintData {
             char_width: s.char_width,
             drag_rect: s.drag_screen_rect(),
             hover_hit: s.hover_hit,
+        }
+    }
+
+    /// Number of rows the grid presents (virtual total in windowed mode).
+    fn display_row_count(&self) -> usize {
+        self.window
+            .map(|w| w.total_rows)
+            .unwrap_or(self.display_indices.len())
+    }
+
+    /// Maps a display row to an index into `rows`, or `None` when the row is
+    /// not resident (windowed rows that have not been paged in yet — painted
+    /// as an empty placeholder row).
+    fn resident_row(&self, display_row: usize) -> Option<usize> {
+        match self.window {
+            Some(w) => display_row
+                .checked_sub(w.offset)
+                .filter(|r| *r < self.rows.len()),
+            None => self.display_indices.get(display_row).copied(),
         }
     }
 }
@@ -126,7 +150,7 @@ pub(crate) fn paint_scrollbars(
     let scroll = data.scroll_offset;
     let (content_w, content_h) = (
         data.columns.iter().map(|c| c.width).sum::<f32>(),
-        data.display_indices.len() as f32 * data.row_height,
+        data.display_row_count() as f32 * data.row_height,
     );
     let vw_full = sw - data.row_header_width;
     let vh_full = sh - data.header_height;
@@ -264,16 +288,16 @@ pub(crate) fn paint_grid(
 
     let data_y = hdr_h;
     let visible_h = sh - data_y;
-    let first_row = ((sy / row_h) as usize).min(data.display_indices.len());
+    let first_row = ((sy / row_h) as usize).min(data.display_row_count());
     let vis_rows = ((visible_h / row_h) as usize) + 1;
-    let last_row = (first_row + vis_rows).min(data.display_indices.len());
+    let last_row = (first_row + vis_rows).min(data.display_row_count());
 
     // Scrollbar reservations — mirrors `paint_scrollbars`. Cell/header
     // painting is clipped so partially visible rows/columns never bleed
     // past the grid bounds or under the scrollbar strips.
     let (content_w, content_h) = (
         data.columns.iter().map(|c| c.width).sum::<f32>(),
-        data.display_indices.len() as f32 * row_h,
+        data.display_row_count() as f32 * row_h,
     );
     let rsv_w = if content_h > sh - hdr_h {
         SCROLLBAR_SIZE
@@ -301,7 +325,6 @@ pub(crate) fn paint_grid(
             if y + row_h < oy + data_y || y > oy + sh {
                 continue;
             }
-            let row_idx = data.display_indices[dr];
             let row_sel = is_row_selected(&data.selection, dr);
             let alt = dr % 2 == 1;
             if row_sel {
@@ -309,6 +332,13 @@ pub(crate) fn paint_grid(
             } else if alt {
                 fill_quad(window, ox + rhw, y, sw - rhw, row_h, theme.alt_row_bg);
             }
+            // Windowed rows that are not resident paint as an empty
+            // placeholder row (background + grid lines only) — the host is
+            // already paging them in.
+            let Some(row_idx) = data.resident_row(dr) else {
+                fill_quad(window, ox, y + row_h, sw, 1.0, theme.grid_line);
+                continue;
+            };
 
             let mut col_x = rhw - sx;
             for (ci, col) in data.columns.iter().enumerate() {

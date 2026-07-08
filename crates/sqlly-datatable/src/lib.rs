@@ -65,6 +65,6 @@ pub use filter::{ColumnFilter, FilterPredicate, NumberOp, TextOp};
 pub use grid::{
     BusyState, ColumnContext, ContextMenu, ContextMenuItem, ContextMenuProvider,
     ContextMenuRequest, ContextMenuSelection, ContextMenuTarget, FilterPanel, GridState, GridTheme,
-    HitResult, MenuAction, MenuItem, ScrollbarAxis, SelectedCellContext, SelectedRowContext,
-    Selection, SortDirection, SqllyDataTable, SqllyDataTableBuilder,
+    HitResult, MenuAction, MenuItem, RowWindow, ScrollbarAxis, SelectedCellContext,
+    SelectedRowContext, Selection, SortDirection, SqllyDataTable, SqllyDataTableBuilder,
 };
