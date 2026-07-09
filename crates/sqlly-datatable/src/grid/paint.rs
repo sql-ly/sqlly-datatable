@@ -249,17 +249,24 @@ pub(crate) fn paint_grid(
     let font_size = px(fs);
     let line_height = px(fs * 1.2);
     let font = gpui::font("monospace");
-    let paint_txt = |win: &mut Window,
-                     cx: &mut App,
-                     text: &str,
-                     x: f32,
-                     y: f32,
-                     color: Hsla,
-                     max_w: Option<f32>| {
+    let italic_font = {
+        let mut f = font.clone();
+        f.style = gpui::FontStyle::Italic;
+        f
+    };
+    let paint_txt_styled = |win: &mut Window,
+                            cx: &mut App,
+                            text: &str,
+                            x: f32,
+                            y: f32,
+                            color: Hsla,
+                            max_w: Option<f32>,
+                            italic: bool| {
+        let face = if italic { &italic_font } else { &font };
         let mk_run = |t: &str| gpui::TextRun {
             len: t.len(),
             color,
-            font: font.clone(),
+            font: face.clone(),
             background_color: None,
             underline: None,
             strikethrough: None,
@@ -281,6 +288,15 @@ pub(crate) fn paint_grid(
             _ => shaped,
         };
         let _ = shaped.paint(Point { x: px(x), y: px(y) }, line_height, win, cx);
+    };
+    let paint_txt = |win: &mut Window,
+                     cx: &mut App,
+                     text: &str,
+                     x: f32,
+                     y: f32,
+                     color: Hsla,
+                     max_w: Option<f32>| {
+        paint_txt_styled(win, cx, text, x, y, color, max_w, false);
     };
 
     fill_quad(window, ox, oy, sw, sh, theme.bg);
@@ -318,6 +334,9 @@ pub(crate) fn paint_grid(
         })
     };
 
+    // Row backgrounds and horizontal grid lines stop at the last column's
+    // right edge; the area past the columns stays blank.
+    let cols_w = (content_w - sx).clamp(0.0, sw - rhw);
     let cells_clip = clip(ox + rhw, oy + data_y, sw - rhw - rsv_w, sh - data_y - rsv_h);
     window.with_content_mask(cells_clip, |window| {
         for dr in first_row..last_row {
@@ -328,15 +347,15 @@ pub(crate) fn paint_grid(
             let row_sel = is_row_selected(&data.selection, dr);
             let alt = dr % 2 == 1;
             if row_sel {
-                fill_quad(window, ox + rhw, y, sw - rhw, row_h, theme.selection_bg);
+                fill_quad(window, ox + rhw, y, cols_w, row_h, theme.selection_bg);
             } else if alt {
-                fill_quad(window, ox + rhw, y, sw - rhw, row_h, theme.alt_row_bg);
+                fill_quad(window, ox + rhw, y, cols_w, row_h, theme.alt_row_bg);
             }
             // Windowed rows that are not resident paint as an empty
             // placeholder row (background + grid lines only) — the host is
             // already paging them in.
             let Some(row_idx) = data.resident_row(dr) else {
-                fill_quad(window, ox, y + row_h, sw, 1.0, theme.grid_line);
+                fill_quad(window, ox, y + row_h, rhw + cols_w, 1.0, theme.grid_line);
                 continue;
             };
 
@@ -354,8 +373,18 @@ pub(crate) fn paint_grid(
                 }
                 let cell = &data.rows[row_idx][ci];
                 let fmt = &data.resolved_formats[ci];
-                let (text, is_neg) = crate::format::format_cell(cell, fmt);
-                let color = if is_neg && fmt.number.show_negative_red {
+                let is_null = matches!(cell, crate::data::CellValue::None);
+                if is_null && fmt.null.background && !cell_sel {
+                    fill_quad(window, x, y, w, row_h, theme.null_bg);
+                }
+                let (text, is_neg) = if is_null {
+                    (fmt.null.text.clone(), false)
+                } else {
+                    crate::format::format_cell(cell, fmt)
+                };
+                let color = if is_null {
+                    theme.null_fg
+                } else if is_neg && fmt.number.show_negative_red {
                     theme.negative_fg
                 } else {
                     theme.text_fg
@@ -367,11 +396,20 @@ pub(crate) fn paint_grid(
                     crate::config::TextAlignment::Right => x + w - text_w - 8.0,
                 };
                 let ty = y + (row_h - fs) * 0.5;
-                paint_txt(window, cx, &text, tx, ty, color, Some(w - 16.0));
+                paint_txt_styled(
+                    window,
+                    cx,
+                    &text,
+                    tx,
+                    ty,
+                    color,
+                    Some(w - 16.0),
+                    is_null && fmt.null.italic,
+                );
                 fill_quad(window, x + w, y, 1.0, row_h, theme.grid_line);
                 col_x += w;
             }
-            fill_quad(window, ox, y + row_h, sw, 1.0, theme.grid_line);
+            fill_quad(window, ox, y + row_h, rhw + cols_w, 1.0, theme.grid_line);
         }
     });
 

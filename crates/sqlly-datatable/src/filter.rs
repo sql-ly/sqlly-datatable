@@ -273,6 +273,7 @@ mod tests {
             date: DateFormat::default(),
             boolean: BooleanFormat::default(),
             string: StringFormat::default(),
+            null: crate::config::NullFormat::default(),
             replacements: vec![],
             replacement_timing: ReplacementTiming::AfterFormat,
         }

@@ -29,6 +29,12 @@ pub struct GridTheme {
     /// the filter panel and context menu. Chosen for legibility against
     /// `menu_bg` / `bg` in both light and dark palettes.
     pub muted_text: Hsla,
+    /// Foreground for the null-value placeholder (see
+    /// [`crate::config::NullFormat`]).
+    pub null_fg: Hsla,
+    /// Distinctive background painted behind null-value cells when the
+    /// column's [`crate::config::NullFormat::background`] is enabled.
+    pub null_bg: Hsla,
 }
 
 impl Default for GridTheme {
@@ -51,6 +57,8 @@ impl Default for GridTheme {
             menu_hover_bg: hsla(0.58, 0.45, 0.85, 1.0),
             menu_fg: hsla(0.0, 0.0, 0.1, 1.0),
             muted_text: hsla(0.0, 0.0, 0.5, 1.0),
+            null_fg: hsla(0.0, 0.0, 0.45, 1.0),
+            null_bg: hsla(0.13, 0.55, 0.90, 1.0),
         }
     }
 }
@@ -89,6 +97,8 @@ impl GridTheme {
             menu_hover_bg: hsla(0.58, 0.45, 0.38, 1.0),
             menu_fg: hsla(0.0, 0.0, 0.90, 1.0),
             muted_text: hsla(0.0, 0.0, 0.55, 1.0),
+            null_fg: hsla(0.0, 0.0, 0.60, 1.0),
+            null_bg: hsla(0.13, 0.35, 0.22, 1.0),
         }
     }
 

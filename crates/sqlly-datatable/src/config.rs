@@ -139,6 +139,32 @@ impl Default for StringFormat {
     }
 }
 
+/// How a cell with no value ([`crate::data::CellValue::None`]) is displayed.
+/// The grid-wide default is set via [`GridConfig::default_null`]; individual
+/// columns can override it through [`ColumnOverride::null`]. Columns without
+/// an override use the grid default, and callers that never set
+/// `default_null` get the built-in default: italic `NULL` over a distinctive
+/// background (`GridTheme::null_bg` / `null_fg`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NullFormat {
+    /// Placeholder text shown in the cell.
+    pub text: String,
+    /// Render the placeholder in italics.
+    pub italic: bool,
+    /// Fill the cell with the theme's `null_bg` behind the placeholder.
+    pub background: bool,
+}
+
+impl Default for NullFormat {
+    fn default() -> Self {
+        Self {
+            text: "NULL".into(),
+            italic: true,
+            background: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplacementRule {
     pub find: String,
@@ -162,6 +188,7 @@ pub struct ColumnOverride {
     pub date: Option<DateFormat>,
     pub boolean: Option<BooleanFormat>,
     pub string: Option<StringFormat>,
+    pub null: Option<NullFormat>,
     pub replacements: Option<Vec<ReplacementRule>>,
     pub replacement_timing: Option<ReplacementTiming>,
 }
@@ -173,6 +200,7 @@ pub struct ResolvedColumnFormat {
     pub date: DateFormat,
     pub boolean: BooleanFormat,
     pub string: StringFormat,
+    pub null: NullFormat,
     pub replacements: Vec<ReplacementRule>,
     pub replacement_timing: ReplacementTiming,
 }
@@ -285,6 +313,9 @@ pub struct GridConfig {
     pub default_date: DateFormat,
     pub default_boolean: BooleanFormat,
     pub default_string: StringFormat,
+    /// Grid-wide display for cells with no value; per-column override via
+    /// [`ColumnOverride::null`].
+    pub default_null: NullFormat,
     pub default_replacements: Vec<ReplacementRule>,
     pub replacement_timing: ReplacementTiming,
     pub column_overrides: Vec<ColumnOverride>,
@@ -298,6 +329,7 @@ impl Default for GridConfig {
             default_date: DateFormat::default(),
             default_boolean: BooleanFormat::default(),
             default_string: StringFormat::default(),
+            default_null: NullFormat::default(),
             default_replacements: vec![],
             replacement_timing: ReplacementTiming::AfterFormat,
             column_overrides: vec![],
@@ -323,6 +355,9 @@ impl GridConfig {
             string: o
                 .and_then(|o| o.string.clone())
                 .unwrap_or_else(|| self.default_string.clone()),
+            null: o
+                .and_then(|o| o.null.clone())
+                .unwrap_or_else(|| self.default_null.clone()),
             replacements: o
                 .and_then(|o| o.replacements.clone())
                 .unwrap_or_else(|| self.default_replacements.clone()),

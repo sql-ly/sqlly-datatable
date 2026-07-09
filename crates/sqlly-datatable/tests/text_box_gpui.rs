@@ -52,6 +52,7 @@ fn default_format_options_yield_safe_resolved_format() {
         date: sqlly_datatable::DateFormat::default(),
         boolean: sqlly_datatable::BooleanFormat::default(),
         string: StringFormat::default(),
+        null: sqlly_datatable::NullFormat::default(),
         replacements: vec![],
         replacement_timing: sqlly_datatable::ReplacementTiming::default(),
     };

@@ -54,9 +54,9 @@ pub mod format;
 pub mod grid;
 
 pub use config::{
-    BooleanFormat, ColumnOverride, DateFormat, GridConfig, KeyBinding, KeyBindings, NumberFormat,
-    RelativeDateFormat, RelativeUnit, ReplacementRule, ReplacementTiming, ResolvedColumnFormat,
-    StringFormat, TextAlignment, TextCase, TruncationBehavior,
+    BooleanFormat, ColumnOverride, DateFormat, GridConfig, KeyBinding, KeyBindings, NullFormat,
+    NumberFormat, RelativeDateFormat, RelativeUnit, ReplacementRule, ReplacementTiming,
+    ResolvedColumnFormat, StringFormat, TextAlignment, TextCase, TruncationBehavior,
 };
 pub use data::{
     compare_cells, sample_data, CellValue, Column, ColumnKind, GridData, GridDataError,

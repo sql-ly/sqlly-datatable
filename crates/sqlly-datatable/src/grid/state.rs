@@ -993,6 +993,24 @@ impl GridState {
         ((cw - vw).max(0.0), (ch - vh).max(0.0))
     }
 
+    /// Re-clamp the scroll offset after the grid's layout bounds change
+    /// (e.g. the host resizes the area allocated to the grid). Without this
+    /// the offset can sit beyond the new maximum until the next scroll event,
+    /// leaving the painted rows and scrollbar geometry stale. Called only
+    /// when bounds actually change, so it adds no per-frame cost.
+    pub(crate) fn clamp_scroll_to_bounds(&mut self) {
+        let (mx, my) = self.max_scroll();
+        let s = self.scroll_handle.offset();
+        let nx = f32::from(s.x).clamp(0.0, mx);
+        let ny = f32::from(s.y).clamp(0.0, my);
+        if nx != f32::from(s.x) || ny != f32::from(s.y) {
+            self.scroll_handle.set_offset(Point {
+                x: px(nx),
+                y: px(ny),
+            });
+        }
+    }
+
     fn scrollbar_reserved(&self) -> (f32, f32) {
         let (cw, ch) = self.content_size();
         let vw: f32 = self.bounds.size.width.into();

@@ -244,6 +244,7 @@ impl Render for SqllyDataTable {
                             let mut dirty = false;
                             if s.bounds != bounds {
                                 s.bounds = bounds;
+                                s.clamp_scroll_to_bounds();
                                 dirty = true;
                             }
                             if s.window_viewport != viewport {

@@ -5,6 +5,23 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-07-09
+
+### Added
+- Configurable null-value display (`NullFormat`): grid-wide default via
+  `GridConfig::default_null`, per-column override via `ColumnOverride::null`.
+  Built-in default renders italic `NULL` over a distinctive background; new
+  `GridTheme::null_fg` / `null_bg` colors in both light and dark palettes.
+
+### Changed
+- Zebra striping, row-selection highlight, and horizontal grid lines now stop
+  at the last column's right edge; the area past the columns stays blank.
+
+### Fixed
+- Scroll offset is re-clamped when the grid's allocated bounds change, so the
+  visible rows and scrollbar geometry update immediately on resize instead of
+  waiting for the next scroll event.
+
 ## [1.7.0] - 2026-07-09
 
 ### Added
