@@ -1094,6 +1094,10 @@ impl GridState {
     }
 
     pub fn handle_mouse_down(&mut self, pos: Point<Pixels>, shift: bool) {
+        self.handle_mouse_down_with_modifiers(pos, shift, false);
+    }
+
+    pub fn handle_mouse_down_with_modifiers(&mut self, pos: Point<Pixels>, shift: bool, cmd: bool) {
         let hit = self.hit_test(pos);
         self.click_pos = Some(pos);
         self.click_hit = Some(hit);
@@ -1115,8 +1119,32 @@ impl GridState {
                 self.clear_drag();
             }
             HitResult::ColumnHeader(col) => {
-                self.selection = Selection::Column(col);
-                self.clear_drag();
+                if cmd {
+                    // Cmd-click toggles the column in/out of the current
+                    // column selection set.
+                    let mut cols: Vec<usize> = match &self.selection {
+                        Selection::Column(c) => vec![*c],
+                        Selection::Columns(cs) => cs.clone(),
+                        _ => Vec::new(),
+                    };
+                    if let Some(idx) = cols.iter().position(|&c| c == col) {
+                        cols.remove(idx);
+                    } else {
+                        cols.push(col);
+                        cols.sort_unstable();
+                    }
+                    self.selection = match cols.len() {
+                        0 => Selection::None,
+                        1 => Selection::Column(cols[0]),
+                        _ => Selection::Columns(cols),
+                    };
+                    self.clear_drag();
+                } else {
+                    self.selection = Selection::Column(col);
+                    // Dragging across headers extends to a column range.
+                    self.start_drag(pos);
+                    self.drag_start_hit = Some(HitResult::ColumnHeader(col));
+                }
             }
             HitResult::SortButton(col) => {
                 // Clicking the sort button only toggles sort; it must not
@@ -1126,6 +1154,29 @@ impl GridState {
             }
             HitResult::ContextMenuItem(_) => {}
             HitResult::RowHeader(row) => {
+                if cmd {
+                    // Cmd-click toggles the row in/out of the current row
+                    // selection set.
+                    let mut rows: Vec<usize> = match &self.selection {
+                        Selection::Row(r) => vec![*r],
+                        Selection::RowRange(r1, r2) => (*r1.min(r2)..=*r1.max(r2)).collect(),
+                        Selection::Rows(rs) => rs.clone(),
+                        _ => Vec::new(),
+                    };
+                    if let Some(idx) = rows.iter().position(|&r| r == row) {
+                        rows.remove(idx);
+                    } else {
+                        rows.push(row);
+                        rows.sort_unstable();
+                    }
+                    self.selection = match rows.len() {
+                        0 => Selection::None,
+                        1 => Selection::Row(rows[0]),
+                        _ => Selection::Rows(rows),
+                    };
+                    self.clear_drag();
+                    return;
+                }
                 self.selection = if shift {
                     if let Selection::Row(prev) = self.selection {
                         let (s, e) = (prev, row);
@@ -1140,6 +1191,30 @@ impl GridState {
                 self.drag_start_hit = Some(HitResult::RowHeader(row));
             }
             HitResult::Cell(row, col) => {
+                if cmd {
+                    // Cmd-click toggles the individual cell in/out of the
+                    // current cell selection set.
+                    let mut cells: Vec<(usize, usize)> = match &self.selection {
+                        Selection::Cell(r, c) => vec![(*r, *c)],
+                        Selection::Cells(cs) => cs.clone(),
+                        _ => Vec::new(),
+                    };
+                    if let Some(idx) = cells.iter().position(|&rc| rc == (row, col)) {
+                        cells.remove(idx);
+                    } else {
+                        cells.push((row, col));
+                        cells.sort_unstable();
+                    }
+                    self.selection = match cells.len() {
+                        0 => Selection::None,
+                        1 => Selection::Cell(cells[0].0, cells[0].1),
+                        _ => Selection::Cells(cells),
+                    };
+                    self.range_anchor = None;
+                    self.range_active = None;
+                    self.clear_drag();
+                    return;
+                }
                 self.selection = if shift {
                     // Extend from the existing anchor (Swift: anchor/extent).
                     let anchor = self
@@ -1355,10 +1430,11 @@ impl GridState {
         // explicit whole-column selection) selects cells within one column,
         // not whole rows. `clicked_row()` is always `None` for these targets,
         // so the request's row accessors stay empty.
-        let column_oriented = matches!(
-            target,
-            ContextMenuTarget::ColumnHeader { .. } | ContextMenuTarget::SortButton { .. }
-        ) || matches!(selection, Selection::Column(_));
+        let column_oriented =
+            matches!(
+                target,
+                ContextMenuTarget::ColumnHeader { .. } | ContextMenuTarget::SortButton { .. }
+            ) || matches!(selection, Selection::Column(_) | Selection::Columns(_));
 
         ContextMenuRequest::new(
             target,
@@ -1724,6 +1800,18 @@ impl GridState {
             (HitResult::RowHeader(r1r), HitResult::RowHeader(r2r)) => {
                 self.selection = Selection::RowRange(r1r.min(r2r), r1r.max(r2r));
             }
+            (
+                HitResult::ColumnHeader(c1),
+                HitResult::ColumnHeader(c2)
+                | HitResult::SortButton(c2)
+                | HitResult::ColumnBorder(c2),
+            ) => {
+                self.selection = if c1 == c2 {
+                    Selection::Column(c1)
+                } else {
+                    Selection::Columns((c1.min(c2)..=c1.max(c2)).collect())
+                };
+            }
             _ => {}
         }
     }
@@ -1795,6 +1883,76 @@ impl GridState {
         let ncols = self.data.columns.len();
         if nrows > 0 && ncols > 0 {
             self.selection = Selection::CellRange(0, 0, nrows - 1, ncols - 1);
+        }
+    }
+
+    /// Display-row indices of fully selected rows, sorted ascending and
+    /// clamped to the current row count. Empty when the selection is not
+    /// row-oriented.
+    #[must_use]
+    pub fn selected_rows(&self) -> Vec<usize> {
+        let nrows = self.display_row_count();
+        match &self.selection {
+            Selection::Row(r) if *r < nrows => vec![*r],
+            Selection::RowRange(r1, r2) => {
+                (*r1.min(r2)..=*r1.max(r2)).filter(|&r| r < nrows).collect()
+            }
+            Selection::Rows(rows) => rows.iter().copied().filter(|&r| r < nrows).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Column indices of fully selected columns, sorted ascending and clamped
+    /// to the current column count. Empty when the selection is not
+    /// column-oriented.
+    #[must_use]
+    pub fn selected_columns(&self) -> Vec<usize> {
+        let ncols = self.data.columns.len();
+        match &self.selection {
+            Selection::Column(c) if *c < ncols => vec![*c],
+            Selection::Columns(cols) => cols.iter().copied().filter(|&c| c < ncols).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Every selected `(display_row, column)` cell, expanded from whatever
+    /// the current selection variant is (single cell, ranges, whole rows or
+    /// columns, or discontiguous cmd-click sets), clamped to the current data
+    /// dimensions. Row-major order.
+    #[must_use]
+    pub fn selected_cells(&self) -> Vec<(usize, usize)> {
+        let nrows = self.display_row_count();
+        let ncols = self.data.columns.len();
+        if nrows == 0 || ncols == 0 {
+            return Vec::new();
+        }
+        match &self.selection {
+            Selection::None => Vec::new(),
+            Selection::Cell(r, c) if *r < nrows && *c < ncols => vec![(*r, *c)],
+            Selection::Cell(..) => Vec::new(),
+            Selection::Cells(cells) => cells
+                .iter()
+                .copied()
+                .filter(|&(r, c)| r < nrows && c < ncols)
+                .collect(),
+            Selection::Column(_) | Selection::Columns(_) => {
+                let cols = self.selected_columns();
+                (0..nrows)
+                    .flat_map(|r| cols.iter().map(move |&c| (r, c)))
+                    .collect()
+            }
+            Selection::Row(_) | Selection::RowRange(..) | Selection::Rows(_) => self
+                .selected_rows()
+                .into_iter()
+                .flat_map(|r| (0..ncols).map(move |c| (r, c)))
+                .collect(),
+            Selection::CellRange(r1, c1, r2, c2) => {
+                let (rmin, rmax) = (*r1.min(r2), *r1.max(r2));
+                let (cmin, cmax) = (*c1.min(c2), *c1.max(c2));
+                (rmin..=rmax.min(nrows.saturating_sub(1)))
+                    .flat_map(|r| (cmin..=cmax.min(ncols.saturating_sub(1))).map(move |c| (r, c)))
+                    .collect()
+            }
         }
     }
 

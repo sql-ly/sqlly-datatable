@@ -297,7 +297,11 @@ impl Render for SqllyDataTable {
                             s.context_menu = None;
                             s.filter_panel = None;
                         }
-                        s.handle_mouse_down(rel, event.modifiers.shift);
+                        s.handle_mouse_down_with_modifiers(
+                            rel,
+                            event.modifiers.shift,
+                            event.modifiers.platform,
+                        );
                         cx.notify();
                     });
                 },

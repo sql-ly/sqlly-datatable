@@ -13,10 +13,16 @@ pub enum Selection {
     Cell(usize, usize),
     Row(usize),
     Column(usize),
+    /// Multiple whole columns. Sorted ascending, deduped, non-empty.
+    Columns(Vec<usize>),
     /// Inclusive `(r1, c1)` to `(r2, c2)`. Always `r1 <= r2 && c1 <= c2`.
     CellRange(usize, usize, usize, usize),
     /// Inclusive `[r1, r2]`.
     RowRange(usize, usize),
+    /// Multiple whole rows. Sorted ascending, deduped, non-empty.
+    Rows(Vec<usize>),
+    /// Multiple individual cells `(row, col)`. Deduped, non-empty.
+    Cells(Vec<(usize, usize)>),
 }
 
 impl Selection {
@@ -26,6 +32,11 @@ impl Selection {
     pub fn normalized_bounds(&self) -> Option<(usize, usize, usize, usize)> {
         match *self {
             Selection::None => None,
+            Selection::Columns(ref cols) => {
+                let min = *cols.iter().min()?;
+                let max = *cols.iter().max()?;
+                Some((0, min, usize::MAX, max))
+            }
             Selection::Cell(r, c) => Some((r, c, r, c)),
             Selection::Row(r) => Some((r, 0, r, usize::MAX)),
             Selection::Column(c) => Some((0, c, usize::MAX, c)),
@@ -33,6 +44,18 @@ impl Selection {
                 Some((r1.min(r2), c1.min(c2), r1.max(r2), c1.max(c2)))
             }
             Selection::RowRange(r1, r2) => Some((r1.min(r2), 0, r1.max(r2), usize::MAX)),
+            Selection::Rows(ref rows) => {
+                let min = *rows.iter().min()?;
+                let max = *rows.iter().max()?;
+                Some((min, 0, max, usize::MAX))
+            }
+            Selection::Cells(ref cells) => {
+                let rmin = cells.iter().map(|&(r, _)| r).min()?;
+                let rmax = cells.iter().map(|&(r, _)| r).max()?;
+                let cmin = cells.iter().map(|&(_, c)| c).min()?;
+                let cmax = cells.iter().map(|&(_, c)| c).max()?;
+                Some((rmin, cmin, rmax, cmax))
+            }
         }
     }
 }
@@ -80,6 +103,9 @@ pub fn is_cell_selected(sel: &Selection, row: usize, col: usize) -> bool {
             row >= rmin && row <= rmax
         }
         Selection::Column(c) => c == col,
+        Selection::Columns(ref cols) => cols.contains(&col),
+        Selection::Rows(ref rows) => rows.contains(&row),
+        Selection::Cells(ref cells) => cells.contains(&(row, col)),
     }
 }
 
@@ -91,13 +117,18 @@ pub fn is_row_selected(sel: &Selection, row: usize) -> bool {
             let (rmin, rmax) = (r1.min(r2), r1.max(r2));
             row >= rmin && row <= rmax
         }
+        Selection::Rows(ref rows) => rows.contains(&row),
         _ => false,
     }
 }
 
 #[must_use]
 pub fn is_column_selected(sel: &Selection, col: usize) -> bool {
-    matches!(*sel, Selection::Column(c) if c == col)
+    match *sel {
+        Selection::Column(c) => c == col,
+        Selection::Columns(ref cols) => cols.contains(&col),
+        _ => false,
+    }
 }
 
 /// Convert a screen pointer (in window coordinates) to its corresponding

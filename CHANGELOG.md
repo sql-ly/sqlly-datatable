@@ -5,6 +5,21 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-07-09
+
+### Added
+- Multi-selection: drag across column headers to select a contiguous column
+  range; cmd+click column headers, row headers, or individual cells to toggle
+  them in and out of a discontiguous selection. A plain click replaces the
+  selection with only the clicked item.
+- New `Selection` variants: `Columns(Vec<usize>)`, `Rows(Vec<usize>)`, and
+  `Cells(Vec<(usize, usize)>)`.
+- Public accessors for host applications: `GridState::selected_rows`,
+  `GridState::selected_columns`, and `GridState::selected_cells` return the
+  resolved selection clamped to the current data dimensions.
+- `GridState::handle_mouse_down_with_modifiers` carrying the cmd (platform)
+  modifier; `handle_mouse_down` is unchanged for compatibility.
+
 ## [1.6.1] - 2026-07-09
 
 ### Added

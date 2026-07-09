@@ -469,3 +469,173 @@ fn drag_start_is_relative_to_grid_container(cx: &mut TestAppContext) {
         "drag_start should be grid-relative ({rel_x},{rel_y}), got {drag_start:?}"
     );
 }
+
+/// Cmd-clicking a second column header adds it to the column selection;
+/// cmd-clicking a selected one removes it; a plain click collapses back to
+/// only the clicked column.
+#[gpui::test]
+fn cmd_click_column_headers_multi_selects(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|_window, cx| {
+        SqllyDataTable::builder(sample())
+            .config(GridConfig::default())
+            .build(cx)
+    });
+    cx.run_until_parked();
+
+    let (origin, header_h) = view.read_with(cx, |v, cx| {
+        let s = v.state.read(cx);
+        (s.bounds.origin, s.header_height)
+    });
+    let y = f32::from(origin.y) + header_h * 0.5;
+    let col0_x = f32::from(origin.x) + 50.0 + 60.0;
+    let col1_x = f32::from(origin.x) + 50.0 + 100.0 + 90.0;
+
+    cx.simulate_click(point(px(col0_x), px(y)), Modifiers::none());
+    cx.simulate_click(point(px(col1_x), px(y)), Modifiers::command());
+    cx.run_until_parked();
+
+    let selection = view.read_with(cx, |v, cx| v.state.read(cx).selection.clone());
+    assert_eq!(
+        selection,
+        Selection::Columns(vec![0, 1]),
+        "cmd-click should add column 1, got {selection:?}"
+    );
+    let cols = view.read_with(cx, |v, cx| v.state.read(cx).selected_columns());
+    assert_eq!(cols, vec![0, 1]);
+
+    // Cmd-click column 1 again removes it, collapsing to Column(0).
+    cx.simulate_click(point(px(col1_x), px(y)), Modifiers::command());
+    cx.run_until_parked();
+    let selection = view.read_with(cx, |v, cx| v.state.read(cx).selection.clone());
+    assert_eq!(selection, Selection::Column(0));
+
+    // Plain click replaces the selection with only the clicked column.
+    cx.simulate_click(point(px(col1_x), px(y)), Modifiers::command());
+    cx.simulate_click(point(px(col1_x), px(y)), Modifiers::none());
+    cx.run_until_parked();
+    let selection = view.read_with(cx, |v, cx| v.state.read(cx).selection.clone());
+    assert_eq!(selection, Selection::Column(1));
+}
+
+/// Cmd-clicking row headers accumulates individual rows.
+#[gpui::test]
+fn cmd_click_row_headers_multi_selects(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|_window, cx| {
+        SqllyDataTable::builder(sample())
+            .config(GridConfig::default())
+            .build(cx)
+    });
+    cx.run_until_parked();
+
+    let (origin, header_h, row_h) = view.read_with(cx, |v, cx| {
+        let s = v.state.read(cx);
+        (s.bounds.origin, s.header_height, s.row_height)
+    });
+    let x = f32::from(origin.x) + 25.0;
+    let row_y = |r: f32| f32::from(origin.y) + header_h + row_h * (r + 0.5);
+
+    cx.simulate_click(point(px(x), px(row_y(0.0))), Modifiers::none());
+    cx.simulate_click(point(px(x), px(row_y(2.0))), Modifiers::command());
+    cx.simulate_click(point(px(x), px(row_y(4.0))), Modifiers::command());
+    cx.run_until_parked();
+
+    let selection = view.read_with(cx, |v, cx| v.state.read(cx).selection.clone());
+    assert_eq!(
+        selection,
+        Selection::Rows(vec![0, 2, 4]),
+        "cmd-clicks should accumulate rows, got {selection:?}"
+    );
+    let rows = view.read_with(cx, |v, cx| v.state.read(cx).selected_rows());
+    assert_eq!(rows, vec![0, 2, 4]);
+}
+
+/// Cmd-clicking individual cells accumulates them; plain click resets to the
+/// last clicked cell only.
+#[gpui::test]
+fn cmd_click_cells_multi_selects(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|_window, cx| {
+        SqllyDataTable::builder(sample())
+            .config(GridConfig::default())
+            .build(cx)
+    });
+    cx.run_until_parked();
+
+    let (origin, header_h, row_h) = view.read_with(cx, |v, cx| {
+        let s = v.state.read(cx);
+        (s.bounds.origin, s.header_height, s.row_height)
+    });
+    let cell = |r: f32, c: usize| {
+        let x = f32::from(origin.x)
+            + if c == 0 {
+                50.0 + 60.0
+            } else {
+                50.0 + 100.0 + 90.0
+            };
+        let y = f32::from(origin.y) + header_h + row_h * (r + 0.5);
+        point(px(x), px(y))
+    };
+
+    cx.simulate_click(cell(0.0, 0), Modifiers::none());
+    cx.simulate_click(cell(1.0, 1), Modifiers::command());
+    cx.simulate_click(cell(3.0, 0), Modifiers::command());
+    cx.run_until_parked();
+
+    let selection = view.read_with(cx, |v, cx| v.state.read(cx).selection.clone());
+    assert_eq!(
+        selection,
+        Selection::Cells(vec![(0, 0), (1, 1), (3, 0)]),
+        "cmd-clicks should accumulate cells, got {selection:?}"
+    );
+    let cells = view.read_with(cx, |v, cx| v.state.read(cx).selected_cells());
+    assert_eq!(cells, vec![(0, 0), (1, 1), (3, 0)]);
+
+    // Plain click clears the set down to the clicked cell.
+    cx.simulate_click(cell(2.0, 1), Modifiers::none());
+    cx.run_until_parked();
+    let selection = view.read_with(cx, |v, cx| v.state.read(cx).selection.clone());
+    assert_eq!(selection, Selection::Cell(2, 1));
+}
+
+/// Pressing on one column header and dragging to another selects the whole
+/// contiguous range of columns.
+#[gpui::test]
+fn drag_across_column_headers_selects_range(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|_window, cx| {
+        SqllyDataTable::builder(sample())
+            .config(GridConfig::default())
+            .build(cx)
+    });
+    cx.run_until_parked();
+
+    let (origin, header_h) = view.read_with(cx, |v, cx| {
+        let s = v.state.read(cx);
+        (s.bounds.origin, s.header_height)
+    });
+    let y = f32::from(origin.y) + header_h * 0.5;
+    let col0_x = f32::from(origin.x) + 50.0 + 60.0;
+    let col1_x = f32::from(origin.x) + 50.0 + 100.0 + 90.0;
+
+    cx.simulate_mouse_down(
+        point(px(col0_x), px(y)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_move(
+        point(px(col1_x), px(y)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_up(
+        point(px(col1_x), px(y)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.run_until_parked();
+
+    let selection = view.read_with(cx, |v, cx| v.state.read(cx).selection.clone());
+    assert_eq!(
+        selection,
+        Selection::Columns(vec![0, 1]),
+        "header drag should select the column range, got {selection:?}"
+    );
+}
