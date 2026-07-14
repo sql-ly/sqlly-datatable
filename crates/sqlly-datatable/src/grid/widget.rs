@@ -20,6 +20,7 @@ use crate::pivot::sidebar::PivotSidebar;
 use crate::pivot::state::PivotState;
 use crate::pivot::widget::PivotGrid;
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
     anchored, canvas, deferred, div, hsla, point, pulsating_between, px, relative, Animation,
     AnimationExt, App, AppContext, Context, Corner, Div, Entity, FocusHandle, Focusable,
@@ -62,6 +63,10 @@ pub struct SqllyDataTable {
     pub(crate) pivot: Option<PivotParts>,
     /// The active tab. Only meaningful while the pivot tab is enabled.
     active_tab: GridTab,
+    /// Prevents opening the pivot while a host is still loading its source
+    /// rows. The tab remains visible and may display `pivot_status`.
+    pivot_locked: bool,
+    pivot_status: Option<String>,
     /// When `true`, the grid swaps between the built-in light/dark
     /// [`GridTheme`] palettes to follow the OS window appearance. Disabled
     /// automatically when the caller supplies an explicit theme override.
@@ -80,6 +85,8 @@ impl SqllyDataTable {
             state,
             pivot: None,
             active_tab: GridTab::Grid,
+            pivot_locked: false,
+            pivot_status: None,
             follow_system_appearance: true,
             appearance_subscription: None,
         }
@@ -113,13 +120,31 @@ impl SqllyDataTable {
         self.active_tab
     }
 
+    /// Whether the visible pivot tab currently rejects activation.
+    #[must_use]
+    pub fn pivot_locked(&self) -> bool {
+        self.pivot_locked
+    }
+
+    /// Lock or unlock the pivot tab while keeping it visible. `status` is
+    /// rendered beside the Pivot title while locked, for example `Loading`.
+    /// Locking an active pivot returns immediately to the flat grid so a host
+    /// can continue streaming rows without recomputing the pivot snapshot.
+    pub fn set_pivot_locked(&mut self, locked: bool, status: Option<String>) {
+        self.pivot_locked = locked;
+        self.pivot_status = locked.then_some(status).flatten();
+        if locked {
+            self.active_tab = GridTab::Grid;
+        }
+    }
+
     /// Switch between the flat grid and the pivot view. Switching to the
     /// pivot re-syncs its source snapshot if the grid's data changed (e.g.
     /// rows were appended). No-op when the pivot tab is not enabled and
     /// `Pivot` is requested.
     pub fn set_active_tab(&mut self, tab: GridTab, cx: &mut App) {
         if tab == GridTab::Pivot {
-            if self.pivot.is_none() {
+            if self.pivot.is_none() || self.pivot_locked {
                 return;
             }
             self.sync_pivot_source(cx);
@@ -313,6 +338,8 @@ impl SqllyDataTableBuilder {
             state,
             pivot,
             active_tab: GridTab::Grid,
+            pivot_locked: false,
+            pivot_status: None,
             follow_system_appearance,
             appearance_subscription: None,
         }
@@ -398,12 +425,17 @@ impl Render for SqllyDataTable {
         };
 
         let theme = self.state.read(cx).theme.clone();
-        let tab = |label: &'static str, this_tab: GridTab, active: bool, cx: &mut Context<Self>| {
+        let tab = |label: String,
+                   this_tab: GridTab,
+                   active: bool,
+                   locked: bool,
+                   cx: &mut Context<Self>| {
             div()
                 .px(px(14.0))
                 .py(px(5.0))
                 .text_size(px(13.0))
-                .cursor_pointer()
+                .when(!locked, |tab| tab.cursor_pointer())
+                .when(locked, |tab| tab.opacity(0.55))
                 .bg(if active { theme.bg } else { theme.header_bg })
                 .text_color(if active {
                     theme.header_fg
@@ -417,30 +449,37 @@ impl Render for SqllyDataTable {
                     theme.header_bg
                 })
                 .child(label)
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
-                        if this.active_tab == this_tab {
-                            return;
-                        }
-                        this.set_active_tab(this_tab, cx);
-                        // Route keyboard input to the now-visible view.
-                        match this_tab {
-                            GridTab::Grid => {
-                                let focus = this.state.read(cx).focus_handle.clone();
-                                window.focus(&focus);
+                .when(!locked, |tab| {
+                    tab.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
+                            if this.active_tab == this_tab {
+                                return;
                             }
-                            GridTab::Pivot => {
-                                if let Some(p) = &this.pivot {
-                                    let focus = p.state.read(cx).focus_handle.clone();
+                            this.set_active_tab(this_tab, cx);
+                            // Route keyboard input to the now-visible view.
+                            match this_tab {
+                                GridTab::Grid => {
+                                    let focus = this.state.read(cx).focus_handle.clone();
                                     window.focus(&focus);
                                 }
+                                GridTab::Pivot => {
+                                    if let Some(p) = &this.pivot {
+                                        let focus = p.state.read(cx).focus_handle.clone();
+                                        window.focus(&focus);
+                                    }
+                                }
                             }
-                        }
-                        cx.notify();
-                    }),
-                )
+                            cx.notify();
+                        }),
+                    )
+                })
         };
+
+        let pivot_label = self
+            .pivot_status
+            .as_deref()
+            .map_or_else(|| "Pivot".to_string(), |status| format!("Pivot  {status}"));
 
         let tab_bar = div()
             .flex()
@@ -450,15 +489,17 @@ impl Render for SqllyDataTable {
             .border_b_1()
             .border_color(theme.grid_line)
             .child(tab(
-                "Grid",
+                "Grid".to_string(),
                 GridTab::Grid,
                 self.active_tab == GridTab::Grid,
+                false,
                 cx,
             ))
             .child(tab(
-                "Pivot",
+                pivot_label,
                 GridTab::Pivot,
                 self.active_tab == GridTab::Pivot,
+                self.pivot_locked,
                 cx,
             ));
 
