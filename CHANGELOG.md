@@ -5,6 +5,26 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-07-14
+
+### Added
+- Optional pivot tab, enabled with `SqllyDataTableBuilder::pivot` or at
+  runtime through `SqllyDataTable::enable_pivot`. It provides a cross-tab view
+  over a shared grid-data snapshot while preserving each view's state.
+- Drag-and-drop pivot field sidebar for row, column, value, and filter zones;
+  programmatic layout through `PivotConfig`; and `GridTab` APIs for switching
+  views.
+- Count, sum, average, minimum, and maximum aggregation; expandable row and
+  column groups; subtotals and grand totals; sorting; source-value filters;
+  CSV export; and value-cell drill-through to the source grid rows.
+- Custom pivot context menus via `PivotContextMenuProvider`, including
+  grouping paths, aggregated value, and driving source-row context.
+- Public pivot API: `PivotState`, `PivotGrid`, `PivotSidebar`, `PivotResult`,
+  `PivotConfig`, `PivotZone`, `PivotSortKey`, `AggregationFn`, and supporting
+  context-menu types.
+- Pivot-specific theme colors for group headers, totals, drop zones, and field
+  chips in the light and dark `GridTheme` palettes.
+
 ## [1.8.0] - 2026-07-09
 
 ### Added

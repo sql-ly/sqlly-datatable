@@ -3,8 +3,9 @@ use gpui::{
     WindowBounds, WindowOptions,
 };
 use sqlly_datatable::{
-    Column, ColumnKind, ColumnOverride, ContextMenuItem, ContextMenuProvider, ContextMenuRequest,
-    GridConfig, GridData, GridState, NumberFormat, SqllyDataTable,
+    AggregationFn, Column, ColumnKind, ColumnOverride, ContextMenuItem, ContextMenuProvider,
+    ContextMenuRequest, GridConfig, GridData, GridState, NumberFormat, PivotConfig,
+    PivotContextMenuProvider, PivotContextMenuRequest, PivotMenuItem, PivotState, SqllyDataTable,
 };
 
 fn main() {
@@ -18,6 +19,8 @@ fn main() {
         let view = SqllyDataTable::builder(data)
             .config(config)
             .context_menu_provider(SampleMenuProvider)
+            .pivot(sample_pivot_config())
+            .pivot_context_menu_provider(SamplePivotMenuProvider)
             .build(cx);
         let focus = view.state.read(cx).focus_handle.clone();
 
@@ -34,9 +37,11 @@ fn main() {
             ..Default::default()
         };
 
-        let state = view.state.clone();
+        // Move the built widget (grid + pivot tab) into the window intact —
+        // re-wrapping only the GridState via `SqllyDataTable::new` would
+        // drop the pivot parts created by the builder.
         match cx.open_window(options, move |_window, cx| {
-            let table = cx.new(|_cx| SqllyDataTable::new(state.clone()));
+            let table = cx.new(|_cx| view);
             cx.new(|_cx| RootView { table })
         }) {
             Ok(window) => {
@@ -76,6 +81,21 @@ impl Render for RootView {
                     .child("500px area above the grid"),
             )
             .child(div().flex_1().min_h_0().child(self.table.clone()))
+    }
+}
+
+/// Preconfigured pivot layout demonstrating programmatic setup: narrative
+/// down the side, currency across the top, summed amounts at the
+/// intersections, and `trans_part` available as a source filter. The user
+/// can rearrange everything from the sidebar at runtime.
+fn sample_pivot_config() -> PivotConfig {
+    PivotConfig {
+        row_fields: vec![2],    // narrative
+        column_fields: vec![1], // currency_id
+        value_field: Some(0),   // amount
+        aggregation: AggregationFn::Sum,
+        filter_fields: vec![3], // trans_part
+        ..PivotConfig::default()
     }
 }
 
@@ -758,6 +778,82 @@ impl ContextMenuProvider for SampleMenuProvider {
             _ => return,
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+}
+
+/// Sample pivot right-click provider: composes the built-in items (drill
+/// through, copy value, copy CSV) with custom actions that demonstrate the
+/// context passed up — the clicked cell's grouping path, aggregation, and
+/// the source rows driving it.
+struct SamplePivotMenuProvider;
+
+/// `"region=Europe, product=Widget"`-style description of a clicked cell.
+fn pivot_cell_path(request: &PivotContextMenuRequest) -> Option<String> {
+    let cell = request.clicked_cell()?;
+    let parts: Vec<String> = cell
+        .row_path
+        .iter()
+        .chain(&cell.col_path)
+        .map(|c| format!("{}={}", c.field_name, c.label))
+        .collect();
+    Some(if parts.is_empty() {
+        "grand total".to_owned()
+    } else {
+        parts.join(", ")
+    })
+}
+
+impl PivotContextMenuProvider for SamplePivotMenuProvider {
+    fn menu_items(&self, request: &PivotContextMenuRequest) -> Vec<PivotMenuItem> {
+        let mut items = PivotMenuItem::standard_items(&request.target);
+        items.push(PivotMenuItem::separator());
+        if let Some(cell) = request.clicked_cell() {
+            items.push(PivotMenuItem::action(
+                "copy-cell-path",
+                format!(
+                    "Copy cell path ({})",
+                    pivot_cell_path(request).unwrap_or_default()
+                ),
+            ));
+            items.push(PivotMenuItem::action(
+                "copy-cell-summary",
+                format!(
+                    "{}: {}",
+                    request.value_caption,
+                    if cell.formatted_value.is_empty() {
+                        "(empty)"
+                    } else {
+                        &cell.formatted_value
+                    }
+                ),
+            ));
+        }
+        items.push(PivotMenuItem::action(
+            "copy-driving-count",
+            format!("Driving source rows: {}", request.source_row_count()),
+        ));
+        items
+    }
+
+    fn on_action(
+        &self,
+        action_id: &str,
+        request: &PivotContextMenuRequest,
+        _state: &mut PivotState,
+        cx: &mut App,
+    ) {
+        let text = match action_id {
+            "copy-cell-path" => pivot_cell_path(request).unwrap_or_default(),
+            "copy-cell-summary" => request
+                .clicked_cell()
+                .map(|c| format!("{} = {}", request.value_caption, c.formatted_value))
+                .unwrap_or_default(),
+            "copy-driving-count" => request.source_row_count().to_string(),
+            _ => return,
+        };
+        if !text.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
     }
 }
 

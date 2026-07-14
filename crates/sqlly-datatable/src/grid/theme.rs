@@ -4,7 +4,7 @@
 
 use gpui::{Hsla, WindowAppearance};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GridTheme {
     pub bg: Hsla,
     pub header_bg: Hsla,
@@ -35,6 +35,23 @@ pub struct GridTheme {
     /// Distinctive background painted behind null-value cells when the
     /// column's [`crate::config::NullFormat::background`] is enabled.
     pub null_bg: Hsla,
+    /// Background of pivot group-header rows (expanded groups).
+    pub pivot_group_bg: Hsla,
+    /// Background of pivot subtotal cells (collapsed groups, "Total"
+    /// columns).
+    pub pivot_subtotal_bg: Hsla,
+    /// Background of the pivot grand-total row/column.
+    pub pivot_grand_total_bg: Hsla,
+    /// Foreground for pivot subtotal / grand-total values and labels.
+    pub pivot_total_fg: Hsla,
+    /// Resting background of a sidebar drop zone.
+    pub pivot_drop_zone_bg: Hsla,
+    /// Background of a drop zone while a compatible chip hovers over it.
+    pub pivot_drop_zone_active_bg: Hsla,
+    /// Background of a field chip in the pivot sidebar.
+    pub pivot_chip_bg: Hsla,
+    /// Label color of a field chip in the pivot sidebar.
+    pub pivot_chip_fg: Hsla,
 }
 
 impl Default for GridTheme {
@@ -59,6 +76,14 @@ impl Default for GridTheme {
             muted_text: hsla(0.0, 0.0, 0.5, 1.0),
             null_fg: hsla(0.0, 0.0, 0.45, 1.0),
             null_bg: hsla(0.13, 0.55, 0.90, 1.0),
+            pivot_group_bg: hsla(0.58, 0.20, 0.92, 1.0),
+            pivot_subtotal_bg: hsla(0.58, 0.15, 0.88, 1.0),
+            pivot_grand_total_bg: hsla(0.58, 0.25, 0.82, 1.0),
+            pivot_total_fg: hsla(0.0, 0.0, 0.08, 1.0),
+            pivot_drop_zone_bg: hsla(0.0, 0.0, 0.96, 1.0),
+            pivot_drop_zone_active_bg: hsla(0.58, 0.40, 0.88, 1.0),
+            pivot_chip_bg: hsla(0.58, 0.30, 0.90, 1.0),
+            pivot_chip_fg: hsla(0.0, 0.0, 0.12, 1.0),
         }
     }
 }
@@ -99,6 +124,14 @@ impl GridTheme {
             muted_text: hsla(0.0, 0.0, 0.55, 1.0),
             null_fg: hsla(0.0, 0.0, 0.60, 1.0),
             null_bg: hsla(0.13, 0.35, 0.22, 1.0),
+            pivot_group_bg: hsla(0.58, 0.20, 0.20, 1.0),
+            pivot_subtotal_bg: hsla(0.58, 0.18, 0.24, 1.0),
+            pivot_grand_total_bg: hsla(0.58, 0.28, 0.30, 1.0),
+            pivot_total_fg: hsla(0.0, 0.0, 0.95, 1.0),
+            pivot_drop_zone_bg: hsla(0.0, 0.0, 0.15, 1.0),
+            pivot_drop_zone_active_bg: hsla(0.58, 0.40, 0.32, 1.0),
+            pivot_chip_bg: hsla(0.58, 0.35, 0.28, 1.0),
+            pivot_chip_fg: hsla(0.0, 0.0, 0.92, 1.0),
         }
     }
 
@@ -162,6 +195,21 @@ mod tests {
             dark.menu_hover_bg, dark.menu_bg,
             "dark menu hover fill must differ from the menu background"
         );
+    }
+
+    /// Pivot surfaces must be mutually distinguishable and legible in both
+    /// palettes: totals must stand out from ordinary groups, drop-zone
+    /// hover must differ from its resting state, and total text must
+    /// contrast with the total background.
+    #[test]
+    fn pivot_surfaces_are_distinct_in_both_palettes() {
+        for t in [GridTheme::light(), GridTheme::dark()] {
+            assert_ne!(t.pivot_grand_total_bg, t.pivot_group_bg);
+            assert_ne!(t.pivot_grand_total_bg, t.pivot_subtotal_bg);
+            assert_ne!(t.pivot_total_fg, t.pivot_grand_total_bg);
+            assert_ne!(t.pivot_drop_zone_active_bg, t.pivot_drop_zone_bg);
+            assert_ne!(t.pivot_chip_fg, t.pivot_chip_bg);
+        }
     }
 
     /// `for_appearance` must map the two dark variants to the dark palette and

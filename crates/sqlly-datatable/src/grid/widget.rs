@@ -5,6 +5,7 @@
 
 use crate::config::GridConfig;
 use crate::data::GridData;
+use crate::filter::{ColumnFilter, FilterPredicate};
 use crate::grid::context_menu::{
     ContextMenuProvider, ContextMenuProviderHandle, PendingCustomContextMenuAction,
 };
@@ -13,14 +14,20 @@ use crate::grid::state::state_inner;
 use crate::grid::state::{FilterInput, GridState, EDGE_SCROLL_TICK_MS};
 use crate::grid::theme::GridTheme;
 use crate::grid::{menu, HitResult, MenuItem, SortDirection};
+use crate::pivot::config::PivotConfig;
+use crate::pivot::context_menu::{PivotContextMenuProvider, PivotContextMenuProviderHandle};
+use crate::pivot::sidebar::PivotSidebar;
+use crate::pivot::state::PivotState;
+use crate::pivot::widget::PivotGrid;
 
 use gpui::{
     anchored, canvas, deferred, div, hsla, point, pulsating_between, px, relative, Animation,
-    AnimationExt, App, AppContext, Context, Corner, Entity, FocusHandle, Focusable,
+    AnimationExt, App, AppContext, Context, Corner, Div, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, Render, ScrollWheelEvent, StatefulInteractiveElement, Styled,
     Window,
 };
+use std::sync::Arc;
 
 /// Draw order for the context-menu overlay. Deliberately far above any
 /// ordinary application UI so the menu — and, crucially, its event hitbox —
@@ -30,9 +37,31 @@ use gpui::{
 /// routing for menu items that visually overflow the grid area.
 const CONTEXT_MENU_PRIORITY: usize = 1_000_000;
 
+/// Which view of the data is active when the pivot tab is enabled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GridTab {
+    /// The flat data grid.
+    #[default]
+    Grid,
+    /// The pivot view (sidebar + pivot grid).
+    Pivot,
+}
+
+/// The entities backing the pivot tab. Created when pivoting is enabled.
+pub(crate) struct PivotParts {
+    pub(crate) state: Entity<PivotState>,
+    grid: Entity<PivotGrid>,
+    sidebar: Entity<PivotSidebar>,
+}
+
 /// Top-level GPUI widget.
 pub struct SqllyDataTable {
     pub state: Entity<GridState>,
+    /// Present when the pivot tab is enabled (via
+    /// [`SqllyDataTableBuilder::pivot`] or [`SqllyDataTable::enable_pivot`]).
+    pub(crate) pivot: Option<PivotParts>,
+    /// The active tab. Only meaningful while the pivot tab is enabled.
+    active_tab: GridTab,
     /// When `true`, the grid swaps between the built-in light/dark
     /// [`GridTheme`] palettes to follow the OS window appearance. Disabled
     /// automatically when the caller supplies an explicit theme override.
@@ -49,6 +78,8 @@ impl SqllyDataTable {
     pub fn new(state: Entity<GridState>) -> Self {
         Self {
             state,
+            pivot: None,
+            active_tab: GridTab::Grid,
             follow_system_appearance: true,
             appearance_subscription: None,
         }
@@ -63,7 +94,125 @@ impl SqllyDataTable {
             context_menu_provider: None,
             theme: None,
             debug_bar: false,
+            pivot: None,
+            pivot_context_menu_provider: None,
         }
+    }
+
+    /// The pivot state entity, when the pivot tab is enabled. Read it for
+    /// the current [`PivotConfig`]; update it to reconfigure
+    /// programmatically.
+    #[must_use]
+    pub fn pivot_state(&self) -> Option<&Entity<PivotState>> {
+        self.pivot.as_ref().map(|p| &p.state)
+    }
+
+    /// The currently active tab.
+    #[must_use]
+    pub fn active_tab(&self) -> GridTab {
+        self.active_tab
+    }
+
+    /// Switch between the flat grid and the pivot view. Switching to the
+    /// pivot re-syncs its source snapshot if the grid's data changed (e.g.
+    /// rows were appended). No-op when the pivot tab is not enabled and
+    /// `Pivot` is requested.
+    pub fn set_active_tab(&mut self, tab: GridTab, cx: &mut App) {
+        if tab == GridTab::Pivot {
+            if self.pivot.is_none() {
+                return;
+            }
+            self.sync_pivot_source(cx);
+        }
+        self.active_tab = tab;
+    }
+
+    /// Enable the pivot tab at runtime with the given configuration. If
+    /// already enabled, the existing pivot state is reconfigured instead
+    /// (collapse/sort/filter state is preserved).
+    pub fn enable_pivot(&mut self, config: PivotConfig, cx: &mut App) {
+        if let Some(parts) = &self.pivot {
+            parts.state.update(cx, |s, cx| {
+                s.config = config;
+                s.recompute();
+                cx.notify();
+            });
+            return;
+        }
+        self.pivot = Some(build_pivot_parts(&self.state, config, None, cx));
+    }
+
+    /// Remove the pivot tab and return to the flat grid.
+    pub fn disable_pivot(&mut self) {
+        self.pivot = None;
+        self.active_tab = GridTab::Grid;
+    }
+
+    /// Register (or replace) the pivot's right-click menu provider at
+    /// runtime. No-op when the pivot tab is not enabled — enable it first
+    /// (or register via
+    /// [`SqllyDataTableBuilder::pivot_context_menu_provider`]).
+    pub fn set_pivot_context_menu_provider(
+        &mut self,
+        provider: impl PivotContextMenuProvider + 'static,
+        cx: &mut App,
+    ) {
+        if let Some(parts) = &self.pivot {
+            parts.state.update(cx, |s, _cx| {
+                s.set_context_menu_provider(provider);
+            });
+        }
+    }
+
+    /// Push the grid's current data snapshot into the pivot state when it
+    /// changed (O(1) compare via Arc identity).
+    fn sync_pivot_source(&self, cx: &mut App) {
+        let Some(parts) = &self.pivot else {
+            return;
+        };
+        let (columns, rows) = {
+            let s = self.state.read(cx);
+            (s.data.columns.clone(), Arc::clone(&s.data_rows))
+        };
+        parts.state.update(cx, |ps, cx| {
+            if ps.source_differs(&rows) {
+                ps.set_source(columns, rows);
+                cx.notify();
+            }
+        });
+    }
+}
+
+/// Create the pivot entities over the grid's current data snapshot.
+fn build_pivot_parts(
+    grid_state: &Entity<GridState>,
+    config: PivotConfig,
+    menu_provider: Option<PivotContextMenuProviderHandle>,
+    cx: &mut App,
+) -> PivotParts {
+    let (columns, rows, formats, key_bindings, theme) = {
+        let s = grid_state.read(cx);
+        (
+            s.data.columns.clone(),
+            Arc::clone(&s.data_rows),
+            s.resolved_formats.clone(),
+            s.config.key_bindings.clone(),
+            s.theme.clone(),
+        )
+    };
+    let focus = cx.focus_handle();
+    let state = cx.new(|_| {
+        let mut ps = PivotState::new(columns, rows, formats, config, key_bindings, focus);
+        ps.theme = theme;
+        ps.context_menu_provider = menu_provider;
+        ps
+    });
+    let grid = cx.new(|_| PivotGrid::new(state.clone()));
+    let sidebar = cx.new(|_| PivotSidebar::new(state.clone()));
+    PivotParts {
+        state,
+        grid,
+        sidebar,
     }
 }
 
@@ -74,6 +223,8 @@ pub struct SqllyDataTableBuilder {
     context_menu_provider: Option<ContextMenuProviderHandle>,
     theme: Option<GridTheme>,
     debug_bar: bool,
+    pivot: Option<PivotConfig>,
+    pivot_context_menu_provider: Option<PivotContextMenuProviderHandle>,
 }
 
 impl SqllyDataTableBuilder {
@@ -113,12 +264,38 @@ impl SqllyDataTableBuilder {
         self
     }
 
+    /// Enable the pivot tab, preconfigured with `config`. The widget renders
+    /// a "Grid" / "Pivot" tab bar; the pivot tab shows the drag-and-drop
+    /// field sidebar next to the pivot grid. Pass
+    /// [`PivotConfig::default()`] for an unconfigured pivot the user builds
+    /// interactively.
+    #[must_use]
+    pub fn pivot(mut self, config: PivotConfig) -> Self {
+        self.pivot = Some(config);
+        self
+    }
+
+    /// Register a custom right-click menu provider for the pivot view. When
+    /// registered, the provider fully controls the pivot's context menu (the
+    /// built-in `pivot.*` action ids remain handled by the pivot; compose
+    /// them via [`crate::pivot::PivotMenuItem::standard_items`]). Only takes
+    /// effect together with [`SqllyDataTableBuilder::pivot`].
+    #[must_use]
+    pub fn pivot_context_menu_provider(
+        mut self,
+        provider: impl PivotContextMenuProvider + 'static,
+    ) -> Self {
+        self.pivot_context_menu_provider = Some(PivotContextMenuProviderHandle::new(provider));
+        self
+    }
+
     /// Build the widget inside the supplied [`gpui::App`].
     pub fn build(self, cx: &mut App) -> SqllyDataTable {
         let focus = cx.focus_handle();
         let provider = self.context_menu_provider;
         let theme_override = self.theme;
         let debug_bar = self.debug_bar;
+        let pivot_config = self.pivot;
         let follow_system_appearance = theme_override.is_none();
         let state = cx.new(|cx| {
             let mut s = GridState::new(self.data, self.config, focus.clone());
@@ -130,8 +307,12 @@ impl SqllyDataTableBuilder {
             }
             s
         });
+        let pivot_menu_provider = self.pivot_context_menu_provider;
+        let pivot = pivot_config.map(|cfg| build_pivot_parts(&state, cfg, pivot_menu_provider, cx));
         SqllyDataTable {
             state,
+            pivot,
+            active_tab: GridTab::Grid,
             follow_system_appearance,
             appearance_subscription: None,
         }
@@ -164,6 +345,147 @@ impl Render for SqllyDataTable {
                 }));
         }
 
+        // Keep the pivot's theme in lockstep with the grid theme (which may
+        // have just changed via the appearance observer).
+        if let Some(parts) = &self.pivot {
+            let grid_theme = self.state.read(cx).theme.clone();
+            parts.state.update(cx, |s, cx| {
+                if s.theme != grid_theme {
+                    s.theme = grid_theme;
+                    cx.notify();
+                }
+            });
+        }
+
+        // Drill-through: a double-click on a pivot cell (or the built-in
+        // "Show source rows" menu action) queued per-column value filters.
+        // Apply them to the flat grid and switch to the Grid tab so the user
+        // lands on exactly the rows that drive the clicked cell.
+        if let Some(parts) = &self.pivot {
+            let drill = parts.state.update(cx, |s, _cx| s.take_pending_drill_down());
+            if let Some(filter_sets) = drill {
+                self.state.update(cx, |g, cx| {
+                    // Filters are unsupported in windowed-row mode; the
+                    // drill-through is skipped rather than presenting a
+                    // filter that silently covers only resident rows.
+                    if g.window.is_none() {
+                        for filter in &mut g.filters {
+                            *filter = ColumnFilter::default();
+                        }
+                        for (field, values) in filter_sets {
+                            if let Some(slot) = g.filters.get_mut(field) {
+                                *slot = ColumnFilter {
+                                    predicate: FilterPredicate::None,
+                                    values: Some(values),
+                                };
+                            }
+                        }
+                        g.recompute();
+                    }
+                    cx.notify();
+                });
+                self.active_tab = GridTab::Grid;
+                let focus = self.state.read(cx).focus_handle.clone();
+                window.focus(&focus);
+                cx.notify();
+            }
+        }
+
+        let grid_view = self.render_grid_view(cx);
+
+        let Some(parts) = &self.pivot else {
+            return div().size_full().child(grid_view);
+        };
+
+        let theme = self.state.read(cx).theme.clone();
+        let tab = |label: &'static str, this_tab: GridTab, active: bool, cx: &mut Context<Self>| {
+            div()
+                .px(px(14.0))
+                .py(px(5.0))
+                .text_size(px(13.0))
+                .cursor_pointer()
+                .bg(if active { theme.bg } else { theme.header_bg })
+                .text_color(if active {
+                    theme.header_fg
+                } else {
+                    theme.muted_text
+                })
+                .border_b_2()
+                .border_color(if active {
+                    theme.sort_indicator
+                } else {
+                    theme.header_bg
+                })
+                .child(label)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
+                        if this.active_tab == this_tab {
+                            return;
+                        }
+                        this.set_active_tab(this_tab, cx);
+                        // Route keyboard input to the now-visible view.
+                        match this_tab {
+                            GridTab::Grid => {
+                                let focus = this.state.read(cx).focus_handle.clone();
+                                window.focus(&focus);
+                            }
+                            GridTab::Pivot => {
+                                if let Some(p) = &this.pivot {
+                                    let focus = p.state.read(cx).focus_handle.clone();
+                                    window.focus(&focus);
+                                }
+                            }
+                        }
+                        cx.notify();
+                    }),
+                )
+        };
+
+        let tab_bar = div()
+            .flex()
+            .flex_row()
+            .flex_none()
+            .bg(theme.header_bg)
+            .border_b_1()
+            .border_color(theme.grid_line)
+            .child(tab(
+                "Grid",
+                GridTab::Grid,
+                self.active_tab == GridTab::Grid,
+                cx,
+            ))
+            .child(tab(
+                "Pivot",
+                GridTab::Pivot,
+                self.active_tab == GridTab::Pivot,
+                cx,
+            ));
+
+        let content: gpui::AnyElement = match self.active_tab {
+            GridTab::Grid => grid_view.into_any_element(),
+            GridTab::Pivot => div()
+                .flex()
+                .flex_row()
+                .size_full()
+                .child(parts.sidebar.clone())
+                .child(div().flex_1().min_w_0().child(parts.grid.clone()))
+                .into_any_element(),
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .child(tab_bar)
+            .child(div().flex_1().min_h_0().child(content))
+    }
+}
+
+impl SqllyDataTable {
+    /// The flat-grid element tree (canvas, overlays, input handlers). Shared
+    /// by the tabless render path and the "Grid" tab.
+    fn render_grid_view(&mut self, cx: &mut Context<Self>) -> Div {
         let state_canvas = self.state.clone();
         let state_status = self.state.clone();
         let state_mouse = self.state.clone();

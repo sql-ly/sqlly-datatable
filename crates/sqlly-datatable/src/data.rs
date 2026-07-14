@@ -18,7 +18,7 @@ use std::cmp::Ordering;
 ///
 /// Decimal values are stored as `f64`; for very large integers that exceed
 /// `2^53`, route them through [`CellValue::Text`] instead.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum CellValue {
     /// Free-form text. The grid will case-fold, truncate, and align it per
     /// [`crate::config::StringFormat`].
@@ -34,7 +34,8 @@ pub enum CellValue {
     /// Boolean value rendered with [`crate::config::BooleanFormat`].
     Boolean(bool),
     /// Explicit "no value" — distinct from empty string and zero. Sorts before
-    /// every other variant.
+    /// every other variant. This is the [`Default`] variant.
+    #[default]
     None,
 }
 
