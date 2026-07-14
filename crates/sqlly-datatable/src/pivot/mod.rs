@@ -28,6 +28,7 @@ pub use engine::{compute_pivot, PivotNode, PivotResult, TOTAL_KEY};
 pub use sidebar::PivotSidebar;
 pub use state::{
     PivotFilterPopover, PivotHitResult, PivotSortKey, PivotState, VisibleCol, VisibleColKind,
-    VisibleRow, VisibleRowKind,
+    VisibleRow, VisibleRowKind, DEFAULT_PIVOT_COLUMN_WIDTH, DEFAULT_PIVOT_ROW_HEIGHT,
+    MIN_PIVOT_COLUMN_WIDTH, MIN_PIVOT_ROW_HEIGHT,
 };
 pub use widget::PivotGrid;

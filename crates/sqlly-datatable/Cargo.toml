@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 gpui = { version = "0.2" }
+gpui-ui-kit = "0.5.10"
 smol = "2.0"
 regex = "1"
 

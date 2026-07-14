@@ -151,7 +151,11 @@ pub(crate) fn paint_pivot_grid(
     // Hand cursor over the clickable header surfaces (sort targets and
     // expand/collapse chevrons). Must happen during paint — GPUI panics if
     // the cursor style is set from an event handler.
-    if matches!(
+    if matches!(data.hover_hit, Some(PivotHitResult::ColBorder { .. })) {
+        window.set_window_cursor_style(CursorStyle::ResizeLeftRight);
+    } else if matches!(data.hover_hit, Some(PivotHitResult::RowBorder { .. })) {
+        window.set_window_cursor_style(CursorStyle::ResizeUpDown);
+    } else if matches!(
         data.hover_hit,
         Some(
             PivotHitResult::RowChevron { .. }

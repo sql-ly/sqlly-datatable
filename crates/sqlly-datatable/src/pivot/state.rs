@@ -115,6 +115,16 @@ pub enum PivotHitResult {
         /// Visible row index.
         row: usize,
     },
+    /// The lower edge of a visible row in the row-header area.
+    RowBorder {
+        /// Visible row index whose lower edge was hit.
+        row: usize,
+    },
+    /// The right edge of a visible value column in the header area.
+    ColBorder {
+        /// Visible column index whose right edge was hit.
+        col: usize,
+    },
     /// The expand/collapse chevron on a row group header.
     RowChevron {
         /// Visible row index.
@@ -180,6 +190,29 @@ pub(crate) struct PivotMenu {
 pub(crate) const ROW_INDENT: f32 = 16.0;
 /// Square hit/paint size of an expand/collapse chevron.
 pub(crate) const CHEVRON_SIZE: f32 = 14.0;
+const RESIZE_HIT_SLOP: f32 = 3.0;
+/// Default height of pivot data rows, in logical pixels.
+pub const DEFAULT_PIVOT_ROW_HEIGHT: f32 = 24.0;
+/// Default width of pivot value columns, in logical pixels.
+pub const DEFAULT_PIVOT_COLUMN_WIDTH: f32 = 140.0;
+/// Smallest supported pivot data-row height.
+pub const MIN_PIVOT_ROW_HEIGHT: f32 = 18.0;
+/// Smallest supported pivot value-column width.
+pub const MIN_PIVOT_COLUMN_WIDTH: f32 = 40.0;
+
+#[derive(Clone, Copy, Debug)]
+enum PivotResizeDrag {
+    Row {
+        boundary: usize,
+        start_y: f32,
+        start_height: f32,
+    },
+    Column {
+        boundary: usize,
+        start_x: f32,
+        start_width: f32,
+    },
+}
 
 /// Complete pivot-view state owned by a GPUI `Entity<PivotState>`.
 pub struct PivotState {
@@ -235,6 +268,7 @@ pub struct PivotState {
     /// Last hit under the pointer (drives hover affordances).
     pub hover_hit: Option<PivotHitResult>,
     pub(crate) scrollbar_drag: Option<ScrollbarAxis>,
+    resize_drag: Option<PivotResizeDrag>,
 
     /// Theme shared with the host grid.
     pub theme: GridTheme,
@@ -301,12 +335,13 @@ impl PivotState {
             focus_handle,
             bounds: Bounds::default(),
             window_viewport: Size::default(),
-            row_height: 24.0,
+            row_height: DEFAULT_PIVOT_ROW_HEIGHT,
             header_row_height: 26.0,
             row_header_width: 220.0,
-            value_col_width: 140.0,
+            value_col_width: DEFAULT_PIVOT_COLUMN_WIDTH,
             font_size: 13.0,
             char_width: 7.9,
+            resize_drag: None,
         };
         state.recompute();
         state
@@ -897,7 +932,11 @@ impl PivotState {
                     )
                 })
             }
-            PivotHitResult::None | PivotHitResult::VScrollbar | PivotHitResult::HScrollbar => None,
+            PivotHitResult::None
+            | PivotHitResult::RowBorder { .. }
+            | PivotHitResult::ColBorder { .. }
+            | PivotHitResult::VScrollbar
+            | PivotHitResult::HScrollbar => None,
         };
         let Some((target, row_key, col_key)) = resolved else {
             self.menu = None;
@@ -1009,6 +1048,40 @@ impl PivotState {
     // Geometry / hit testing
     // ------------------------------------------------------------------
 
+    /// Current height of every pivot data row, in logical pixels.
+    #[must_use]
+    pub fn row_height(&self) -> f32 {
+        self.row_height
+    }
+
+    /// Set the height of every pivot data row.
+    ///
+    /// Non-finite values are ignored and finite values are clamped to the
+    /// minimum supported height.
+    pub fn set_row_height(&mut self, height: f32) {
+        if height.is_finite() {
+            self.row_height = height.max(MIN_PIVOT_ROW_HEIGHT);
+            self.clamp_scroll_to_bounds();
+        }
+    }
+
+    /// Current width of every pivot value column, in logical pixels.
+    #[must_use]
+    pub fn column_width(&self) -> f32 {
+        self.value_col_width
+    }
+
+    /// Set the width of every pivot value column.
+    ///
+    /// Non-finite values are ignored and finite values are clamped to the
+    /// minimum supported width.
+    pub fn set_column_width(&mut self, width: f32) {
+        if width.is_finite() {
+            self.value_col_width = width.max(MIN_PIVOT_COLUMN_WIDTH);
+            self.clamp_scroll_to_bounds();
+        }
+    }
+
     /// Number of stacked header rows: one caption row plus one row per
     /// column-field level (minimum one).
     #[must_use]
@@ -1104,6 +1177,13 @@ impl PivotState {
             if cx < 0.0 {
                 return PivotHitResult::None;
             }
+            let boundary = (cx / self.value_col_width).round() as usize;
+            if boundary > 0
+                && boundary <= self.visible_cols.len()
+                && (cx - boundary as f32 * self.value_col_width).abs() <= RESIZE_HIT_SLOP
+            {
+                return PivotHitResult::ColBorder { col: boundary - 1 };
+            }
             let col = (cx / self.value_col_width) as usize;
             if col >= self.visible_cols.len() {
                 return PivotHitResult::None;
@@ -1134,6 +1214,13 @@ impl PivotState {
             let ry = y - hdr_h + sy;
             if ry < 0.0 {
                 return PivotHitResult::None;
+            }
+            let boundary = (ry / self.row_height).round() as usize;
+            if boundary > 0
+                && boundary <= self.visible_rows.len()
+                && (ry - boundary as f32 * self.row_height).abs() <= RESIZE_HIT_SLOP
+            {
+                return PivotHitResult::RowBorder { row: boundary - 1 };
             }
             let row = (ry / self.row_height) as usize;
             if row >= self.visible_rows.len() {
@@ -1209,6 +1296,20 @@ impl PivotState {
                 self.scrollbar_drag = Some(ScrollbarAxis::Horizontal);
                 self.scroll_to_hbar(f32::from(pos.x));
             }
+            PivotHitResult::RowBorder { row } => {
+                self.resize_drag = Some(PivotResizeDrag::Row {
+                    boundary: row + 1,
+                    start_y: f32::from(pos.y),
+                    start_height: self.row_height,
+                });
+            }
+            PivotHitResult::ColBorder { col } => {
+                self.resize_drag = Some(PivotResizeDrag::Column {
+                    boundary: col + 1,
+                    start_x: f32::from(pos.x),
+                    start_width: self.value_col_width,
+                });
+            }
             PivotHitResult::RowChevron { row } => {
                 if let Some(vr) = self.visible_rows.get(row).copied() {
                     self.toggle_row_group(vr.key);
@@ -1271,6 +1372,33 @@ impl PivotState {
 
     /// Handle pointer movement (hover, drag-selection, scrollbar drags).
     pub fn handle_mouse_move(&mut self, pos: Point<Pixels>, left_down: bool) {
+        if let Some(drag) = self.resize_drag {
+            if !left_down {
+                self.resize_drag = None;
+            } else {
+                match drag {
+                    PivotResizeDrag::Row {
+                        boundary,
+                        start_y,
+                        start_height,
+                    } => {
+                        let delta = (f32::from(pos.y) - start_y) / boundary as f32;
+                        self.set_row_height(start_height + delta);
+                        self.hover_hit = Some(PivotHitResult::RowBorder { row: boundary - 1 });
+                    }
+                    PivotResizeDrag::Column {
+                        boundary,
+                        start_x,
+                        start_width,
+                    } => {
+                        let delta = (f32::from(pos.x) - start_x) / boundary as f32;
+                        self.set_column_width(start_width + delta);
+                        self.hover_hit = Some(PivotHitResult::ColBorder { col: boundary - 1 });
+                    }
+                }
+                return;
+            }
+        }
         if let Some(axis) = self.scrollbar_drag {
             if left_down {
                 match axis {
@@ -1298,6 +1426,7 @@ impl PivotState {
     pub fn handle_mouse_up(&mut self) {
         self.is_selecting = false;
         self.scrollbar_drag = None;
+        self.resize_drag = None;
     }
 
     /// Apply a scroll-wheel delta, clamped to the content.

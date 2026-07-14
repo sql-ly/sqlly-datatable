@@ -21,7 +21,7 @@ pub use menu::{ContextMenu, MenuAction, MenuItem};
 pub use selection::{HitResult, ScrollbarAxis, Selection, SortDirection};
 pub use state::{BusyState, FilterInput, FilterPanel, FilterValueRow, GridState, RowWindow};
 pub use theme::GridTheme;
-pub use widget::{GridTab, SqllyDataTable, SqllyDataTableBuilder};
+pub use widget::{GridTab, PivotSidebarPosition, SqllyDataTable, SqllyDataTableBuilder};
 
 // Inline a couple of constants that callers used to read from the `grid` mod.
 pub use state::SCROLLBAR_SIZE;

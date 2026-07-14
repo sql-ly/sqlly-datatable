@@ -14,11 +14,10 @@ use crate::pivot::state::PivotState;
 use gpui::{
     anchored, deferred, div, point, px, App, AppContext as _, Context, Corner, Entity,
     InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Window,
+    SharedString, StatefulInteractiveElement, Styled, Window,
 };
+use gpui_ui_kit::accordion::{Accordion, AccordionItem, AccordionMode, AccordionTheme};
 
-/// Fixed sidebar width in pixels.
-pub const SIDEBAR_WIDTH: f32 = 260.0;
 /// Draw priority for the filter popover overlay (matches the grid's menus).
 const POPOVER_PRIORITY: usize = 1_000_000;
 /// Max checklist rows rendered in the filter popover.
@@ -57,13 +56,27 @@ impl Render for DragGhost {
 pub struct PivotSidebar {
     /// The shared pivot state.
     pub state: Entity<PivotState>,
+    expanded_sections: Vec<SharedString>,
 }
 
 impl PivotSidebar {
     /// Wrap an existing pivot state entity.
     #[must_use]
     pub fn new(state: Entity<PivotState>) -> Self {
-        Self { state }
+        Self {
+            state,
+            expanded_sections: vec!["fields".into(), "layout".into(), "display".into()],
+        }
+    }
+
+    fn set_section_expanded(&mut self, id: &SharedString, expanded: bool) {
+        if expanded {
+            if !self.expanded_sections.contains(id) {
+                self.expanded_sections.push(id.clone());
+            }
+        } else {
+            self.expanded_sections.retain(|section| section != id);
+        }
     }
 
     /// A draggable field chip. `zone` is `None` for the source field list.
@@ -780,18 +793,74 @@ impl Render for PivotSidebar {
                 cx,
             ));
 
-        div()
-            .id("pivot-sidebar")
-            .w(px(SIDEBAR_WIDTH))
-            .h_full()
-            .flex_none()
+        let fields = div()
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .child(
+                div()
+                    .text_color(theme.muted_text)
+                    .text_size(px(11.0))
+                    .child("Drag a field into a layout zone"),
+            )
+            .child(
+                div()
+                    .id("pivot-field-list")
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.0))
+                    .max_h(px(220.0))
+                    .overflow_y_scroll()
+                    .children(field_chips),
+            );
+
+        let layout = div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(Self::zone(&self.state, PivotZone::Filters, "Filters", cx))
+            .child(Self::zone(&self.state, PivotZone::Columns, "Columns", cx))
+            .child(Self::zone(&self.state, PivotZone::Rows, "Rows", cx))
+            .child(Self::zone(&self.state, PivotZone::Values, "Values", cx));
+
+        let display = div()
             .flex()
             .flex_col()
             .gap(px(10.0))
+            .child(options)
+            .child(tools);
+
+        let accordion_theme = AccordionTheme {
+            header_bg: theme.header_bg.into(),
+            header_hover_bg: theme.menu_hover_bg.into(),
+            content_bg: theme.menu_bg.into(),
+            border: theme.grid_line.into(),
+            title_color: theme.header_fg.into(),
+            indicator_color: theme.muted_text.into(),
+        };
+        let sidebar = cx.entity().clone();
+        let accordion = Accordion::new()
+            .mode(AccordionMode::Multiple)
+            .expanded(self.expanded_sections.clone())
+            .theme(accordion_theme)
+            .item(AccordionItem::new("fields", "Fields").content(fields))
+            .item(AccordionItem::new("layout", "Layout").content(layout))
+            .item(AccordionItem::new("display", "Display and export").content(display))
+            .on_change(move |id, expanded, _window, cx| {
+                sidebar.update(cx, |this, cx| {
+                    this.set_section_expanded(id, expanded);
+                    cx.notify();
+                });
+            });
+
+        div()
+            .id("pivot-sidebar")
+            .h_full()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
             .p(px(8.0))
             .bg(theme.menu_bg)
-            .border_r_1()
-            .border_color(theme.grid_line)
             .text_color(theme.menu_fg)
             .text_size(px(12.0))
             .overflow_y_scroll()
@@ -799,36 +868,9 @@ impl Render for PivotSidebar {
                 div()
                     .text_color(theme.header_fg)
                     .text_size(px(13.0))
-                    .child("Pivot Fields"),
+                    .child("Pivot Controls"),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.0))
-                    .child(
-                        div()
-                            .text_color(theme.muted_text)
-                            .text_size(px(11.0))
-                            .child("Fields (drag into a zone)"),
-                    )
-                    .child(
-                        div()
-                            .id("pivot-field-list")
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.0))
-                            .max_h(px(220.0))
-                            .overflow_y_scroll()
-                            .children(field_chips),
-                    ),
-            )
-            .child(Self::zone(&self.state, PivotZone::Filters, "Filters", cx))
-            .child(Self::zone(&self.state, PivotZone::Columns, "Columns", cx))
-            .child(Self::zone(&self.state, PivotZone::Rows, "Rows", cx))
-            .child(Self::zone(&self.state, PivotZone::Values, "Values", cx))
-            .child(options)
-            .child(tools)
+            .child(accordion)
             .children(Self::render_filter_popover(&self.state, cx))
     }
 }

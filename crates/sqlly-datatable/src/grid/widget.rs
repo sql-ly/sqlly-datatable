@@ -17,7 +17,7 @@ use crate::grid::{menu, HitResult, MenuItem, SortDirection};
 use crate::pivot::config::PivotConfig;
 use crate::pivot::context_menu::{PivotContextMenuProvider, PivotContextMenuProviderHandle};
 use crate::pivot::sidebar::PivotSidebar;
-use crate::pivot::state::PivotState;
+use crate::pivot::state::{PivotState, DEFAULT_PIVOT_COLUMN_WIDTH, DEFAULT_PIVOT_ROW_HEIGHT};
 use crate::pivot::widget::PivotGrid;
 
 use gpui::prelude::FluentBuilder;
@@ -28,6 +28,7 @@ use gpui::{
     MouseUpEvent, ParentElement, Render, ScrollWheelEvent, StatefulInteractiveElement, Styled,
     Window,
 };
+use gpui_ui_kit::pane_divider::{CollapseDirection, PaneDivider, PaneDividerTheme};
 use std::sync::Arc;
 
 /// Draw order for the context-menu overlay. Deliberately far above any
@@ -37,6 +38,9 @@ use std::sync::Arc;
 /// register their hitbox in a later pass, so this also fixes hover/click
 /// routing for menu items that visually overflow the grid area.
 const CONTEXT_MENU_PRIORITY: usize = 1_000_000;
+const DEFAULT_PIVOT_SIDEBAR_WIDTH: f32 = 260.0;
+const MIN_PIVOT_SIDEBAR_WIDTH: f32 = 180.0;
+const MAX_PIVOT_SIDEBAR_WIDTH: f32 = 480.0;
 
 /// Which view of the data is active when the pivot tab is enabled.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -44,8 +48,24 @@ pub enum GridTab {
     /// The flat data grid.
     #[default]
     Grid,
-    /// The pivot view (sidebar + pivot grid).
+    /// The pivot view (accordion controls + pivot grid).
     Pivot,
+}
+
+/// Side of the pivot grid where the control panel is rendered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PivotSidebarPosition {
+    /// Render the controls before the pivot grid.
+    #[default]
+    Left,
+    /// Render the controls after the pivot grid.
+    Right,
+}
+
+#[derive(Clone, Copy)]
+struct PivotSidebarDrag {
+    start_x: f32,
+    start_width: f32,
 }
 
 /// The entities backing the pivot tab. Created when pivoting is enabled.
@@ -67,6 +87,10 @@ pub struct SqllyDataTable {
     /// rows. The tab remains visible and may display `pivot_status`.
     pivot_locked: bool,
     pivot_status: Option<String>,
+    pivot_sidebar_position: PivotSidebarPosition,
+    pivot_sidebar_collapsed: bool,
+    pivot_sidebar_width: f32,
+    pivot_sidebar_drag: Option<PivotSidebarDrag>,
     /// When `true`, the grid swaps between the built-in light/dark
     /// [`GridTheme`] palettes to follow the OS window appearance. Disabled
     /// automatically when the caller supplies an explicit theme override.
@@ -87,6 +111,10 @@ impl SqllyDataTable {
             active_tab: GridTab::Grid,
             pivot_locked: false,
             pivot_status: None,
+            pivot_sidebar_position: PivotSidebarPosition::Left,
+            pivot_sidebar_collapsed: false,
+            pivot_sidebar_width: DEFAULT_PIVOT_SIDEBAR_WIDTH,
+            pivot_sidebar_drag: None,
             follow_system_appearance: true,
             appearance_subscription: None,
         }
@@ -103,12 +131,17 @@ impl SqllyDataTable {
             debug_bar: false,
             pivot: None,
             pivot_context_menu_provider: None,
+            pivot_sidebar_position: PivotSidebarPosition::Left,
+            pivot_sidebar_collapsed: false,
+            pivot_sidebar_width: DEFAULT_PIVOT_SIDEBAR_WIDTH,
+            pivot_row_height: DEFAULT_PIVOT_ROW_HEIGHT,
+            pivot_column_width: DEFAULT_PIVOT_COLUMN_WIDTH,
         }
     }
 
-    /// The pivot state entity, when the pivot tab is enabled. Read it for
-    /// the current [`PivotConfig`]; update it to reconfigure
-    /// programmatically.
+    /// The pivot state entity, when the pivot tab is enabled. Read it for the
+    /// current [`PivotConfig`], row height, or column width; update it to
+    /// reconfigure the pivot programmatically.
     #[must_use]
     pub fn pivot_state(&self) -> Option<&Entity<PivotState>> {
         self.pivot.as_ref().map(|p| &p.state)
@@ -124,6 +157,41 @@ impl SqllyDataTable {
     #[must_use]
     pub fn pivot_locked(&self) -> bool {
         self.pivot_locked
+    }
+
+    /// Side of the pivot grid where the control panel is rendered.
+    #[must_use]
+    pub fn pivot_sidebar_position(&self) -> PivotSidebarPosition {
+        self.pivot_sidebar_position
+    }
+
+    /// Move the pivot control panel to the left or right of the pivot grid.
+    pub fn set_pivot_sidebar_position(&mut self, position: PivotSidebarPosition) {
+        self.pivot_sidebar_position = position;
+        self.pivot_sidebar_drag = None;
+    }
+
+    /// Whether the pivot control panel is collapsed into its divider.
+    #[must_use]
+    pub fn pivot_sidebar_collapsed(&self) -> bool {
+        self.pivot_sidebar_collapsed
+    }
+
+    /// Collapse or expand the pivot control panel.
+    pub fn set_pivot_sidebar_collapsed(&mut self, collapsed: bool) {
+        self.pivot_sidebar_collapsed = collapsed;
+        self.pivot_sidebar_drag = None;
+    }
+
+    /// Current width of the expanded pivot control panel, in pixels.
+    #[must_use]
+    pub fn pivot_sidebar_width(&self) -> f32 {
+        self.pivot_sidebar_width
+    }
+
+    /// Resize the pivot control panel, clamped to its supported range.
+    pub fn set_pivot_sidebar_width(&mut self, width: f32) {
+        self.pivot_sidebar_width = width.clamp(MIN_PIVOT_SIDEBAR_WIDTH, MAX_PIVOT_SIDEBAR_WIDTH);
     }
 
     /// Lock or unlock the pivot tab while keeping it visible. `status` is
@@ -164,7 +232,14 @@ impl SqllyDataTable {
             });
             return;
         }
-        self.pivot = Some(build_pivot_parts(&self.state, config, None, cx));
+        self.pivot = Some(build_pivot_parts(
+            &self.state,
+            config,
+            None,
+            DEFAULT_PIVOT_ROW_HEIGHT,
+            DEFAULT_PIVOT_COLUMN_WIDTH,
+            cx,
+        ));
     }
 
     /// Remove the pivot tab and return to the flat grid.
@@ -213,6 +288,8 @@ fn build_pivot_parts(
     grid_state: &Entity<GridState>,
     config: PivotConfig,
     menu_provider: Option<PivotContextMenuProviderHandle>,
+    row_height: f32,
+    column_width: f32,
     cx: &mut App,
 ) -> PivotParts {
     let (columns, rows, formats, key_bindings, theme) = {
@@ -230,6 +307,8 @@ fn build_pivot_parts(
         let mut ps = PivotState::new(columns, rows, formats, config, key_bindings, focus);
         ps.theme = theme;
         ps.context_menu_provider = menu_provider;
+        ps.set_row_height(row_height);
+        ps.set_column_width(column_width);
         ps
     });
     let grid = cx.new(|_| PivotGrid::new(state.clone()));
@@ -250,6 +329,11 @@ pub struct SqllyDataTableBuilder {
     debug_bar: bool,
     pivot: Option<PivotConfig>,
     pivot_context_menu_provider: Option<PivotContextMenuProviderHandle>,
+    pivot_sidebar_position: PivotSidebarPosition,
+    pivot_sidebar_collapsed: bool,
+    pivot_sidebar_width: f32,
+    pivot_row_height: f32,
+    pivot_column_width: f32,
 }
 
 impl SqllyDataTableBuilder {
@@ -290,13 +374,52 @@ impl SqllyDataTableBuilder {
     }
 
     /// Enable the pivot tab, preconfigured with `config`. The widget renders
-    /// a "Grid" / "Pivot" tab bar; the pivot tab shows the drag-and-drop
-    /// field sidebar next to the pivot grid. Pass
+    /// a "Grid" / "Pivot" tab bar; the pivot tab shows resizable accordion
+    /// controls next to the pivot grid. Pass
     /// [`PivotConfig::default()`] for an unconfigured pivot the user builds
     /// interactively.
     #[must_use]
     pub fn pivot(mut self, config: PivotConfig) -> Self {
         self.pivot = Some(config);
+        self
+    }
+
+    /// Place the pivot control panel on the left or right side of the grid.
+    #[must_use]
+    pub fn pivot_sidebar_position(mut self, position: PivotSidebarPosition) -> Self {
+        self.pivot_sidebar_position = position;
+        self
+    }
+
+    /// Build the pivot control panel initially collapsed.
+    #[must_use]
+    pub fn pivot_sidebar_collapsed(mut self, collapsed: bool) -> Self {
+        self.pivot_sidebar_collapsed = collapsed;
+        self
+    }
+
+    /// Set the initial width of the expanded pivot control panel.
+    #[must_use]
+    pub fn pivot_sidebar_width(mut self, width: f32) -> Self {
+        self.pivot_sidebar_width = width.clamp(MIN_PIVOT_SIDEBAR_WIDTH, MAX_PIVOT_SIDEBAR_WIDTH);
+        self
+    }
+
+    /// Set the initial height of every row in the pivot view.
+    #[must_use]
+    pub fn pivot_row_height(mut self, height: f32) -> Self {
+        if height.is_finite() {
+            self.pivot_row_height = height.max(crate::pivot::state::MIN_PIVOT_ROW_HEIGHT);
+        }
+        self
+    }
+
+    /// Set the initial width of every value column in the pivot view.
+    #[must_use]
+    pub fn pivot_column_width(mut self, width: f32) -> Self {
+        if width.is_finite() {
+            self.pivot_column_width = width.max(crate::pivot::state::MIN_PIVOT_COLUMN_WIDTH);
+        }
         self
     }
 
@@ -321,6 +444,11 @@ impl SqllyDataTableBuilder {
         let theme_override = self.theme;
         let debug_bar = self.debug_bar;
         let pivot_config = self.pivot;
+        let pivot_sidebar_position = self.pivot_sidebar_position;
+        let pivot_sidebar_collapsed = self.pivot_sidebar_collapsed;
+        let pivot_sidebar_width = self.pivot_sidebar_width;
+        let pivot_row_height = self.pivot_row_height;
+        let pivot_column_width = self.pivot_column_width;
         let follow_system_appearance = theme_override.is_none();
         let state = cx.new(|cx| {
             let mut s = GridState::new(self.data, self.config, focus.clone());
@@ -333,13 +461,26 @@ impl SqllyDataTableBuilder {
             s
         });
         let pivot_menu_provider = self.pivot_context_menu_provider;
-        let pivot = pivot_config.map(|cfg| build_pivot_parts(&state, cfg, pivot_menu_provider, cx));
+        let pivot = pivot_config.map(|cfg| {
+            build_pivot_parts(
+                &state,
+                cfg,
+                pivot_menu_provider,
+                pivot_row_height,
+                pivot_column_width,
+                cx,
+            )
+        });
         SqllyDataTable {
             state,
             pivot,
             active_tab: GridTab::Grid,
             pivot_locked: false,
             pivot_status: None,
+            pivot_sidebar_position,
+            pivot_sidebar_collapsed,
+            pivot_sidebar_width,
+            pivot_sidebar_drag: None,
             follow_system_appearance,
             appearance_subscription: None,
         }
@@ -505,21 +646,104 @@ impl Render for SqllyDataTable {
 
         let content: gpui::AnyElement = match self.active_tab {
             GridTab::Grid => grid_view.into_any_element(),
-            GridTab::Pivot => div()
-                .flex()
-                .flex_row()
-                .size_full()
-                .child(parts.sidebar.clone())
-                .child(div().flex_1().min_w_0().child(parts.grid.clone()))
-                .into_any_element(),
+            GridTab::Pivot => {
+                let position = self.pivot_sidebar_position;
+                let collapsed = self.pivot_sidebar_collapsed;
+                let panel = div()
+                    .w(px(self.pivot_sidebar_width))
+                    .h_full()
+                    .flex_none()
+                    .child(parts.sidebar.clone());
+                let pivot_grid = div().flex_1().min_w_0().child(parts.grid.clone());
+                let direction = match position {
+                    PivotSidebarPosition::Left => CollapseDirection::Left,
+                    PivotSidebarPosition::Right => CollapseDirection::Right,
+                };
+                let divider_theme = PaneDividerTheme {
+                    background: theme.header_bg.into(),
+                    background_hover: theme.menu_hover_bg.into(),
+                    background_collapsed: theme.menu_bg.into(),
+                    foreground: theme.muted_text.into(),
+                    foreground_hover: theme.header_fg.into(),
+                    border: theme.grid_line.into(),
+                };
+                let table_toggle = cx.entity().clone();
+                let table_drag = cx.entity().clone();
+                let divider = PaneDivider::vertical("pivot-sidebar-divider", direction)
+                    .label("Pivot")
+                    .collapsed(collapsed)
+                    .theme(divider_theme)
+                    .on_toggle(move |collapsed, _window, cx| {
+                        table_toggle.update(cx, |table, cx| {
+                            table.set_pivot_sidebar_collapsed(collapsed);
+                            cx.notify();
+                        });
+                    })
+                    .on_drag_start(move |start_x, _window, cx| {
+                        table_drag.update(cx, |table, cx| {
+                            table.pivot_sidebar_drag = Some(PivotSidebarDrag {
+                                start_x,
+                                start_width: table.pivot_sidebar_width,
+                            });
+                            cx.notify();
+                        });
+                    });
+
+                let mut pivot_view = div().flex().flex_row().size_full();
+                pivot_view = match position {
+                    PivotSidebarPosition::Left => pivot_view
+                        .children((!collapsed).then_some(panel))
+                        .child(divider)
+                        .child(pivot_grid),
+                    PivotSidebarPosition::Right => pivot_view
+                        .child(pivot_grid)
+                        .child(divider)
+                        .children((!collapsed).then_some(panel)),
+                };
+
+                pivot_view.into_any_element()
+            }
         };
 
-        div()
+        let mut root = div()
             .flex()
             .flex_col()
             .size_full()
             .child(tab_bar)
-            .child(div().flex_1().min_h_0().child(content))
+            .child(div().flex_1().min_h_0().child(content));
+
+        if let Some(drag) = self.pivot_sidebar_drag {
+            let position = self.pivot_sidebar_position;
+            let table_move = cx.entity().clone();
+            let table_up = cx.entity().clone();
+            let table_up_out = cx.entity().clone();
+            root = root
+                .on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
+                    let current_x: f32 = event.position.x.into();
+                    let delta = match position {
+                        PivotSidebarPosition::Left => current_x - drag.start_x,
+                        PivotSidebarPosition::Right => drag.start_x - current_x,
+                    };
+                    table_move.update(cx, |table, cx| {
+                        table.set_pivot_sidebar_width(drag.start_width + delta);
+                        cx.notify();
+                    });
+                })
+                .on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
+                    table_up.update(cx, |table, cx| {
+                        table.pivot_sidebar_drag = None;
+                        cx.notify();
+                    });
+                })
+                .on_mouse_up_out(MouseButton::Left, move |_event, _window, cx| {
+                    table_up_out.update(cx, |table, cx| {
+                        table.pivot_sidebar_drag = None;
+                        cx.notify();
+                    });
+                });
+        }
+
+        root
     }
 }
 

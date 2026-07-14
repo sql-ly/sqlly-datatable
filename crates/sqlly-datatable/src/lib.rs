@@ -20,7 +20,9 @@
 //!   reads a shared snapshot of the grid's rows and never mutates them;
 //!   switching tabs preserves both views' state. Configure it
 //!   programmatically via [`pivot::PivotConfig`] and read the live layout
-//!   back from [`pivot::PivotState::config`]. Right-clicks surface to a
+//!   back from [`pivot::PivotState::config`]. Pivot row height and column
+//!   width can be initialized on the builder, resized in the view, and read
+//!   or updated through [`pivot::PivotState`]. Right-clicks surface to a
 //!   [`pivot::PivotContextMenuProvider`] with full context (grouping paths,
 //!   aggregated value, driving source rows), and double-clicking any value
 //!   cell drills through: the flat grid is filtered to exactly the rows
@@ -79,11 +81,13 @@ pub use filter::{ColumnFilter, FilterPredicate, NumberOp, TextOp};
 pub use grid::{
     BusyState, ColumnContext, ContextMenu, ContextMenuItem, ContextMenuProvider,
     ContextMenuRequest, ContextMenuSelection, ContextMenuTarget, FilterPanel, GridState, GridTab,
-    GridTheme, HitResult, MenuAction, MenuItem, RowWindow, ScrollbarAxis, SelectedCellContext,
-    SelectedRowContext, Selection, SortDirection, SqllyDataTable, SqllyDataTableBuilder,
+    GridTheme, HitResult, MenuAction, MenuItem, PivotSidebarPosition, RowWindow, ScrollbarAxis,
+    SelectedCellContext, SelectedRowContext, Selection, SortDirection, SqllyDataTable,
+    SqllyDataTableBuilder,
 };
 pub use pivot::{
     AggregationFn, PivotCellContext, PivotConfig, PivotContextMenuProvider,
     PivotContextMenuRequest, PivotGrid, PivotMenuItem, PivotMenuTarget, PivotPathComponent,
-    PivotResult, PivotSidebar, PivotSortKey, PivotState, PivotZone,
+    PivotResult, PivotSidebar, PivotSortKey, PivotState, PivotZone, DEFAULT_PIVOT_COLUMN_WIDTH,
+    DEFAULT_PIVOT_ROW_HEIGHT, MIN_PIVOT_COLUMN_WIDTH, MIN_PIVOT_ROW_HEIGHT,
 };

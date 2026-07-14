@@ -2146,6 +2146,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-ui-kit"
+version = "0.5.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f20d7b4ed7d57ac7ecff6706ebbae7c209d82ab13c85eea859f2ce5bd9d838e"
+dependencies = [
+ "gpui",
+ "gpui-ui-kit-macros",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "gpui-ui-kit-macros"
+version = "0.5.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90e24d68e32c926389c7daad60a526bb0b0d7f565d0a7e28e169d5fde14262c5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
 name = "gpui_collections"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4872,16 +4896,17 @@ dependencies = [
 
 [[package]]
 name = "sqlly-datatable"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "gpui",
+ "gpui-ui-kit",
  "regex",
  "smol",
 ]
 
 [[package]]
 name = "sqlly-datatable-sample"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "gpui",
  "sqlly-datatable",

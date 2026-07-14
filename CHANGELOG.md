@@ -5,6 +5,16 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] - 2026-07-14
+
+### Added
+- Collapsible accordion controls for the pivot view, with configurable left or
+  right placement and a resizable `gpui-ui-kit` pane divider.
+- Mouse-driven pivot row-height and value-column-width resizing. Initial sizes
+  can be supplied through `SqllyDataTableBuilder::pivot_row_height` and
+  `SqllyDataTableBuilder::pivot_column_width`, then read or updated through
+  `PivotState`.
+
 ## [2.0.1] - 2026-07-14
 
 ### Added
