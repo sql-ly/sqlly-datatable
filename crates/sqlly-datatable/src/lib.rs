@@ -9,6 +9,8 @@
 //!   and unsorted.
 //! * Per-column filtering via a rich filter panel (operator predicates,
 //!   value checklist, search) opened from the built-in context menu.
+//! * Expandable row sections created by grouping on any column from its
+//!   built-in context menu or through [`GridState::set_grouped_column`].
 //! * Configurable column resizing, mouse-driven scrollbars, and edge-scroll
 //!   during drag selection.
 //! * Clipboard copy of any selection (with or without headers).
@@ -81,9 +83,9 @@ pub use filter::{ColumnFilter, FilterPredicate, NumberOp, TextOp};
 pub use grid::{
     BusyState, ColumnContext, ContextMenu, ContextMenuItem, ContextMenuProvider,
     ContextMenuRequest, ContextMenuSelection, ContextMenuTarget, FilterPanel, GridState, GridTab,
-    GridTheme, HitResult, MenuAction, MenuItem, PivotSidebarPosition, RowWindow, ScrollbarAxis,
-    SelectedCellContext, SelectedRowContext, Selection, SortDirection, SqllyDataTable,
-    SqllyDataTableBuilder,
+    GridTheme, HitResult, MenuAction, MenuItem, PivotSidebarPosition, RowGroup, RowWindow,
+    ScrollbarAxis, SelectedCellContext, SelectedRowContext, Selection, SortDirection,
+    SqllyDataTable, SqllyDataTableBuilder,
 };
 pub use pivot::{
     AggregationFn, PivotCellContext, PivotConfig, PivotContextMenuProvider,

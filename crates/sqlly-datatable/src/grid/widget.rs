@@ -129,6 +129,7 @@ impl SqllyDataTable {
             context_menu_provider: None,
             theme: None,
             debug_bar: false,
+            grouped_column: None,
             pivot: None,
             pivot_context_menu_provider: None,
             pivot_sidebar_position: PivotSidebarPosition::Left,
@@ -327,6 +328,7 @@ pub struct SqllyDataTableBuilder {
     context_menu_provider: Option<ContextMenuProviderHandle>,
     theme: Option<GridTheme>,
     debug_bar: bool,
+    grouped_column: Option<usize>,
     pivot: Option<PivotConfig>,
     pivot_context_menu_provider: Option<PivotContextMenuProviderHandle>,
     pivot_sidebar_position: PivotSidebarPosition,
@@ -370,6 +372,14 @@ impl SqllyDataTableBuilder {
     #[must_use]
     pub fn debug_bar(mut self, enabled: bool) -> Self {
         self.debug_bar = enabled;
+        self
+    }
+
+    /// Group the initial flat-grid rows into expandable sections using the
+    /// formatted values in `column`. Invalid indices are ignored at build time.
+    #[must_use]
+    pub fn group_by_column(mut self, column: usize) -> Self {
+        self.grouped_column = Some(column);
         self
     }
 
@@ -443,6 +453,7 @@ impl SqllyDataTableBuilder {
         let provider = self.context_menu_provider;
         let theme_override = self.theme;
         let debug_bar = self.debug_bar;
+        let grouped_column = self.grouped_column;
         let pivot_config = self.pivot;
         let pivot_sidebar_position = self.pivot_sidebar_position;
         let pivot_sidebar_collapsed = self.pivot_sidebar_collapsed;
@@ -454,6 +465,7 @@ impl SqllyDataTableBuilder {
             let mut s = GridState::new(self.data, self.config, focus.clone());
             s.context_menu_provider = provider;
             s.debug_bar_enabled = debug_bar;
+            s.set_grouped_column(grouped_column);
             s.self_weak = Some(cx.weak_entity());
             if let Some(theme) = theme_override {
                 s.theme = theme;

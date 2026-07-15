@@ -16,6 +16,7 @@ use crate::config::{GridConfig, ResolvedColumnFormat};
 use gpui::{
     px, App, Bounds, FocusHandle, Keystroke, MouseButton, Pixels, Point, ScrollHandle, Size,
 };
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 // Pull selection / menu types into scope unqualified for this module's impl.
@@ -175,6 +176,25 @@ pub const SCROLLBAR_SIZE: f32 = 20.0;
 /// Polling interval used to drive auto-scroll during drag.
 pub const EDGE_SCROLL_TICK_MS: u64 = 16;
 
+/// Read-only description of one section in a grouped flat grid.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowGroup {
+    /// Formatted value shown in the section header.
+    pub label: String,
+    /// Number of filtered rows in this section, including hidden rows when
+    /// the section is collapsed.
+    pub row_count: usize,
+    /// Whether the section currently hides its rows.
+    pub collapsed: bool,
+}
+
+/// One visual row in the flat grid's presentation layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GridDisplayRow {
+    GroupHeader { group: usize },
+    Data { source_row: usize, flat_row: usize },
+}
+
 /// Windowed-row mode: the grid presents `total_rows` virtual rows (scrollbar,
 /// row numbers, hit-testing, selection all speak the virtual index space)
 /// while `data.rows` holds only a resident window of them starting at
@@ -206,6 +226,10 @@ pub struct GridState {
     /// immutable after `GridState::new`, so the Arc never needs rebuilding.
     pub(crate) data_rows: Arc<Vec<Vec<CellValue>>>,
     pub display_indices: Arc<Vec<usize>>,
+    pub(crate) display_rows: Arc<Vec<GridDisplayRow>>,
+    grouped_column: Option<usize>,
+    pub(crate) row_groups: Arc<Vec<RowGroup>>,
+    collapsed_group_labels: HashSet<String>,
     pub selection: Selection,
     /// Fixed corner of a keyboard/shift range selection (row, col). Set when a
     /// single cell is selected; held steady while shift+arrow moves the active
@@ -642,6 +666,17 @@ impl GridState {
         let resolved_formats = config.resolve_all(&data.columns);
         let col_count = data.columns.len();
         let display_indices = Arc::new((0..data.rows.len()).collect::<Vec<_>>());
+        let display_rows = Arc::new(
+            display_indices
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(flat_row, source_row)| GridDisplayRow::Data {
+                    source_row,
+                    flat_row,
+                })
+                .collect(),
+        );
         let data_rows = Arc::new(data.rows.clone());
         let column_meta: Arc<[ColumnContext]> = data
             .columns
@@ -660,6 +695,10 @@ impl GridState {
             resolved_formats,
             data_rows,
             display_indices,
+            display_rows,
+            grouped_column: None,
+            row_groups: Arc::new(Vec::new()),
+            collapsed_group_labels: HashSet::new(),
             selection: Selection::None,
             range_anchor: None,
             range_active: None,
@@ -746,10 +785,19 @@ impl GridState {
         }
         Arc::make_mut(&mut self.data_rows).extend(rows.iter().cloned());
         self.data.rows.extend(rows);
-        if self.sort.is_some() || self.filters.iter().any(ColumnFilter::is_active) {
+        if self.sort.is_some()
+            || self.grouped_column.is_some()
+            || self.filters.iter().any(ColumnFilter::is_active)
+        {
             self.recompute();
         } else {
             Arc::make_mut(&mut self.display_indices).extend(base..self.data.rows.len());
+            Arc::make_mut(&mut self.display_rows).extend((base..self.data.rows.len()).map(
+                |source_row| GridDisplayRow::Data {
+                    source_row,
+                    flat_row: source_row,
+                },
+            ));
         }
         if let Some(window) = &mut self.window {
             window.total_rows += self.data.rows.len() - base;
@@ -764,7 +812,7 @@ impl GridState {
     pub fn display_row_count(&self) -> usize {
         self.window
             .map(|w| w.total_rows)
-            .unwrap_or(self.display_indices.len())
+            .unwrap_or(self.display_rows.len())
     }
 
     /// Maps a display-row index to an index into `data.rows`. Normal mode
@@ -777,7 +825,71 @@ impl GridState {
             Some(w) => display_row
                 .checked_sub(w.offset)
                 .filter(|r| *r < self.data.rows.len() && display_row < w.total_rows),
-            None => self.display_indices.get(display_row).copied(),
+            None => match self.display_rows.get(display_row) {
+                Some(GridDisplayRow::Data { source_row, .. }) => Some(*source_row),
+                _ => None,
+            },
+        }
+    }
+
+    /// Column currently used to group the flat grid, or `None` when rows are
+    /// displayed without section headers.
+    #[must_use]
+    pub fn grouped_column(&self) -> Option<usize> {
+        self.grouped_column
+    }
+
+    /// Group the flat grid by `column`, or clear grouping with `None`.
+    /// Invalid column indices and grouping requests in windowed-row mode are
+    /// ignored because only a resident slice is available there.
+    pub fn set_grouped_column(&mut self, column: Option<usize>) {
+        if self.window.is_some() && column.is_some() {
+            return;
+        }
+        if let Some(column) = column {
+            if column >= self.data.columns.len() {
+                return;
+            }
+        }
+        if self.grouped_column != column {
+            self.grouped_column = column;
+            self.collapsed_group_labels.clear();
+            self.selection = Selection::None;
+            self.range_anchor = None;
+            self.range_active = None;
+        }
+        self.rebuild_display_rows();
+        self.clamp_scroll_to_bounds();
+    }
+
+    /// Current grouped sections in display order.
+    #[must_use]
+    pub fn row_groups(&self) -> &[RowGroup] {
+        &self.row_groups
+    }
+
+    /// Expand or collapse a grouped section by its current display index.
+    pub fn set_group_collapsed(&mut self, group: usize, collapsed: bool) {
+        let Some(label) = self.row_groups.get(group).map(|group| group.label.clone()) else {
+            return;
+        };
+        if collapsed {
+            self.collapsed_group_labels.insert(label);
+        } else {
+            self.collapsed_group_labels.remove(&label);
+        }
+        self.selection = Selection::None;
+        self.range_anchor = None;
+        self.range_active = None;
+        self.clear_drag();
+        self.rebuild_display_rows();
+        self.clamp_scroll_to_bounds();
+    }
+
+    /// Toggle a grouped section by its current display index.
+    pub fn toggle_group(&mut self, group: usize) {
+        if let Some(section) = self.row_groups.get(group) {
+            self.set_group_collapsed(group, !section.collapsed);
         }
     }
 
@@ -809,6 +921,9 @@ impl GridState {
             }
         }
         self.sort = None;
+        self.grouped_column = None;
+        self.row_groups = Arc::new(Vec::new());
+        self.collapsed_group_labels.clear();
         for filter in &mut self.filters {
             *filter = ColumnFilter::default();
         }
@@ -816,6 +931,7 @@ impl GridState {
         self.display_indices = Arc::new((0..rows.len()).collect());
         self.data.rows = rows;
         self.window = Some(RowWindow { total_rows, offset });
+        self.rebuild_display_rows();
         Ok(())
     }
 
@@ -948,6 +1064,7 @@ impl GridState {
         // is always the identity over the resident window.
         if self.window.is_some() {
             self.display_indices = Arc::new((0..self.data.rows.len()).collect());
+            self.rebuild_display_rows();
             return;
         }
         let mut indices: Vec<usize> = (0..self.data.rows.len())
@@ -975,6 +1092,78 @@ impl GridState {
             });
         }
         self.display_indices = Arc::new(indices);
+        if self.grouped_column.is_some() {
+            self.selection = Selection::None;
+            self.range_anchor = None;
+            self.range_active = None;
+            self.clear_drag();
+        }
+        self.rebuild_display_rows();
+    }
+
+    fn rebuild_display_rows(&mut self) {
+        let Some(group_col) = self.grouped_column.filter(|_| self.window.is_none()) else {
+            self.row_groups = Arc::new(Vec::new());
+            self.display_rows = Arc::new(
+                self.display_indices
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(flat_row, source_row)| GridDisplayRow::Data {
+                        source_row,
+                        flat_row,
+                    })
+                    .collect(),
+            );
+            return;
+        };
+
+        let mut group_positions = HashMap::<String, usize>::new();
+        let mut grouped_rows = Vec::<(String, Vec<(usize, usize)>)>::new();
+        for (flat_row, &source_row) in self.display_indices.iter().enumerate() {
+            let (label, _) = format_cell(
+                &self.data.rows[source_row][group_col],
+                &self.resolved_formats[group_col],
+            );
+            let group = *group_positions.entry(label.clone()).or_insert_with(|| {
+                let index = grouped_rows.len();
+                grouped_rows.push((label, Vec::new()));
+                index
+            });
+            grouped_rows[group].1.push((source_row, flat_row));
+        }
+
+        self.collapsed_group_labels
+            .retain(|label| group_positions.contains_key(label));
+        let groups: Vec<RowGroup> = grouped_rows
+            .iter()
+            .map(|(label, rows)| RowGroup {
+                label: label.clone(),
+                row_count: rows.len(),
+                collapsed: self.collapsed_group_labels.contains(label),
+            })
+            .collect();
+        let mut display_rows = Vec::with_capacity(
+            groups.len()
+                + groups
+                    .iter()
+                    .filter(|group| !group.collapsed)
+                    .map(|group| group.row_count)
+                    .sum::<usize>(),
+        );
+        for (group, (_, rows)) in grouped_rows.into_iter().enumerate() {
+            display_rows.push(GridDisplayRow::GroupHeader { group });
+            if !groups[group].collapsed {
+                display_rows.extend(rows.into_iter().map(|(source_row, flat_row)| {
+                    GridDisplayRow::Data {
+                        source_row,
+                        flat_row,
+                    }
+                }));
+            }
+        }
+        self.row_groups = Arc::new(groups);
+        self.display_rows = Arc::new(display_rows);
     }
 
     fn content_size(&self) -> (f32, f32) {
@@ -1171,6 +1360,10 @@ impl GridState {
                 self.clear_drag();
             }
             HitResult::ContextMenuItem(_) => {}
+            HitResult::GroupHeader(group) => {
+                self.toggle_group(group);
+                self.clear_drag();
+            }
             HitResult::RowHeader(row) => {
                 if cmd {
                     // Cmd-click toggles the row in/out of the current row
@@ -1398,9 +1591,88 @@ impl GridState {
                 other => other,
             };
         }
+
+        let request_display_indices = if self.grouped_column.is_some() && self.window.is_none() {
+            let mut row_map = vec![None; self.display_rows.len()];
+            let mut indices = Vec::new();
+            for (display_row, row) in self.display_rows.iter().enumerate() {
+                if let GridDisplayRow::Data { source_row, .. } = row {
+                    row_map[display_row] = Some(indices.len());
+                    indices.push(*source_row);
+                }
+            }
+            let map_row = |display_row: usize| {
+                row_map
+                    .get(display_row)
+                    .copied()
+                    .flatten()
+                    .or_else(|| {
+                        row_map
+                            .iter()
+                            .skip(display_row.saturating_add(1))
+                            .flatten()
+                            .copied()
+                            .next()
+                    })
+                    .or_else(|| {
+                        row_map
+                            .iter()
+                            .take(display_row)
+                            .rev()
+                            .flatten()
+                            .copied()
+                            .next()
+                    })
+                    .unwrap_or(0)
+            };
+            target = match target {
+                ContextMenuTarget::Cell {
+                    display_row_index,
+                    source_row_index,
+                    column_index,
+                } => ContextMenuTarget::Cell {
+                    display_row_index: map_row(display_row_index),
+                    source_row_index,
+                    column_index,
+                },
+                ContextMenuTarget::RowHeader {
+                    display_row_index,
+                    source_row_index,
+                } => ContextMenuTarget::RowHeader {
+                    display_row_index: map_row(display_row_index),
+                    source_row_index,
+                },
+                other => other,
+            };
+            selection = match selection {
+                Selection::Cell(row, col) => Selection::Cell(map_row(row), col),
+                Selection::Row(row) => Selection::Row(map_row(row)),
+                Selection::CellRange(r1, c1, r2, c2) => {
+                    Selection::CellRange(map_row(r1), c1, map_row(r2), c2)
+                }
+                Selection::RowRange(r1, r2) => Selection::RowRange(map_row(r1), map_row(r2)),
+                Selection::Rows(rows) => Selection::Rows(
+                    rows.into_iter()
+                        .filter_map(|row| row_map.get(row).copied().flatten())
+                        .collect(),
+                ),
+                Selection::Cells(cells) => Selection::Cells(
+                    cells
+                        .into_iter()
+                        .filter_map(|(row, col)| {
+                            row_map.get(row).copied().flatten().map(|row| (row, col))
+                        })
+                        .collect(),
+                ),
+                other => other,
+            };
+            Arc::new(indices)
+        } else {
+            Arc::clone(&self.display_indices)
+        };
         let selection = &selection;
 
-        let nrows = self.display_indices.len();
+        let nrows = request_display_indices.len();
         let ncols = self.data.columns.len();
 
         let (r1, c1, r2, c2) = match selection.normalized_bounds() {
@@ -1458,7 +1730,7 @@ impl GridState {
             target,
             Some(menu_selection),
             Arc::clone(&self.data_rows),
-            Arc::clone(&self.display_indices),
+            request_display_indices,
             Arc::clone(&self.column_meta),
             column_oriented,
         )
@@ -1523,6 +1795,8 @@ impl GridState {
                 self.sort = None;
                 self.recompute();
             }
+            MenuAction::GroupBy => self.set_grouped_column(Some(col)),
+            MenuAction::ClearGrouping => self.set_grouped_column(None),
             MenuAction::FilterPrompt => {
                 let anchor = self.context_menu.as_ref().map(|m| m.anchor);
                 self.open_filter_panel(col, anchor);
@@ -1910,14 +2184,17 @@ impl GridState {
     #[must_use]
     pub fn selected_rows(&self) -> Vec<usize> {
         let nrows = self.display_row_count();
-        match &self.selection {
+        let rows = match &self.selection {
             Selection::Row(r) if *r < nrows => vec![*r],
             Selection::RowRange(r1, r2) => {
                 (*r1.min(r2)..=*r1.max(r2)).filter(|&r| r < nrows).collect()
             }
             Selection::Rows(rows) => rows.iter().copied().filter(|&r| r < nrows).collect(),
             _ => Vec::new(),
-        }
+        };
+        rows.into_iter()
+            .filter(|&row| self.is_data_display_row(row))
+            .collect()
     }
 
     /// Column indices of fully selected columns, sorted ascending and clamped
@@ -1946,16 +2223,19 @@ impl GridState {
         }
         match &self.selection {
             Selection::None => Vec::new(),
-            Selection::Cell(r, c) if *r < nrows && *c < ncols => vec![(*r, *c)],
+            Selection::Cell(r, c) if *r < nrows && *c < ncols && self.is_data_display_row(*r) => {
+                vec![(*r, *c)]
+            }
             Selection::Cell(..) => Vec::new(),
             Selection::Cells(cells) => cells
                 .iter()
                 .copied()
-                .filter(|&(r, c)| r < nrows && c < ncols)
+                .filter(|&(r, c)| r < nrows && c < ncols && self.is_data_display_row(r))
                 .collect(),
             Selection::Column(_) | Selection::Columns(_) => {
                 let cols = self.selected_columns();
                 (0..nrows)
+                    .filter(|&r| self.is_data_display_row(r))
                     .flat_map(|r| cols.iter().map(move |&c| (r, c)))
                     .collect()
             }
@@ -1968,6 +2248,7 @@ impl GridState {
                 let (rmin, rmax) = (*r1.min(r2), *r1.max(r2));
                 let (cmin, cmax) = (*c1.min(c2), *c1.max(c2));
                 (rmin..=rmax.min(nrows.saturating_sub(1)))
+                    .filter(|&r| self.is_data_display_row(r))
                     .flat_map(|r| (cmin..=cmax.min(ncols.saturating_sub(1))).map(move |c| (r, c)))
                     .collect()
             }
@@ -2095,18 +2376,17 @@ impl GridState {
         if nrows == 0 || ncols == 0 {
             return;
         }
-        let last_row = nrows - 1;
         let last_col = ncols - 1;
         match self.selection {
             Selection::Cell(row, col) => {
-                let nr = (row as i32 + dy).clamp(0, last_row) as usize;
+                let nr = self.move_data_row(row, dy);
                 let nc = (col as i32 + dx).clamp(0, last_col) as usize;
                 self.selection = Selection::Cell(nr, nc);
                 self.range_anchor = Some((nr, nc));
                 self.range_active = Some((nr, nc));
             }
             Selection::Row(row) if dy != 0 => {
-                let nr = (row as i32 + dy).clamp(0, last_row) as usize;
+                let nr = self.move_data_row(row, dy);
                 self.selection = Selection::Row(nr);
             }
             Selection::Column(col) if dx != 0 => {
@@ -2114,11 +2394,63 @@ impl GridState {
                 self.selection = Selection::Column(nc);
             }
             _ => {
-                self.selection = Selection::Cell(0, 0);
-                self.range_anchor = Some((0, 0));
-                self.range_active = Some((0, 0));
+                if let Some(row) = self.first_data_row() {
+                    self.selection = Selection::Cell(row, 0);
+                    self.range_anchor = Some((row, 0));
+                    self.range_active = Some((row, 0));
+                }
             }
         }
+    }
+
+    fn first_data_row(&self) -> Option<usize> {
+        if self.window.is_some() {
+            return (self.display_row_count() > 0).then_some(0);
+        }
+        self.display_rows
+            .iter()
+            .position(|row| matches!(row, GridDisplayRow::Data { .. }))
+    }
+
+    fn is_data_display_row(&self, row: usize) -> bool {
+        if let Some(window) = self.window {
+            return row < window.total_rows;
+        }
+        matches!(
+            self.display_rows.get(row),
+            Some(GridDisplayRow::Data { .. })
+        )
+    }
+
+    fn move_data_row(&self, row: usize, delta: i32) -> usize {
+        if delta == 0 || self.grouped_column.is_none() || self.window.is_some() {
+            let last = self.display_row_count().saturating_sub(1) as i32;
+            return (row as i32 + delta).clamp(0, last) as usize;
+        }
+
+        let direction = delta.signum();
+        let mut current = row as i32;
+        let mut remaining = delta.unsigned_abs();
+        let last = self.display_row_count().saturating_sub(1) as i32;
+        while remaining > 0 {
+            let mut candidate = current;
+            loop {
+                let next = candidate + direction;
+                if next < 0 || next > last {
+                    return current as usize;
+                }
+                candidate = next;
+                if matches!(
+                    self.display_rows.get(candidate as usize),
+                    Some(GridDisplayRow::Data { .. })
+                ) {
+                    break;
+                }
+            }
+            current = candidate;
+            remaining -= 1;
+        }
+        current as usize
     }
 
     /// Extend a rectangular cell selection by moving the active corner while
@@ -2130,7 +2462,6 @@ impl GridState {
         if nrows == 0 || ncols == 0 {
             return;
         }
-        let last_row = nrows - 1;
         let last_col = ncols - 1;
 
         // Seed anchor/active from the current selection when not already set.
@@ -2145,16 +2476,19 @@ impl GridState {
                     self.range_active = Some((r2, c2));
                 }
                 _ => {
-                    self.range_anchor = Some((0, 0));
-                    self.range_active = Some((0, 0));
-                    self.selection = Selection::Cell(0, 0);
+                    let Some(row) = self.first_data_row() else {
+                        return;
+                    };
+                    self.range_anchor = Some((row, 0));
+                    self.range_active = Some((row, 0));
+                    self.selection = Selection::Cell(row, 0);
                 }
             }
         }
 
         let anchor = self.range_anchor.unwrap_or((0, 0));
         let active = self.range_active.unwrap_or(anchor);
-        let nr = (active.0 as i32 + dy).clamp(0, last_row) as usize;
+        let nr = self.move_data_row(active.0, dy);
         let nc = (active.1 as i32 + dx).clamp(0, last_col) as usize;
         self.range_active = Some((nr, nc));
 
@@ -2243,6 +2577,10 @@ impl GridState {
             }
             let row_idx = (row_y / self.row_height) as usize;
             if row_idx < self.display_row_count() {
+                if let Some(GridDisplayRow::GroupHeader { group }) = self.display_rows.get(row_idx)
+                {
+                    return HitResult::GroupHeader(*group);
+                }
                 return HitResult::RowHeader(row_idx);
             }
             return HitResult::None;
@@ -2255,6 +2593,9 @@ impl GridState {
         let row_idx = (row_y / self.row_height) as usize;
         if row_idx >= self.display_row_count() {
             return HitResult::None;
+        }
+        if let Some(GridDisplayRow::GroupHeader { group }) = self.display_rows.get(row_idx) {
+            return HitResult::GroupHeader(*group);
         }
         let mut acc = 0.0;
         for (i, col) in self.data.columns.iter().enumerate() {

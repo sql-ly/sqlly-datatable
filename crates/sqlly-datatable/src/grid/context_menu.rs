@@ -159,8 +159,9 @@ impl SelectedRowContext {
 ///   be called off the UI thread for large selections (see
 ///   [`GridState::spawn_background`](crate::grid::GridState::spawn_background)).
 ///
-/// All indices are display indices (post sort/filter) unless prefixed with
-/// `source_`.
+/// All indices are data-row display indices (post sort/filter) unless prefixed
+/// with `source_`. When flat-grid grouping is active, visual section headers
+/// are omitted and the visible data rows are compacted for this snapshot.
 ///
 /// For column-oriented targets (`ColumnHeader`, `SortButton`, or a
 /// `Selection::Column`), the row accessors are empty — a column right-click is
@@ -420,6 +421,9 @@ impl ContextMenuItem {
             Self::BuiltIn(MenuAction::SortDescending),
             Self::BuiltIn(MenuAction::ClearSort),
             Self::Separator,
+            Self::BuiltIn(MenuAction::GroupBy),
+            Self::BuiltIn(MenuAction::ClearGrouping),
+            Self::Separator,
             Self::BuiltIn(MenuAction::FilterPrompt),
             Self::BuiltIn(MenuAction::ClearFilter),
         ]
@@ -618,14 +622,14 @@ mod tests {
     #[test]
     fn standard_column_header_items_match_builtin_order() {
         let items = ContextMenuItem::standard_column_header_items();
-        assert_eq!(items.len(), 10);
+        assert_eq!(items.len(), 13);
         assert!(matches!(
             items[0],
             ContextMenuItem::BuiltIn(MenuAction::SelectColumn)
         ));
         assert!(matches!(items[3], ContextMenuItem::Separator));
         assert!(matches!(
-            items[9],
+            items[12],
             ContextMenuItem::BuiltIn(MenuAction::ClearFilter)
         ));
     }

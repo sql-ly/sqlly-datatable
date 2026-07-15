@@ -73,6 +73,8 @@ pub enum HitResult {
     ColumnHeader(usize),
     SortButton(usize),
     ColumnBorder(usize),
+    /// Expandable section header for a grouped flat-grid row set.
+    GroupHeader(usize),
     RowHeader(usize),
     Cell(usize, usize),
     Corner,

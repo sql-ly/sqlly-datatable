@@ -26,6 +26,8 @@ pub enum MenuAction {
     SortAscending,
     SortDescending,
     ClearSort,
+    GroupBy,
+    ClearGrouping,
     FilterPrompt,
     ClearFilter,
 }
@@ -80,6 +82,9 @@ impl ContextMenu {
                 MenuItem::Action(MenuAction::SortAscending),
                 MenuItem::Action(MenuAction::SortDescending),
                 MenuItem::Action(MenuAction::ClearSort),
+                MenuItem::Separator,
+                MenuItem::Action(MenuAction::GroupBy),
+                MenuItem::Action(MenuAction::ClearGrouping),
                 MenuItem::Separator,
                 MenuItem::Action(MenuAction::FilterPrompt),
                 MenuItem::Action(MenuAction::ClearFilter),
@@ -200,6 +205,8 @@ pub fn label(action: MenuAction) -> &'static str {
         MenuAction::SortAscending => "Sort Ascending",
         MenuAction::SortDescending => "Sort Descending",
         MenuAction::ClearSort => "Clear sort",
+        MenuAction::GroupBy => "Group by this column",
+        MenuAction::ClearGrouping => "Clear grouping",
         MenuAction::FilterPrompt => "Filter...",
         MenuAction::ClearFilter => "Clear filter",
     }
@@ -313,6 +320,8 @@ mod tests {
                 MenuItem::Action(MenuAction::SortAscending) => "SortAscending",
                 MenuItem::Action(MenuAction::SortDescending) => "SortDescending",
                 MenuItem::Action(MenuAction::ClearSort) => "ClearSort",
+                MenuItem::Action(MenuAction::GroupBy) => "GroupBy",
+                MenuItem::Action(MenuAction::ClearGrouping) => "ClearGrouping",
                 MenuItem::Action(MenuAction::FilterPrompt) => "FilterPrompt",
                 MenuItem::Action(MenuAction::ClearFilter) => "ClearFilter",
                 MenuItem::Custom { .. } => "Custom",
@@ -329,6 +338,9 @@ mod tests {
                 "SortDescending",
                 "ClearSort",
                 "Separator",
+                "GroupBy",
+                "ClearGrouping",
+                "Separator",
                 "FilterPrompt",
                 "ClearFilter",
             ],
@@ -336,14 +348,14 @@ mod tests {
     }
 
     #[test]
-    fn at_least_two_separators_break_three_groups() {
+    fn separators_break_menu_into_action_groups() {
         let m = ContextMenu::standard(0, point_from(0.0, 0.0));
         let separators = m
             .items
             .iter()
             .filter(|i| matches!(i, MenuItem::Separator))
             .count();
-        assert_eq!(separators, 2);
+        assert_eq!(separators, 3);
     }
 
     #[test]
@@ -355,6 +367,8 @@ mod tests {
             MenuAction::SortAscending,
             MenuAction::SortDescending,
             MenuAction::ClearSort,
+            MenuAction::GroupBy,
+            MenuAction::ClearGrouping,
             MenuAction::FilterPrompt,
             MenuAction::ClearFilter,
         ] {

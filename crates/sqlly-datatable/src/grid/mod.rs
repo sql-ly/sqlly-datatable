@@ -19,7 +19,9 @@ pub use context_menu::{
 };
 pub use menu::{ContextMenu, MenuAction, MenuItem};
 pub use selection::{HitResult, ScrollbarAxis, Selection, SortDirection};
-pub use state::{BusyState, FilterInput, FilterPanel, FilterValueRow, GridState, RowWindow};
+pub use state::{
+    BusyState, FilterInput, FilterPanel, FilterValueRow, GridState, RowGroup, RowWindow,
+};
 pub use theme::GridTheme;
 pub use widget::{GridTab, PivotSidebarPosition, SqllyDataTable, SqllyDataTableBuilder};
 

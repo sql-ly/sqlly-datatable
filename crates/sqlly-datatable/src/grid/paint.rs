@@ -12,7 +12,7 @@ use crate::grid::menu::{self};
 use crate::grid::selection::{
     is_cell_selected, is_column_selected, is_row_selected, HitResult, Selection, SortDirection,
 };
-use crate::grid::state::{state_inner, GridState, SCROLLBAR_SIZE};
+use crate::grid::state::{state_inner, GridDisplayRow, GridState, RowGroup, SCROLLBAR_SIZE};
 use crate::grid::theme::GridTheme;
 
 use gpui::{
@@ -28,7 +28,9 @@ const fn hsla_const(h: f32, s: f32, l: f32, a: f32) -> Hsla {
 
 #[derive(Clone)]
 pub(crate) struct PaintData {
-    pub(crate) display_indices: Arc<Vec<usize>>,
+    pub(crate) display_rows: Arc<Vec<GridDisplayRow>>,
+    pub(crate) row_groups: Arc<Vec<RowGroup>>,
+    pub(crate) grouped_column: Option<usize>,
     /// Windowed-row mode (see [`crate::grid::state::RowWindow`]): the grid
     /// presents `total_rows` virtual rows while `rows` holds only a resident
     /// window starting at `offset`.
@@ -53,7 +55,9 @@ pub(crate) struct PaintData {
 impl PaintData {
     pub(crate) fn from_state(s: &GridState) -> Self {
         Self {
-            display_indices: Arc::clone(&s.display_indices),
+            display_rows: Arc::clone(&s.display_rows),
+            row_groups: Arc::clone(&s.row_groups),
+            grouped_column: s.grouped_column(),
             window: s.window,
             selection: s.selection.clone(),
             sort: s.sort,
@@ -77,7 +81,7 @@ impl PaintData {
     fn display_row_count(&self) -> usize {
         self.window
             .map(|w| w.total_rows)
-            .unwrap_or(self.display_indices.len())
+            .unwrap_or(self.display_rows.len())
     }
 
     /// Maps a display row to an index into `rows`, or `None` when the row is
@@ -88,7 +92,24 @@ impl PaintData {
             Some(w) => display_row
                 .checked_sub(w.offset)
                 .filter(|r| *r < self.rows.len()),
-            None => self.display_indices.get(display_row).copied(),
+            None => match self.display_rows.get(display_row) {
+                Some(GridDisplayRow::Data { source_row, .. }) => Some(*source_row),
+                _ => None,
+            },
+        }
+    }
+
+    fn group(&self, display_row: usize) -> Option<&RowGroup> {
+        match self.display_rows.get(display_row) {
+            Some(GridDisplayRow::GroupHeader { group }) => self.row_groups.get(*group),
+            _ => None,
+        }
+    }
+
+    fn row_number(&self, display_row: usize) -> usize {
+        match self.display_rows.get(display_row) {
+            Some(GridDisplayRow::Data { flat_row, .. }) => flat_row + 1,
+            _ => display_row + 1,
         }
     }
 }
@@ -344,6 +365,23 @@ pub(crate) fn paint_grid(
             if y + row_h < oy + data_y || y > oy + sh {
                 continue;
             }
+            if let Some(group) = data.group(dr) {
+                fill_quad(window, ox + rhw, y, cols_w, row_h, theme.pivot_group_bg);
+                let marker = if group.collapsed { ">" } else { "v" };
+                let noun = if group.row_count == 1 { "row" } else { "rows" };
+                let label = format!("{marker}  {}  ({} {noun})", group.label, group.row_count);
+                paint_txt(
+                    window,
+                    cx,
+                    &label,
+                    ox + rhw + 8.0,
+                    y + (row_h - fs) * 0.5,
+                    theme.pivot_total_fg,
+                    Some(cols_w - 16.0),
+                );
+                fill_quad(window, ox, y + row_h, rhw + cols_w, 1.0, theme.grid_line);
+                continue;
+            }
             let row_sel = is_row_selected(&data.selection, dr);
             let alt = dr % 2 == 1;
             if row_sel {
@@ -420,6 +458,11 @@ pub(crate) fn paint_grid(
             if y + row_h < oy + data_y || y > oy + sh {
                 continue;
             }
+            if data.group(dr).is_some() {
+                fill_quad(window, ox, y, rhw, row_h, theme.pivot_group_bg);
+                fill_quad(window, ox, y + row_h, rhw, 1.0, theme.grid_line);
+                continue;
+            }
             let row_sel = is_row_selected(&data.selection, dr);
             let alt = dr % 2 == 1;
             let rh_bg = if row_sel {
@@ -433,7 +476,7 @@ pub(crate) fn paint_grid(
             paint_txt(
                 window,
                 cx,
-                &(dr + 1).to_string(),
+                &data.row_number(dr).to_string(),
                 ox + 6.0,
                 y + (row_h - fs) * 0.5,
                 theme.header_fg,
@@ -456,6 +499,9 @@ pub(crate) fn paint_grid(
             }
             if is_column_selected(&data.selection, ci) {
                 fill_quad(window, x, oy, w, hdr_h, theme.selection_bg);
+            }
+            if data.grouped_column == Some(ci) {
+                fill_quad(window, x, oy + hdr_h - 3.0, w, 3.0, theme.sort_indicator);
             }
             paint_txt(
                 window,
