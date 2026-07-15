@@ -8,6 +8,7 @@
 
 use crate::config::NumberFormat;
 use crate::pivot::aggregation::AggregationFn;
+use std::collections::HashMap;
 
 /// The four sidebar drop zones a source column can be assigned to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -53,6 +54,13 @@ pub struct PivotConfig {
     /// Optional number-format override for value cells. `None` falls back
     /// to the value column's resolved format.
     pub value_format: Option<NumberFormat>,
+    /// Optional per-field display overrides (source column index → format)
+    /// for Rows / Columns / Filters fields, edited from the sidebar's
+    /// double-click format dialog. Applied on top of the column's resolved
+    /// format when its group labels and filter values are formatted; the
+    /// override's `alignment` also drives that field's label alignment.
+    /// Value-cell display is governed by `value_format` instead.
+    pub field_formats: HashMap<usize, NumberFormat>,
 }
 
 impl Default for PivotConfig {
@@ -69,6 +77,7 @@ impl Default for PivotConfig {
             show_column_grand_total: true,
             blank_label: "(blank)".into(),
             value_format: None,
+            field_formats: HashMap::new(),
         }
     }
 }
@@ -143,6 +152,7 @@ impl PivotConfig {
         if self.value_field.is_some_and(|f| f >= column_count) {
             self.value_field = None;
         }
+        self.field_formats.retain(|&f, _| f < column_count);
     }
 }
 
@@ -236,11 +246,15 @@ mod tests {
         cfg.column_fields = vec![9];
         cfg.filter_fields = vec![2, 7];
         cfg.value_field = Some(6);
+        cfg.field_formats.insert(0, NumberFormat::default());
+        cfg.field_formats.insert(8, NumberFormat::default());
         cfg.clamp_to_columns(4);
         assert_eq!(cfg.row_fields, vec![0]);
         assert!(cfg.column_fields.is_empty());
         assert_eq!(cfg.filter_fields, vec![2]);
         assert_eq!(cfg.value_field, None);
+        assert!(cfg.field_formats.contains_key(&0));
+        assert!(!cfg.field_formats.contains_key(&8));
     }
 
     #[test]

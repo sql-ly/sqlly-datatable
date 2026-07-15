@@ -89,8 +89,8 @@ pub use grid::{
 };
 pub use pivot::{
     AggregationFn, PivotCellContext, PivotConfig, PivotContextMenuProvider,
-    PivotContextMenuRequest, PivotGrid, PivotMenuItem, PivotMenuTarget, PivotPathComponent,
-    PivotResult, PivotSaveConfigHandler, PivotSidebar, PivotSortKey, PivotState, PivotZone,
-    DEFAULT_PIVOT_COLUMN_WIDTH, DEFAULT_PIVOT_ROW_HEIGHT, DEFAULT_PIVOT_SIDEBAR_WIDTH,
-    MIN_PIVOT_COLUMN_WIDTH, MIN_PIVOT_ROW_HEIGHT,
+    PivotContextMenuRequest, PivotFormatDialog, PivotGrid, PivotMenuItem, PivotMenuTarget,
+    PivotPathComponent, PivotResult, PivotSaveConfigHandler, PivotSidebar, PivotSortKey,
+    PivotState, PivotZone, DEFAULT_PIVOT_COLUMN_WIDTH, DEFAULT_PIVOT_ROW_HEIGHT,
+    DEFAULT_PIVOT_SIDEBAR_WIDTH, MIN_PIVOT_COLUMN_WIDTH, MIN_PIVOT_ROW_HEIGHT,
 };

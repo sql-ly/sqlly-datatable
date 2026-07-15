@@ -6,7 +6,7 @@
 //! (Arc clones + small copies) taken once per layout pass; the paint
 //! functions are pure consumers of it.
 
-use crate::config::ResolvedColumnFormat;
+use crate::config::{ResolvedColumnFormat, TextAlignment};
 use crate::data::CellValue;
 use crate::format::format_cell;
 use crate::grid::selection::SortDirection;
@@ -38,6 +38,11 @@ pub(crate) struct PivotPaintData {
     pub(crate) visible_cols: Arc<Vec<VisibleCol>>,
     pub(crate) theme: GridTheme,
     pub(crate) value_fmt: ResolvedColumnFormat,
+    /// Per row-axis depth: (label alignment, negatives-in-red) from that
+    /// field's effective label format.
+    pub(crate) row_label_fmts: Vec<(TextAlignment, bool)>,
+    /// Per column-axis depth: same, for the column header labels.
+    pub(crate) col_label_fmts: Vec<(TextAlignment, bool)>,
     pub(crate) selection: Option<(usize, usize, usize, usize)>,
     pub(crate) hover_hit: Option<PivotHitResult>,
     pub(crate) sort: Option<(PivotSortKey, SortDirection)>,
@@ -55,12 +60,26 @@ pub(crate) struct PivotPaintData {
 
 impl PivotPaintData {
     pub(crate) fn from_state(s: &PivotState) -> Self {
+        let label_fmt = |field: usize| {
+            s.label_formats
+                .get(field)
+                .map_or((TextAlignment::Left, false), |f| {
+                    (f.alignment(), f.number.show_negative_red)
+                })
+        };
         Self {
             result: Arc::clone(&s.result),
             visible_rows: Arc::clone(&s.visible_rows),
             visible_cols: Arc::clone(&s.visible_cols),
             theme: s.theme.clone(),
             value_fmt: s.value_fmt.clone(),
+            row_label_fmts: s.config.row_fields.iter().map(|&f| label_fmt(f)).collect(),
+            col_label_fmts: s
+                .config
+                .column_fields
+                .iter()
+                .map(|&f| label_fmt(f))
+                .collect(),
             selection: s.selection,
             hover_hit: s.hover_hit,
             sort: s.sort,
@@ -140,6 +159,26 @@ fn text_w_approx(text: &str, char_width: f32) -> f32 {
     text.chars().count() as f32 * char_width
 }
 
+/// `true` when a raw grouping value is a negative number (drives red group
+/// labels for fields configured with `show_negative_red`).
+fn cell_is_negative(cell: &CellValue) -> bool {
+    match cell {
+        CellValue::Integer(v) => *v < 0,
+        CellValue::Decimal(v) => *v < 0.0,
+        _ => false,
+    }
+}
+
+/// X position for a label of `text_w` within `[min_x, max_x)` under `align`,
+/// clamped so the label never starts left of `min_x`.
+fn aligned_x(align: TextAlignment, min_x: f32, max_x: f32, text_w: f32) -> f32 {
+    match align {
+        TextAlignment::Left => min_x,
+        TextAlignment::Center => (min_x + (max_x - min_x - text_w) * 0.5).max(min_x),
+        TextAlignment::Right => (max_x - text_w).max(min_x),
+    }
+}
+
 /// Paint the whole pivot grid into `bounds`.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn paint_pivot_grid(
@@ -186,20 +225,30 @@ pub(crate) fn paint_pivot_grid(
     let font_size = px(fs);
     let line_height = px(fs * 1.2);
     let font = gpui::font("monospace");
-    let paint_txt = |win: &mut Window,
-                     cx: &mut App,
-                     text: &str,
-                     x: f32,
-                     y: f32,
-                     color: Hsla,
-                     max_w: Option<f32>| {
+    let bold_font = {
+        let mut f = font.clone();
+        f.weight = gpui::FontWeight::BOLD;
+        f
+    };
+    let paint_txt_weighted = |win: &mut Window,
+                              cx: &mut App,
+                              text: &str,
+                              x: f32,
+                              y: f32,
+                              color: Hsla,
+                              max_w: Option<f32>,
+                              bold: bool| {
         if text.is_empty() {
             return;
         }
         let mk_run = |t: &str| gpui::TextRun {
             len: t.len(),
             color,
-            font: font.clone(),
+            font: if bold {
+                bold_font.clone()
+            } else {
+                font.clone()
+            },
             background_color: None,
             underline: None,
             strikethrough: None,
@@ -221,6 +270,15 @@ pub(crate) fn paint_pivot_grid(
             _ => shaped,
         };
         let _ = shaped.paint(Point { x: px(x), y: px(y) }, line_height, win, cx);
+    };
+    let paint_txt = |win: &mut Window,
+                     cx: &mut App,
+                     text: &str,
+                     x: f32,
+                     y: f32,
+                     color: Hsla,
+                     max_w: Option<f32>| {
+        paint_txt_weighted(win, cx, text, x, y, color, max_w, false);
     };
 
     fill_quad(window, ox, oy, sw, sh, theme.bg);
@@ -343,6 +401,8 @@ pub(crate) fn paint_pivot_grid(
                         } else {
                             theme.text_fg
                         };
+                        let bold = matches!(vr.kind, VisibleRowKind::GrandTotal)
+                            || matches!(vc.kind, VisibleColKind::GrandTotal);
                         let text_w = text_w_approx(&text, cw);
                         // Clamp into the cell so oversized values truncate
                         // instead of bleeding into the neighboring column.
@@ -352,7 +412,7 @@ pub(crate) fn paint_pivot_grid(
                             crate::config::TextAlignment::Right => x + col_w - text_w - 8.0,
                         }
                         .max(x + 4.0);
-                        paint_txt(
+                        paint_txt_weighted(
                             window,
                             cx,
                             &text,
@@ -360,6 +420,7 @@ pub(crate) fn paint_pivot_grid(
                             y + (row_h - fs) * 0.5,
                             color,
                             Some(x + col_w - 4.0 - tx),
+                            bold,
                         );
                     }
                 }
@@ -405,18 +466,34 @@ pub(crate) fn paint_pivot_grid(
                 );
                 label_x = indent + CHEVRON_SIZE + 4.0;
             }
-            let color = match vr.kind {
+            let mut color = match vr.kind {
                 VisibleRowKind::Leaf => theme.text_fg,
                 _ => theme.pivot_total_fg,
             };
-            paint_txt(
+            let label = data.row_label(vr);
+            let mut lx = label_x;
+            if !matches!(vr.kind, VisibleRowKind::GrandTotal) {
+                if let Some(&(align, red)) = data.row_label_fmts.get(vr.depth) {
+                    lx = aligned_x(align, label_x, ox + rhw - 6.0, text_w_approx(&label, cw));
+                    let neg = data
+                        .result
+                        .row_nodes
+                        .get(vr.key)
+                        .is_some_and(|n| cell_is_negative(&n.sort_key));
+                    if red && neg {
+                        color = theme.negative_fg;
+                    }
+                }
+            }
+            paint_txt_weighted(
                 window,
                 cx,
-                &data.row_label(vr),
-                label_x,
+                &label,
+                lx,
                 y + (row_h - fs) * 0.5,
                 color,
-                Some(ox + rhw - label_x - 6.0),
+                Some(ox + rhw - lx - 6.0),
+                matches!(vr.kind, VisibleRowKind::GrandTotal),
             );
             fill_quad(window, ox, y + row_h - 1.0, rhw, 1.0, theme.grid_line);
         }
@@ -470,7 +547,7 @@ pub(crate) fn paint_pivot_grid(
                         );
                         let label = "Grand Total";
                         let tw = text_w_approx(label, cw);
-                        paint_txt(
+                        paint_txt_weighted(
                             window,
                             cx,
                             label,
@@ -478,6 +555,7 @@ pub(crate) fn paint_pivot_grid(
                             ly + (hdr_row_h - fs) * 0.5,
                             theme.pivot_total_fg,
                             Some(col_w - 8.0),
+                            true,
                         );
                         fill_quad(window, x, ly, 1.0, hdr_h - hdr_row_h, theme.grid_line);
                     }
@@ -581,14 +659,27 @@ pub(crate) fn paint_pivot_grid(
                             }
                         }
                     }
+                    let mut color = theme.header_fg;
+                    let mut lx = label_x;
+                    if let Some(&(align, red)) = data.col_label_fmts.get(depth) {
+                        lx = aligned_x(
+                            align,
+                            label_x,
+                            span_x + span_w - 4.0,
+                            text_w_approx(&label, cw),
+                        );
+                        if red && cell_is_negative(&node_ref.sort_key) {
+                            color = theme.negative_fg;
+                        }
+                    }
                     paint_txt(
                         window,
                         cx,
                         &label,
-                        label_x,
+                        lx,
                         ly + (hdr_row_h - fs) * 0.5,
-                        theme.header_fg,
-                        Some(span_x + span_w - label_x - 4.0),
+                        color,
+                        Some(span_x + span_w - lx - 4.0),
                     );
                 }
                 fill_quad(window, span_x, ly, 1.0, hdr_row_h, theme.grid_line);

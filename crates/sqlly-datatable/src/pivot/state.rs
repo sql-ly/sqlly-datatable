@@ -7,14 +7,14 @@
 //! the pure engine (config/filter changes) or just re-flattens the visible
 //! row/column lists (expand/collapse/sort — no engine recompute).
 
-use crate::config::{KeyBindings, NumberFormat, ResolvedColumnFormat};
+use crate::config::{KeyBindings, NumberFormat, ResolvedColumnFormat, TextAlignment};
 use crate::data::{compare_cells, CellValue, Column, ColumnKind};
 use crate::format::format_cell;
 use crate::grid::selection::{ScrollbarAxis, SortDirection};
 use crate::grid::state::{FilterValueRow, SCROLLBAR_SIZE};
 use crate::grid::theme::GridTheme;
 use crate::pivot::aggregation::AggregationFn;
-use crate::pivot::config::PivotConfig;
+use crate::pivot::config::{PivotConfig, PivotZone};
 use crate::pivot::context_menu::{
     PivotCellContext, PivotContextMenuProviderHandle, PivotContextMenuRequest, PivotMenuItem,
     PivotMenuTarget, PivotPathComponent, PIVOT_ACTION_COPY_CSV, PIVOT_ACTION_COPY_VALUE,
@@ -174,6 +174,20 @@ impl PivotFilterPopover {
     }
 }
 
+/// Working state of the per-field format dialog opened by double-clicking a
+/// sidebar zone chip.
+#[derive(Clone, Copy, Debug)]
+pub struct PivotFormatDialog {
+    /// The source column being configured.
+    pub field: usize,
+    /// The zone whose chip was double-clicked. [`PivotZone::Values`] edits
+    /// [`PivotConfig::value_format`] (value cells); every other zone edits
+    /// [`PivotConfig::field_formats`] (that field's labels).
+    pub zone: PivotZone,
+    /// Window-absolute anchor where the dialog opens (the click position).
+    pub anchor: Point<Pixels>,
+}
+
 /// An open pivot right-click menu: what to show, where, and the context it
 /// was opened for.
 #[derive(Clone, Debug)]
@@ -235,6 +249,10 @@ pub struct PivotState {
     pub(crate) source_columns: Vec<Column>,
     /// Resolved per-source-column formats; drive group labels and filters.
     pub(crate) resolved_formats: Vec<ResolvedColumnFormat>,
+    /// [`Self::resolved_formats`] with [`PivotConfig::field_formats`]
+    /// overrides applied. Rebuilt on every recompute; everything that
+    /// formats group labels or filter values reads these.
+    pub(crate) label_formats: Vec<ResolvedColumnFormat>,
     /// Format used for value cells (kind-adjusted for the aggregation).
     pub(crate) value_fmt: ResolvedColumnFormat,
 
@@ -255,6 +273,8 @@ pub struct PivotState {
     pub(crate) filter_values: HashMap<usize, HashSet<String>>,
     /// Open Filters-zone checklist popover, if any.
     pub(crate) filter_popover: Option<PivotFilterPopover>,
+    /// Open per-field format dialog (sidebar chip double-click), if any.
+    pub(crate) format_dialog: Option<PivotFormatDialog>,
     /// Whether the sidebar's aggregation picker is expanded.
     pub agg_menu_open: bool,
     /// Registered save-configuration action. The sidebar's save button only
@@ -325,6 +345,7 @@ impl PivotState {
             source_rows,
             source_columns,
             resolved_formats,
+            label_formats: Vec::new(),
             value_fmt: default_value_format(),
             visible_rows: Arc::new(Vec::new()),
             visible_cols: Arc::new(Vec::new()),
@@ -333,6 +354,7 @@ impl PivotState {
             sort: None,
             filter_values: HashMap::new(),
             filter_popover: None,
+            format_dialog: None,
             agg_menu_open: false,
             save_config_handler: None,
             sidebar_width: DEFAULT_PIVOT_SIDEBAR_WIDTH,
@@ -389,6 +411,7 @@ impl PivotState {
         let filter_fields = self.config.filter_fields.clone();
         self.filter_values
             .retain(|field, _| filter_fields.contains(field));
+        self.label_formats = self.build_label_formats();
 
         if self.config.is_ready() {
             let included = self.filtered_source_rows();
@@ -397,13 +420,41 @@ impl PivotState {
                 &self.source_rows,
                 &included,
                 &self.config,
-                &self.resolved_formats,
+                &self.label_formats,
             ));
         } else {
             self.result = Arc::new(PivotResult::default());
         }
         self.value_fmt = self.build_value_format();
         self.resort();
+    }
+
+    /// [`Self::resolved_formats`] with [`PivotConfig::field_formats`]
+    /// applied: the override replaces the number format and its alignment
+    /// carries over to every kind's alignment.
+    fn build_label_formats(&self) -> Vec<ResolvedColumnFormat> {
+        self.resolved_formats
+            .iter()
+            .enumerate()
+            .map(|(i, base)| {
+                let mut fmt = base.clone();
+                if let Some(over) = self.config.field_formats.get(&i) {
+                    fmt.number = *over;
+                    fmt.string.alignment = over.alignment;
+                    fmt.date.alignment = over.alignment;
+                    fmt.boolean.alignment = over.alignment;
+                }
+                fmt
+            })
+            .collect()
+    }
+
+    /// The effective display format for one field's group labels and filter
+    /// values (resolved column format plus any
+    /// [`PivotConfig::field_formats`] override).
+    #[must_use]
+    pub fn label_format(&self, field: usize) -> Option<&ResolvedColumnFormat> {
+        self.label_formats.get(field)
     }
 
     /// Source row indices that pass every active Filters-zone filter.
@@ -421,7 +472,7 @@ impl PivotState {
             .filter(|&r| {
                 active.iter().all(|(field, allowed)| {
                     let cell = self.source_rows[r].get(*field).unwrap_or(&CellValue::None);
-                    let label = format_cell(cell, &self.resolved_formats[*field]).0;
+                    let label = format_cell(cell, &self.label_formats[*field]).0;
                     allowed.contains(&label)
                 })
             })
@@ -431,7 +482,10 @@ impl PivotState {
     /// Resolved display format for value cells: the value column's format
     /// with its kind adjusted to what the aggregation actually produces
     /// (`Count` → Integer, `Avg` → Decimal), plus the optional
-    /// [`PivotConfig::value_format`] number override.
+    /// [`PivotConfig::value_format`] number override. Value cells are always
+    /// right-aligned and paint negative numbers red regardless of the source
+    /// column's format (an explicit `value_format` override may still choose
+    /// otherwise).
     fn build_value_format(&self) -> ResolvedColumnFormat {
         let mut fmt = self
             .config
@@ -449,8 +503,16 @@ impl PivotState {
             AggregationFn::Avg => fmt.kind = ColumnKind::Decimal,
             AggregationFn::Sum | AggregationFn::Min | AggregationFn::Max => {}
         }
+        fmt.number.alignment = TextAlignment::Right;
+        fmt.string.alignment = TextAlignment::Right;
+        fmt.date.alignment = TextAlignment::Right;
+        fmt.boolean.alignment = TextAlignment::Right;
+        fmt.number.show_negative_red = true;
         if let Some(over) = self.config.value_format {
             fmt.number = over;
+            fmt.string.alignment = over.alignment;
+            fmt.date.alignment = over.alignment;
+            fmt.boolean.alignment = over.alignment;
         }
         fmt
     }
@@ -649,7 +711,7 @@ impl PivotState {
         if field >= self.source_columns.len() {
             return;
         }
-        let fmt = &self.resolved_formats[field];
+        let fmt = &self.label_formats[field];
         let allowed = self.filter_values.get(&field);
         let mut seen: HashSet<String> = HashSet::new();
         let mut pairs: Vec<(String, CellValue)> = Vec::new();
@@ -751,6 +813,85 @@ impl PivotState {
     }
 
     // ------------------------------------------------------------------
+    // Per-field format dialog
+    // ------------------------------------------------------------------
+
+    /// The open format dialog, if any.
+    #[must_use]
+    pub fn format_dialog(&self) -> Option<&PivotFormatDialog> {
+        self.format_dialog.as_ref()
+    }
+
+    /// Open the format dialog for `field` as it appears in `zone`. `anchor`
+    /// is the window-absolute position the dialog opens at.
+    pub fn open_format_dialog(&mut self, field: usize, zone: PivotZone, anchor: Point<Pixels>) {
+        if field >= self.source_columns.len() {
+            return;
+        }
+        self.format_dialog = Some(PivotFormatDialog {
+            field,
+            zone,
+            anchor,
+        });
+    }
+
+    /// Close the format dialog (its edits are already applied — auto-apply).
+    pub fn close_format_dialog(&mut self) {
+        self.format_dialog = None;
+    }
+
+    /// The number format the open dialog is editing: the effective value-cell
+    /// format for a Values chip, or the field's effective label format
+    /// otherwise.
+    #[must_use]
+    pub fn format_dialog_format(&self) -> Option<NumberFormat> {
+        let dialog = self.format_dialog.as_ref()?;
+        let fmt = match dialog.zone {
+            PivotZone::Values => &self.value_fmt,
+            _ => self.label_formats.get(dialog.field)?,
+        };
+        // Report the kind-effective alignment (a Text field's labels follow
+        // its string alignment, not the number format's).
+        let mut number = fmt.number;
+        number.alignment = fmt.alignment();
+        Some(number)
+    }
+
+    /// Apply `mutate` to the open dialog's target format (stored as a config
+    /// override) and recompute.
+    pub fn update_format_dialog(&mut self, mutate: impl FnOnce(&mut NumberFormat)) {
+        let Some(dialog) = self.format_dialog else {
+            return;
+        };
+        let Some(mut fmt) = self.format_dialog_format() else {
+            return;
+        };
+        mutate(&mut fmt);
+        match dialog.zone {
+            PivotZone::Values => self.config.value_format = Some(fmt),
+            _ => {
+                self.config.field_formats.insert(dialog.field, fmt);
+            }
+        }
+        self.recompute();
+    }
+
+    /// Drop the open dialog's override, reverting the field to its resolved
+    /// default format.
+    pub fn reset_format_dialog(&mut self) {
+        let Some(dialog) = self.format_dialog else {
+            return;
+        };
+        match dialog.zone {
+            PivotZone::Values => self.config.value_format = None,
+            _ => {
+                self.config.field_formats.remove(&dialog.field);
+            }
+        }
+        self.recompute();
+    }
+
+    // ------------------------------------------------------------------
     // Right-click menu / drill-through
     // ------------------------------------------------------------------
 
@@ -827,7 +968,7 @@ impl PivotState {
             .collect();
         rows_matching_path(
             &self.source_rows,
-            &self.resolved_formats,
+            &self.label_formats,
             &self.config.blank_label,
             &self.filtered_source_rows(),
             &constraints,

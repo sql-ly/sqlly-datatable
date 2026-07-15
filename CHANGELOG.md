@@ -5,6 +5,29 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-07-15
+
+### Added
+- Double-clicking any Rows / Columns / Filters / Values chip in the pivot
+  sidebar opens a per-field format dialog: negative numbers in red, thousands
+  separator, minus sign vs. parentheses for negatives, decimal count, and
+  left/center/right alignment. Edits apply live; Reset reverts the field to
+  its resolved default.
+- Format edits are stored on `PivotConfig` (`field_formats` for label fields,
+  the existing `value_format` for value cells), so hosts that persist the
+  config — for example via the sidebar's save button — get the formats back
+  when they pass the config into a fresh widget or a new data load. Axis
+  group labels honor the configured alignment and paint negative numeric
+  labels red; `PivotState::label_format` exposes the effective per-field
+  format.
+
+### Changed
+- Pivot value cells are always right-aligned and always paint negative
+  numbers red, regardless of the source column's kind or format. An explicit
+  `PivotConfig::value_format` override can still choose otherwise.
+- The pivot's grand-total row and grand-total column (cells, row label, and
+  column header) are painted bold.
+
 ## [2.2.1] - 2026-07-15
 
 ### Changed

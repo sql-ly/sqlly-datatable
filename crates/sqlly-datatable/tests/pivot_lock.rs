@@ -64,6 +64,126 @@ fn pivot_sidebar_layout_is_configurable(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn pivot_value_cells_are_right_aligned_with_red_negatives(cx: &mut TestAppContext) {
+    use sqlly_datatable::pivot::AggregationFn;
+    use sqlly_datatable::TextAlignment;
+
+    let (view, cx) = cx.add_window_view(|_window, cx| {
+        let data = GridData::new(
+            vec![
+                Column::new("region", ColumnKind::Text, 100.0),
+                Column::new("label", ColumnKind::Text, 100.0),
+            ],
+            vec![vec![
+                CellValue::Text("East".into()),
+                CellValue::Text("alpha".into()),
+            ]],
+        )
+        .expect("rectangular pivot data");
+        // Min over a Text column keeps kind Text — exactly the case that used
+        // to fall back to the string format's left alignment.
+        let config = PivotConfig {
+            row_fields: vec![0],
+            value_field: Some(1),
+            aggregation: AggregationFn::Min,
+            ..PivotConfig::default()
+        };
+        SqllyDataTable::builder(data).pivot(config).build(cx)
+    });
+
+    view.update(cx, |table, cx| {
+        let pivot = table.pivot_state().expect("pivot state");
+        let fmt = pivot.read(cx).value_format().clone();
+        assert_eq!(fmt.alignment(), TextAlignment::Right);
+        assert!(fmt.number.show_negative_red);
+    });
+}
+
+#[gpui::test]
+fn pivot_format_dialog_edits_persist_and_round_trip_config(cx: &mut TestAppContext) {
+    use sqlly_datatable::{PivotZone, TextAlignment};
+
+    let data = || {
+        GridData::new(
+            vec![
+                Column::new("year", ColumnKind::Integer, 100.0),
+                Column::new("sales", ColumnKind::Integer, 100.0),
+            ],
+            vec![
+                vec![CellValue::Integer(2025), CellValue::Integer(10)],
+                vec![CellValue::Integer(2026), CellValue::Integer(-20)],
+            ],
+        )
+        .expect("rectangular pivot data")
+    };
+    let config = PivotConfig {
+        row_fields: vec![0],
+        value_field: Some(1),
+        ..PivotConfig::default()
+    };
+
+    let (view, cx) = cx.add_window_view({
+        let config = config.clone();
+        move |_window, cx| SqllyDataTable::builder(data()).pivot(config).build(cx)
+    });
+
+    let saved = view.update(cx, |table, cx| {
+        let pivot = table.pivot_state().expect("pivot state").clone();
+        pivot.update(cx, |state, _cx| {
+            // Integer row groups format with the resolved default.
+            assert_eq!(state.result.row_nodes[0].label, "2,025.00");
+
+            // Double-click on the row chip → dialog → uncheck separator,
+            // drop decimals, center-align, negatives red.
+            state.open_format_dialog(0, PivotZone::Rows, point(px(0.0), px(0.0)));
+            state.update_format_dialog(|f| {
+                f.thousands_separator = false;
+                f.decimals = 0;
+                f.alignment = TextAlignment::Center;
+                f.show_negative_red = true;
+            });
+            assert_eq!(state.result.row_nodes[0].label, "2025");
+            let fmt = state.label_format(0).expect("label format");
+            assert_eq!(fmt.alignment(), TextAlignment::Center);
+            assert!(state.config.field_formats.contains_key(&0));
+
+            // Values chip dialog edits the value-format override instead.
+            state.close_format_dialog();
+            state.open_format_dialog(1, PivotZone::Values, point(px(0.0), px(0.0)));
+            state.update_format_dialog(|f| {
+                f.decimals = 3;
+                f.negative_parentheses = true;
+            });
+            let vf = state.value_format().number;
+            assert_eq!(vf.decimals, 3);
+            assert!(vf.negative_parentheses);
+            assert_eq!(state.config.value_format, Some(vf));
+
+            // Reset drops the values override; the field override stays.
+            state.reset_format_dialog();
+            assert_eq!(state.config.value_format, None);
+            assert!(state.config.field_formats.contains_key(&0));
+            state.close_format_dialog();
+        });
+        pivot.read(cx).config.clone()
+    });
+
+    // A host can read the config back, persist it, and hand it to a fresh
+    // widget over a fresh data load: the field formats come back with it.
+    let (view2, cx) = cx
+        .add_window_view(move |_window, cx| SqllyDataTable::builder(data()).pivot(saved).build(cx));
+    view2.update(cx, |table, cx| {
+        let pivot = table.pivot_state().expect("pivot state");
+        let state = pivot.read(cx);
+        assert_eq!(state.result.row_nodes[0].label, "2025");
+        assert_eq!(
+            state.label_format(0).expect("label format").alignment(),
+            TextAlignment::Center
+        );
+    });
+}
+
+#[gpui::test]
 fn pivot_save_config_button_is_wired_only_when_registered(cx: &mut TestAppContext) {
     use std::cell::RefCell;
     use std::rc::Rc;

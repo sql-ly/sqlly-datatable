@@ -358,18 +358,31 @@ impl PivotSidebar {
         }
 
         // Dropping onto a chip inside a zone inserts the dragged field at
-        // this chip's position (reorder support).
+        // this chip's position (reorder support). Double-clicking a zone chip
+        // opens the per-field format dialog.
         if let Some(zone) = zone {
-            chip = chip.on_drop::<DraggedField>(move |dragged, _window, cx| {
-                cx.stop_propagation();
-                let dragged_field = dragged.field;
-                state_drop.update(cx, |s, cx| {
-                    let index = s.config.fields_in(zone).iter().position(|&f| f == field);
-                    s.config.move_field(dragged_field, zone, index);
-                    s.recompute();
-                    cx.notify();
+            let state_dialog = state.clone();
+            chip = chip
+                .on_drop::<DraggedField>(move |dragged, _window, cx| {
+                    cx.stop_propagation();
+                    let dragged_field = dragged.field;
+                    state_drop.update(cx, |s, cx| {
+                        let index = s.config.fields_in(zone).iter().position(|&f| f == field);
+                        s.config.move_field(dragged_field, zone, index);
+                        s.recompute();
+                        cx.notify();
+                    });
+                })
+                .on_mouse_down(MouseButton::Left, move |e: &MouseDownEvent, _w, cx| {
+                    if e.click_count == 2 {
+                        cx.stop_propagation();
+                        state_dialog.update(cx, |s, cx| {
+                            s.close_filter_popover();
+                            s.open_format_dialog(field, zone, e.position);
+                            cx.notify();
+                        });
+                    }
                 });
-            });
         }
 
         chip.into_any_element()
@@ -423,8 +436,18 @@ impl PivotSidebar {
                         .on_mouse_down(MouseButton::Left, {
                             let state_open = state_open.clone();
                             move |e: &MouseDownEvent, _w, cx| {
+                                // Double-clicks open the format dialog (see
+                                // the inner chip); only single clicks open
+                                // the checklist. The popover is anchored a
+                                // little below the cursor so the second
+                                // click of a double-click still reaches the
+                                // chip instead of the freshly opened popover.
+                                if e.click_count != 1 {
+                                    return;
+                                }
+                                let anchor = point(e.position.x, e.position.y + px(20.0));
                                 state_open.update(cx, |s, cx| {
-                                    s.open_filter_popover(field, e.position);
+                                    s.open_filter_popover(field, anchor);
                                     cx.notify();
                                 });
                             }
@@ -623,6 +646,17 @@ impl PivotSidebar {
                 .into()
             });
         }
+
+        let state_dialog = state.clone();
+        chip = chip.on_mouse_down(MouseButton::Left, move |e: &MouseDownEvent, _w, cx| {
+            if e.click_count == 2 {
+                cx.stop_propagation();
+                state_dialog.update(cx, |s, cx| {
+                    s.open_format_dialog(field, PivotZone::Values, e.position);
+                    cx.notify();
+                });
+            }
+        });
 
         rows.push(chip.into_any_element());
 
@@ -897,6 +931,274 @@ impl PivotSidebar {
                         state_backdrop.update(cx, |s, cx| {
                             if s.filter_popover().is_some() {
                                 s.close_filter_popover();
+                                cx.notify();
+                            }
+                        });
+                    },
+                )),
+        )
+        .with_priority(POPOVER_PRIORITY);
+        Some(overlay)
+    }
+
+    /// The per-field format dialog overlay (chip double-click), if open.
+    /// Every control applies immediately; "Reset" drops the override.
+    #[allow(clippy::too_many_lines)]
+    fn render_format_dialog(
+        state: &Entity<PivotState>,
+        cx: &App,
+    ) -> Option<impl IntoElement + use<>> {
+        use crate::config::{NumberFormat, TextAlignment};
+
+        let s = state.read(cx);
+        let dialog = *s.format_dialog()?;
+        let fmt = s.format_dialog_format()?;
+        let theme = s.theme.clone();
+        let field_name = s
+            .source_columns()
+            .get(dialog.field)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+
+        let c_bg = theme.menu_bg;
+        let c_line = theme.grid_line;
+        let c_fg = theme.menu_fg;
+        let c_muted = theme.muted_text;
+        let c_accent = theme.sort_indicator;
+        let c_hover = theme.menu_hover_bg;
+
+        let checkbox = move |checked: bool| {
+            let mut b = div()
+                .w(px(12.0))
+                .h(px(12.0))
+                .border_1()
+                .border_color(c_line)
+                .bg(c_bg)
+                .flex()
+                .items_center()
+                .justify_center();
+            if checked {
+                b = b.child(div().w(px(6.0)).h(px(6.0)).bg(c_accent));
+            }
+            b
+        };
+
+        let check_row = |label: &'static str, checked: bool, apply: fn(&mut NumberFormat)| {
+            let st = state.clone();
+            div()
+                .h(px(22.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .cursor_pointer()
+                .child(checkbox(checked))
+                .child(label)
+                .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                    st.update(cx, |s, cx| {
+                        s.update_format_dialog(apply);
+                        cx.notify();
+                    });
+                })
+        };
+
+        // Segmented pair choosing how negatives are written.
+        let neg_btn = |label: &'static str, parens: bool| {
+            let st = state.clone();
+            let selected = fmt.negative_parentheses == parens;
+            div()
+                .flex_1()
+                .h(px(22.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(c_line)
+                .bg(if selected { c_accent } else { c_hover })
+                .cursor_pointer()
+                .child(label)
+                .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                    st.update(cx, |s, cx| {
+                        s.update_format_dialog(|f| f.negative_parentheses = parens);
+                        cx.notify();
+                    });
+                })
+        };
+
+        let dec_btn = |label: &'static str, apply: fn(&mut NumberFormat)| {
+            let st = state.clone();
+            div()
+                .w(px(20.0))
+                .h(px(20.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(c_line)
+                .bg(c_hover)
+                .cursor_pointer()
+                .child(label)
+                .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                    st.update(cx, |s, cx| {
+                        s.update_format_dialog(apply);
+                        cx.notify();
+                    });
+                })
+        };
+
+        let align_btn = |label: &'static str, value: TextAlignment| {
+            let st = state.clone();
+            let selected = fmt.alignment == value;
+            div()
+                .flex_1()
+                .h(px(22.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(c_line)
+                .bg(if selected { c_accent } else { c_hover })
+                .cursor_pointer()
+                .child(label)
+                .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                    st.update(cx, |s, cx| {
+                        s.update_format_dialog(move |f| f.alignment = value);
+                        cx.notify();
+                    });
+                })
+        };
+
+        let st_reset = state.clone();
+        let st_close = state.clone();
+        let buttons = div()
+            .flex()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_1()
+                    .border_color(c_line)
+                    .bg(c_hover)
+                    .cursor_pointer()
+                    .child("Reset")
+                    .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                        st_reset.update(cx, |s, cx| {
+                            s.reset_format_dialog();
+                            cx.notify();
+                        });
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_1()
+                    .border_color(c_line)
+                    .bg(c_hover)
+                    .cursor_pointer()
+                    .child("Close")
+                    .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                        st_close.update(cx, |s, cx| {
+                            s.close_format_dialog();
+                            cx.notify();
+                        });
+                    }),
+            );
+
+        let body = div()
+            .flex()
+            .flex_col()
+            .w(px(230.0))
+            .p(px(8.0))
+            .gap(px(6.0))
+            .bg(c_bg)
+            .border_1()
+            .border_color(c_line)
+            .text_color(c_fg)
+            .text_size(px(12.0))
+            .child(
+                div()
+                    .text_color(c_muted)
+                    .text_size(px(11.0))
+                    .child(format!("Format: {field_name}")),
+            )
+            .child(check_row(
+                "Negative numbers in red",
+                fmt.show_negative_red,
+                |f| f.show_negative_red = !f.show_negative_red,
+            ))
+            .child(check_row(
+                "Thousands separator",
+                fmt.thousands_separator,
+                |f| f.thousands_separator = !f.thousands_separator,
+            ))
+            .child(
+                div()
+                    .text_color(c_muted)
+                    .text_size(px(11.0))
+                    .child("Negatives"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(px(6.0))
+                    .child(neg_btn("-1,234", false))
+                    .child(neg_btn("(1,234)", true)),
+            )
+            .child(
+                div()
+                    .h(px(22.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .text_color(c_muted)
+                            .text_size(px(11.0))
+                            .child("Decimals"),
+                    )
+                    .child(dec_btn("-", |f| f.decimals = f.decimals.saturating_sub(1)))
+                    .child(
+                        div()
+                            .w(px(18.0))
+                            .flex()
+                            .justify_center()
+                            .child(fmt.decimals.to_string()),
+                    )
+                    .child(dec_btn("+", |f| f.decimals = (f.decimals + 1).min(8))),
+            )
+            .child(
+                div()
+                    .text_color(c_muted)
+                    .text_size(px(11.0))
+                    .child("Alignment"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(px(6.0))
+                    .child(align_btn("Left", TextAlignment::Left))
+                    .child(align_btn("Center", TextAlignment::Center))
+                    .child(align_btn("Right", TextAlignment::Right)),
+            )
+            .child(buttons);
+
+        let state_backdrop = state.clone();
+        let overlay = deferred(
+            anchored()
+                .anchor(Corner::TopLeft)
+                .position(point(dialog.anchor.x, dialog.anchor.y))
+                .child(div().occlude().child(body).on_mouse_down_out(
+                    move |_e: &MouseDownEvent, _window, cx| {
+                        state_backdrop.update(cx, |s, cx| {
+                            if s.format_dialog().is_some() {
+                                s.close_format_dialog();
                                 cx.notify();
                             }
                         });
@@ -1209,5 +1511,6 @@ impl Render for PivotSidebar {
             )
             .child(sections)
             .children(Self::render_filter_popover(&self.state, cx))
+            .children(Self::render_format_dialog(&self.state, cx))
     }
 }

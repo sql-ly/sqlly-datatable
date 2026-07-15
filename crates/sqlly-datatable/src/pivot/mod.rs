@@ -27,8 +27,8 @@ pub use context_menu::{
 pub use engine::{compute_pivot, PivotNode, PivotResult, TOTAL_KEY};
 pub use sidebar::PivotSidebar;
 pub use state::{
-    PivotFilterPopover, PivotHitResult, PivotSaveConfigHandler, PivotSortKey, PivotState,
-    VisibleCol, VisibleColKind, VisibleRow, VisibleRowKind, DEFAULT_PIVOT_COLUMN_WIDTH,
+    PivotFilterPopover, PivotFormatDialog, PivotHitResult, PivotSaveConfigHandler, PivotSortKey,
+    PivotState, VisibleCol, VisibleColKind, VisibleRow, VisibleRowKind, DEFAULT_PIVOT_COLUMN_WIDTH,
     DEFAULT_PIVOT_ROW_HEIGHT, DEFAULT_PIVOT_SIDEBAR_WIDTH, MIN_PIVOT_COLUMN_WIDTH,
     MIN_PIVOT_ROW_HEIGHT,
 };

@@ -181,7 +181,9 @@ fn sample_data() -> GridData {
     let mut rows = Vec::with_capacity(100_000);
     for r in 0..100_000 {
         let mut row = Vec::with_capacity(40);
-        row.push(Decimal(rng.next_f64() * 20_000.0));
+        // Skewed positive with ~25% negatives so the pivot's red negative
+        // styling shows up in totals and cells.
+        row.push(Decimal((rng.next_f64() - 0.25) * 20_000.0));
         row.push(Integer((r % 5) as i64 + 1));
         row.push(Text(narratives[r % narratives.len()].into()));
         row.push(Boolean(r % 2 == 0));
