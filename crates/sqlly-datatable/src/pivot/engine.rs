@@ -447,6 +447,27 @@ mod tests {
     }
 
     #[test]
+    fn min_max_aggregation_on_decimal_values() {
+        let (columns, rows, formats) = fixture();
+
+        let cfg = config(&[0], &[2], 3, AggregationFn::Min);
+        let result = compute_pivot(&columns, &rows, &all_rows(&rows), &cfg, &formats);
+        let (europe, europe_node) = node_by_label(&result, "Europe");
+        let y2023 = result.col_roots[0];
+        // Europe 2023 rows: 10.0 and 5.0.
+        assert_eq!(result.value(europe, y2023), &Decimal(5.0));
+        assert_eq!(europe_node.total, Decimal(5.0));
+        assert_eq!(result.grand_total, Decimal(3.0));
+
+        let cfg = config(&[0], &[2], 3, AggregationFn::Max);
+        let result = compute_pivot(&columns, &rows, &all_rows(&rows), &cfg, &formats);
+        let (europe, europe_node) = node_by_label(&result, "Europe");
+        assert_eq!(result.value(europe, y2023), &Decimal(10.0));
+        assert_eq!(europe_node.total, Decimal(20.0));
+        assert_eq!(result.grand_total, Decimal(20.0));
+    }
+
+    #[test]
     fn empty_source_produces_empty_result_without_panic() {
         let (columns, _, formats) = fixture();
         let rows: Vec<Vec<CellValue>> = vec![];

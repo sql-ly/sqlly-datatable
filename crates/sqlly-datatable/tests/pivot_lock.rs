@@ -64,6 +64,64 @@ fn pivot_sidebar_layout_is_configurable(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn pivot_save_config_button_is_wired_only_when_registered(cx: &mut TestAppContext) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    // Without a handler the save action is absent (the sidebar hides its
+    // save button).
+    let (view, cx) = cx.add_window_view(|_window, cx| {
+        let data = GridData::new(vec![], vec![]).expect("empty grid");
+        SqllyDataTable::builder(data)
+            .pivot(PivotConfig::default())
+            .build(cx)
+    });
+    view.update(cx, |table, cx| {
+        let pivot = table.pivot_state().expect("pivot state").clone();
+        assert!(!pivot.read(cx).has_save_config_handler());
+
+        // Wire at runtime, invoke, then clear.
+        let saved: Rc<RefCell<Option<PivotConfig>>> = Rc::new(RefCell::new(None));
+        let sink = saved.clone();
+        table.set_pivot_save_config(
+            move |config, _cx| {
+                *sink.borrow_mut() = Some(config.clone());
+            },
+            cx,
+        );
+        assert!(pivot.read(cx).has_save_config_handler());
+
+        pivot.update(cx, |state, cx| {
+            state.config.row_fields = vec![0];
+            let handler = state
+                .save_config_handler()
+                .expect("registered save handler");
+            handler(&state.config.clone(), cx);
+        });
+        assert_eq!(
+            saved.borrow().as_ref().map(|c| c.row_fields.clone()),
+            Some(vec![0])
+        );
+
+        table.clear_pivot_save_config(cx);
+        assert!(!pivot.read(cx).has_save_config_handler());
+    });
+
+    // Builder registration wires the handler from the start.
+    let (view, cx) = cx.add_window_view(|_window, cx| {
+        let data = GridData::new(vec![], vec![]).expect("empty grid");
+        SqllyDataTable::builder(data)
+            .pivot(PivotConfig::default())
+            .pivot_save_config(|_config, _cx| {})
+            .build(cx)
+    });
+    view.update(cx, |table, cx| {
+        let pivot = table.pivot_state().expect("pivot state");
+        assert!(pivot.read(cx).has_save_config_handler());
+    });
+}
+
+#[gpui::test]
 fn pivot_dimensions_are_configurable_readable_and_resizable(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|_window, cx| {
         let data = GridData::new(

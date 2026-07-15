@@ -17,7 +17,10 @@ use crate::grid::{menu, HitResult, MenuItem, SortDirection};
 use crate::pivot::config::PivotConfig;
 use crate::pivot::context_menu::{PivotContextMenuProvider, PivotContextMenuProviderHandle};
 use crate::pivot::sidebar::PivotSidebar;
-use crate::pivot::state::{PivotState, DEFAULT_PIVOT_COLUMN_WIDTH, DEFAULT_PIVOT_ROW_HEIGHT};
+use crate::pivot::state::{
+    PivotSaveConfigHandler, PivotState, DEFAULT_PIVOT_COLUMN_WIDTH, DEFAULT_PIVOT_ROW_HEIGHT,
+    DEFAULT_PIVOT_SIDEBAR_WIDTH,
+};
 use crate::pivot::widget::PivotGrid;
 
 use gpui::prelude::FluentBuilder;
@@ -38,7 +41,6 @@ use std::sync::Arc;
 /// register their hitbox in a later pass, so this also fixes hover/click
 /// routing for menu items that visually overflow the grid area.
 const CONTEXT_MENU_PRIORITY: usize = 1_000_000;
-const DEFAULT_PIVOT_SIDEBAR_WIDTH: f32 = 260.0;
 const MIN_PIVOT_SIDEBAR_WIDTH: f32 = 180.0;
 const MAX_PIVOT_SIDEBAR_WIDTH: f32 = 480.0;
 
@@ -132,6 +134,7 @@ impl SqllyDataTable {
             grouped_column: None,
             pivot: None,
             pivot_context_menu_provider: None,
+            pivot_save_config_handler: None,
             pivot_sidebar_position: PivotSidebarPosition::Left,
             pivot_sidebar_collapsed: false,
             pivot_sidebar_width: DEFAULT_PIVOT_SIDEBAR_WIDTH,
@@ -237,6 +240,7 @@ impl SqllyDataTable {
             &self.state,
             config,
             None,
+            None,
             DEFAULT_PIVOT_ROW_HEIGHT,
             DEFAULT_PIVOT_COLUMN_WIDTH,
             cx,
@@ -265,6 +269,36 @@ impl SqllyDataTable {
         }
     }
 
+    /// Register (or replace) the pivot's save-configuration action at
+    /// runtime. While registered, the pivot controls sidebar shows a save
+    /// button next to the Layout section that invokes `handler` with the
+    /// live [`PivotConfig`]. No-op when the pivot tab is not enabled — enable
+    /// it first (or register via
+    /// [`SqllyDataTableBuilder::pivot_save_config`]).
+    pub fn set_pivot_save_config(
+        &mut self,
+        handler: impl Fn(&PivotConfig, &mut App) + 'static,
+        cx: &mut App,
+    ) {
+        if let Some(parts) = &self.pivot {
+            parts.state.update(cx, |s, cx| {
+                s.on_save_config(handler);
+                cx.notify();
+            });
+        }
+    }
+
+    /// Remove the pivot's save-configuration action; the sidebar's save
+    /// button disappears. No-op when the pivot tab is not enabled.
+    pub fn clear_pivot_save_config(&mut self, cx: &mut App) {
+        if let Some(parts) = &self.pivot {
+            parts.state.update(cx, |s, cx| {
+                s.clear_save_config_handler();
+                cx.notify();
+            });
+        }
+    }
+
     /// Push the grid's current data snapshot into the pivot state when it
     /// changed (O(1) compare via Arc identity).
     fn sync_pivot_source(&self, cx: &mut App) {
@@ -289,6 +323,7 @@ fn build_pivot_parts(
     grid_state: &Entity<GridState>,
     config: PivotConfig,
     menu_provider: Option<PivotContextMenuProviderHandle>,
+    save_config_handler: Option<PivotSaveConfigHandler>,
     row_height: f32,
     column_width: f32,
     cx: &mut App,
@@ -308,6 +343,7 @@ fn build_pivot_parts(
         let mut ps = PivotState::new(columns, rows, formats, config, key_bindings, focus);
         ps.theme = theme;
         ps.context_menu_provider = menu_provider;
+        ps.save_config_handler = save_config_handler;
         ps.set_row_height(row_height);
         ps.set_column_width(column_width);
         ps
@@ -331,6 +367,7 @@ pub struct SqllyDataTableBuilder {
     grouped_column: Option<usize>,
     pivot: Option<PivotConfig>,
     pivot_context_menu_provider: Option<PivotContextMenuProviderHandle>,
+    pivot_save_config_handler: Option<PivotSaveConfigHandler>,
     pivot_sidebar_position: PivotSidebarPosition,
     pivot_sidebar_collapsed: bool,
     pivot_sidebar_width: f32,
@@ -447,6 +484,19 @@ impl SqllyDataTableBuilder {
         self
     }
 
+    /// Register a save-configuration action for the pivot view. While
+    /// registered, the pivot controls sidebar shows a save button next to
+    /// the Layout section that invokes `handler` with the live
+    /// [`PivotConfig`] (persist it and pass it back to
+    /// [`SqllyDataTableBuilder::pivot`] on the next launch). Without a
+    /// handler the button is not rendered. Only takes effect together with
+    /// [`SqllyDataTableBuilder::pivot`].
+    #[must_use]
+    pub fn pivot_save_config(mut self, handler: impl Fn(&PivotConfig, &mut App) + 'static) -> Self {
+        self.pivot_save_config_handler = Some(std::rc::Rc::new(handler));
+        self
+    }
+
     /// Build the widget inside the supplied [`gpui::App`].
     pub fn build(self, cx: &mut App) -> SqllyDataTable {
         let focus = cx.focus_handle();
@@ -473,11 +523,13 @@ impl SqllyDataTableBuilder {
             s
         });
         let pivot_menu_provider = self.pivot_context_menu_provider;
+        let pivot_save_config_handler = self.pivot_save_config_handler;
         let pivot = pivot_config.map(|cfg| {
             build_pivot_parts(
                 &state,
                 cfg,
                 pivot_menu_provider,
+                pivot_save_config_handler,
                 pivot_row_height,
                 pivot_column_width,
                 cx,
@@ -526,12 +578,23 @@ impl Render for SqllyDataTable {
         }
 
         // Keep the pivot's theme in lockstep with the grid theme (which may
-        // have just changed via the appearance observer).
+        // have just changed via the appearance observer), and its sidebar
+        // width in sync with the resizable panel (the sidebar needs it to
+        // decide when chip labels are truncated).
         if let Some(parts) = &self.pivot {
             let grid_theme = self.state.read(cx).theme.clone();
+            let sidebar_width = self.pivot_sidebar_width;
             parts.state.update(cx, |s, cx| {
+                let mut dirty = false;
                 if s.theme != grid_theme {
                     s.theme = grid_theme;
+                    dirty = true;
+                }
+                if (s.sidebar_width - sidebar_width).abs() > 0.5 {
+                    s.sidebar_width = sidebar_width;
+                    dirty = true;
+                }
+                if dirty {
                     cx.notify();
                 }
             });

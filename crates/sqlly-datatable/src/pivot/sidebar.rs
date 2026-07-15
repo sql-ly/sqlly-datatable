@@ -23,6 +23,96 @@ const POPOVER_PRIORITY: usize = 1_000_000;
 /// Max checklist rows rendered in the filter popover.
 const FILTER_POPOVER_MAX_ROWS: usize = 200;
 
+/// Horizontal chrome between the sidebar edge and accordion content: sidebar
+/// padding (8×2), accordion border (1×2), accordion content padding (16×2).
+const SIDEBAR_CONTENT_CHROME: f32 = 50.0;
+/// Horizontal chrome of a drop-zone box: padding (6×2) + border (1×2).
+const ZONE_CHROME: f32 = 14.0;
+/// Horizontal chrome of a chip: padding (8×2) + border (1×2).
+const CHIP_CHROME: f32 = 18.0;
+/// Flex gap between a chip's label and its trailing glyphs (marker, picker
+/// arrow, remove button).
+const CHIP_GAP: f32 = 6.0;
+/// Chip label font size.
+const CHIP_FONT_SIZE: f32 = 12.0;
+/// Zone-marker / badge font size.
+const MARKER_FONT_SIZE: f32 = 11.0;
+
+/// Measured pixel width of `text` at `size` in the window's default UI font.
+fn measure_text(window: &Window, text: &str, size: f32) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    let run = gpui::TextRun {
+        len: text.len(),
+        color: gpui::Hsla::default(),
+        font: window.text_style().font(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window.text_system().shape_line(
+        SharedString::from(text.to_owned()),
+        px(size),
+        &[run],
+        None,
+    );
+    f32::from(line.width)
+}
+
+/// Hover tooltip showing a chip's full label when its text is chopped.
+struct ChipTooltip {
+    label: SharedString,
+    bg: gpui::Hsla,
+    fg: gpui::Hsla,
+    border: gpui::Hsla,
+}
+
+impl Render for ChipTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(8.0))
+            .py(px(4.0))
+            .rounded(px(4.0))
+            .bg(self.bg)
+            .border_1()
+            .border_color(self.border)
+            .text_color(self.fg)
+            .text_size(px(CHIP_FONT_SIZE))
+            .child(self.label.clone())
+    }
+}
+
+/// A little floppy-disk glyph drawn with divs (no icon font dependency).
+fn disk_icon(color: gpui::Hsla) -> gpui::Div {
+    div()
+        .w(px(13.0))
+        .h(px(13.0))
+        .rounded(px(2.0))
+        .border_1()
+        .border_color(color)
+        .relative()
+        .child(
+            div()
+                .absolute()
+                .top(px(0.0))
+                .left(px(3.0))
+                .w(px(5.0))
+                .h(px(4.0))
+                .border_1()
+                .border_color(color),
+        )
+        .child(
+            div()
+                .absolute()
+                .bottom(px(1.0))
+                .left(px(2.0))
+                .w(px(7.0))
+                .h(px(4.0))
+                .bg(color),
+        )
+}
+
 /// Payload carried by a field-chip drag.
 struct DraggedField {
     field: usize,
@@ -80,6 +170,9 @@ impl PivotSidebar {
     }
 
     /// A draggable field chip. `zone` is `None` for the source field list.
+    /// `label_budget` is the chip's inner content width; when the label (plus
+    /// its trailing glyphs) can't fit, the text is ellipsized and a hover
+    /// tooltip shows the full name.
     #[allow(clippy::too_many_arguments)]
     fn chip(
         state: &Entity<PivotState>,
@@ -89,6 +182,8 @@ impl PivotSidebar {
         zone: Option<PivotZone>,
         removable: bool,
         marker: Option<&'static str>,
+        label_budget: f32,
+        window: &Window,
         cx: &App,
     ) -> gpui::AnyElement {
         let s = state.read(cx);
@@ -101,6 +196,15 @@ impl PivotSidebar {
         let state_drop = state.clone();
         let state_remove = state.clone();
 
+        let mut available = label_budget;
+        if let Some(marker) = marker {
+            available -= CHIP_GAP + measure_text(window, marker, MARKER_FONT_SIZE);
+        }
+        if removable {
+            available -= CHIP_GAP + measure_text(window, "✕", CHIP_FONT_SIZE);
+        }
+        let chopped = measure_text(window, &label, CHIP_FONT_SIZE) > available + 0.5;
+
         let mut chip = div()
             .id(id)
             .px(px(8.0))
@@ -110,10 +214,10 @@ impl PivotSidebar {
             .border_1()
             .border_color(theme.grid_line)
             .text_color(theme.pivot_chip_fg)
-            .text_size(px(12.0))
+            .text_size(px(CHIP_FONT_SIZE))
             .flex()
             .items_center()
-            .gap(px(6.0))
+            .gap(px(CHIP_GAP))
             .cursor_pointer()
             .on_drag(
                 DraggedField { field },
@@ -126,13 +230,36 @@ impl PivotSidebar {
                     })
                 },
             )
-            .child(div().flex_1().child(label));
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .child(label.clone()),
+            );
+
+        if chopped {
+            let tip_label: SharedString = label.into();
+            let tip_bg = theme.menu_bg;
+            let tip_fg = theme.menu_fg;
+            let tip_border = theme.grid_line;
+            chip = chip.tooltip(move |_window, cx| {
+                cx.new(|_| ChipTooltip {
+                    label: tip_label.clone(),
+                    bg: tip_bg,
+                    fg: tip_fg,
+                    border: tip_border,
+                })
+                .into()
+            });
+        }
 
         if let Some(marker) = marker {
             chip = chip.child(
                 div()
+                    .flex_none()
                     .text_color(theme.sort_indicator)
-                    .text_size(px(11.0))
+                    .text_size(px(MARKER_FONT_SIZE))
                     .child(marker),
             );
         }
@@ -140,6 +267,7 @@ impl PivotSidebar {
         if removable {
             chip = chip.child(
                 div()
+                    .flex_none()
                     .text_color(theme.muted_text)
                     .cursor_pointer()
                     .child("✕")
@@ -172,11 +300,14 @@ impl PivotSidebar {
         chip.into_any_element()
     }
 
-    /// One drop zone with its label, hint, and assigned chips.
+    /// One drop zone with its label, hint, and assigned chips. `content_w` is
+    /// the accordion content width available to the zone box.
     fn zone(
         state: &Entity<PivotState>,
         zone: PivotZone,
         title: &'static str,
+        content_w: f32,
+        window: &Window,
         cx: &App,
     ) -> gpui::AnyElement {
         let s = state.read(cx);
@@ -188,6 +319,7 @@ impl PivotSidebar {
 
         let state_drop = state.clone();
         let active_bg = theme.pivot_drop_zone_active_bg;
+        let label_budget = content_w - ZONE_CHROME - CHIP_CHROME;
 
         let mut chips: Vec<gpui::AnyElement> = Vec::new();
         for (i, &field) in fields.iter().enumerate() {
@@ -203,6 +335,8 @@ impl PivotSidebar {
                         agg,
                         agg_menu_open,
                         name,
+                        label_budget,
+                        window,
                         cx,
                     ));
                 }
@@ -228,6 +362,8 @@ impl PivotSidebar {
                             Some(zone),
                             true,
                             filter_on.then_some("●"),
+                            label_budget,
+                            window,
                             cx,
                         ));
                     chips.push(chip.into_any_element());
@@ -245,6 +381,8 @@ impl PivotSidebar {
                         Some(zone),
                         true,
                         None,
+                        label_budget,
+                        window,
                         cx,
                     ));
                 }
@@ -298,13 +436,18 @@ impl PivotSidebar {
             .into_any_element()
     }
 
-    /// The Values-zone chip: caption plus the aggregation picker.
+    /// The Values-zone chip: caption plus the aggregation picker. The caption
+    /// is ellipsized so both the picker arrow and the remove button always
+    /// fit; a hover tooltip shows the full caption when chopped.
+    #[allow(clippy::too_many_arguments)]
     fn values_chip(
         state: &Entity<PivotState>,
         field: usize,
         agg: AggregationFn,
         menu_open: bool,
         name: String,
+        label_budget: f32,
+        window: &Window,
         cx: &App,
     ) -> gpui::AnyElement {
         let s = state.read(cx);
@@ -313,69 +456,100 @@ impl PivotSidebar {
         let state_remove = state.clone();
 
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
-        let ghost_label = agg.caption(&name);
+        let caption = agg.caption(&name);
+        let ghost_label = caption.clone();
         let ghost_bg = theme.pivot_chip_bg;
         let ghost_fg = theme.pivot_chip_fg;
         let ghost_border = theme.grid_line;
-        rows.push(
-            div()
-                .id("pivot-values-chip")
-                .px(px(8.0))
-                .py(px(3.0))
-                .rounded(px(4.0))
-                .bg(theme.pivot_chip_bg)
-                .border_1()
-                .border_color(theme.grid_line)
-                .text_color(theme.pivot_chip_fg)
-                .text_size(px(12.0))
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .cursor_pointer()
-                .on_drag(
-                    DraggedField { field },
-                    move |_drag, _offset, _window, cx| {
-                        cx.new(|_| DragGhost {
-                            label: ghost_label.clone(),
-                            bg: ghost_bg,
-                            fg: ghost_fg,
-                            border: ghost_border,
-                        })
-                    },
-                )
-                .child(div().flex_1().child(agg.caption(&name)))
-                .child(
-                    div()
-                        .cursor_pointer()
-                        .text_color(theme.sort_indicator)
-                        .child(if menu_open { "▲" } else { "▼" })
-                        .on_mouse_down(MouseButton::Left, {
-                            let state_toggle = state_toggle.clone();
-                            move |_e: &MouseDownEvent, _w, cx| {
-                                cx.stop_propagation();
-                                state_toggle.update(cx, |s, cx| {
-                                    s.agg_menu_open = !s.agg_menu_open;
-                                    cx.notify();
-                                });
-                            }
-                        }),
-                )
-                .child(
-                    div()
-                        .text_color(theme.muted_text)
-                        .cursor_pointer()
-                        .child("✕")
-                        .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+
+        let arrow = if menu_open { "▲" } else { "▼" };
+        let available = label_budget
+            - (CHIP_GAP + measure_text(window, arrow, CHIP_FONT_SIZE))
+            - (CHIP_GAP + measure_text(window, "✕", CHIP_FONT_SIZE));
+        let chopped = measure_text(window, &caption, CHIP_FONT_SIZE) > available + 0.5;
+
+        let mut chip = div()
+            .id("pivot-values-chip")
+            .px(px(8.0))
+            .py(px(3.0))
+            .rounded(px(4.0))
+            .bg(theme.pivot_chip_bg)
+            .border_1()
+            .border_color(theme.grid_line)
+            .text_color(theme.pivot_chip_fg)
+            .text_size(px(CHIP_FONT_SIZE))
+            .flex()
+            .items_center()
+            .gap(px(CHIP_GAP))
+            .cursor_pointer()
+            .on_drag(
+                DraggedField { field },
+                move |_drag, _offset, _window, cx| {
+                    cx.new(|_| DragGhost {
+                        label: ghost_label.clone(),
+                        bg: ghost_bg,
+                        fg: ghost_fg,
+                        border: ghost_border,
+                    })
+                },
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .child(caption.clone()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .cursor_pointer()
+                    .text_color(theme.sort_indicator)
+                    .child(arrow)
+                    .on_mouse_down(MouseButton::Left, {
+                        let state_toggle = state_toggle.clone();
+                        move |_e: &MouseDownEvent, _w, cx| {
                             cx.stop_propagation();
-                            state_remove.update(cx, |s, cx| {
-                                s.config.remove_field(field);
-                                s.recompute();
+                            state_toggle.update(cx, |s, cx| {
+                                s.agg_menu_open = !s.agg_menu_open;
                                 cx.notify();
                             });
-                        }),
-                )
-                .into_any_element(),
-        );
+                        }
+                    }),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(theme.muted_text)
+                    .cursor_pointer()
+                    .child("✕")
+                    .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                        cx.stop_propagation();
+                        state_remove.update(cx, |s, cx| {
+                            s.config.remove_field(field);
+                            s.recompute();
+                            cx.notify();
+                        });
+                    }),
+            );
+
+        if chopped {
+            let tip_label: SharedString = caption.into();
+            let tip_bg = theme.menu_bg;
+            let tip_fg = theme.menu_fg;
+            let tip_border = theme.grid_line;
+            chip = chip.tooltip(move |_window, cx| {
+                cx.new(|_| ChipTooltip {
+                    label: tip_label.clone(),
+                    bg: tip_bg,
+                    fg: tip_fg,
+                    border: tip_border,
+                })
+                .into()
+            });
+        }
+
+        rows.push(chip.into_any_element());
 
         if menu_open {
             for func in AggregationFn::all() {
@@ -660,15 +834,18 @@ impl PivotSidebar {
 }
 
 impl Render for PivotSidebar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (theme, columns, config) = {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (theme, columns, config, sidebar_width, save_handler) = {
             let s = self.state.read(cx);
             (
                 s.theme.clone(),
                 s.source_columns().to_vec(),
                 s.config.clone(),
+                s.sidebar_width,
+                s.save_config_handler.clone(),
             )
         };
+        let content_w = sidebar_width - SIDEBAR_CONTENT_CHROME;
 
         // Source field list with zone badges.
         let mut field_chips: Vec<gpui::AnyElement> = Vec::new();
@@ -688,6 +865,8 @@ impl Render for PivotSidebar {
                 None,
                 false,
                 badge,
+                content_w - CHIP_CHROME,
+                window,
                 cx,
             ));
         }
@@ -814,14 +993,77 @@ impl Render for PivotSidebar {
                     .children(field_chips),
             );
 
+        // Save-configuration button: only rendered while a host wired up the
+        // action (via `PivotState::on_save_config` or the widget builder).
+        let save_row = save_handler.map(|handler| {
+            let state_save = self.state.clone();
+            let icon_color = theme.muted_text;
+            let hover_bg = theme.menu_hover_bg;
+            let tip_bg = theme.menu_bg;
+            let tip_fg = theme.menu_fg;
+            let tip_border = theme.grid_line;
+            div().flex().justify_end().child(
+                div()
+                    .id("pivot-save-config")
+                    .p(px(3.0))
+                    .rounded(px(3.0))
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(hover_bg))
+                    .child(disk_icon(icon_color))
+                    .tooltip(move |_window, cx| {
+                        cx.new(|_| ChipTooltip {
+                            label: "Save configuration".into(),
+                            bg: tip_bg,
+                            fg: tip_fg,
+                            border: tip_border,
+                        })
+                        .into()
+                    })
+                    .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                        cx.stop_propagation();
+                        let config = state_save.read(cx).config.clone();
+                        handler(&config, cx);
+                    }),
+            )
+        });
+
         let layout = div()
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .child(Self::zone(&self.state, PivotZone::Filters, "Filters", cx))
-            .child(Self::zone(&self.state, PivotZone::Columns, "Columns", cx))
-            .child(Self::zone(&self.state, PivotZone::Rows, "Rows", cx))
-            .child(Self::zone(&self.state, PivotZone::Values, "Values", cx));
+            .children(save_row)
+            .child(Self::zone(
+                &self.state,
+                PivotZone::Filters,
+                "Filters",
+                content_w,
+                window,
+                cx,
+            ))
+            .child(Self::zone(
+                &self.state,
+                PivotZone::Columns,
+                "Columns",
+                content_w,
+                window,
+                cx,
+            ))
+            .child(Self::zone(
+                &self.state,
+                PivotZone::Rows,
+                "Rows",
+                content_w,
+                window,
+                cx,
+            ))
+            .child(Self::zone(
+                &self.state,
+                PivotZone::Values,
+                "Values",
+                content_w,
+                window,
+                cx,
+            ));
 
         let display = div()
             .flex()

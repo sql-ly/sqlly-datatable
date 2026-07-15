@@ -215,6 +215,12 @@ mod tests {
     }
 
     #[test]
+    fn sum_of_pure_decimals_is_decimal() {
+        let vals = vec![Decimal(1.25), Decimal(2.5), Decimal(-0.75)];
+        assert_eq!(aggregate(&vals, AggregationFn::Sum), Decimal(3.0));
+    }
+
+    #[test]
     fn sum_promotes_on_mixed_numeric() {
         let vals = vec![Integer(1), Decimal(0.5)];
         assert_eq!(aggregate(&vals, AggregationFn::Sum), Decimal(1.5));
@@ -266,6 +272,20 @@ mod tests {
         assert_eq!(aggregate(&dates, AggregationFn::Min), CellValue::Date(100));
         let texts = vec![Text("beta".into()), Text("alpha".into())];
         assert_eq!(aggregate(&texts, AggregationFn::Max), Text("beta".into()));
+    }
+
+    #[test]
+    fn min_max_on_decimals() {
+        let vals = vec![Decimal(2.5), Decimal(-1.25), Decimal(9.75), Null];
+        assert_eq!(aggregate(&vals, AggregationFn::Min), Decimal(-1.25));
+        assert_eq!(aggregate(&vals, AggregationFn::Max), Decimal(9.75));
+    }
+
+    #[test]
+    fn min_max_on_mixed_integer_and_decimal_compare_numerically() {
+        let vals = vec![Integer(2), Decimal(1.5), Decimal(2.5), Integer(3)];
+        assert_eq!(aggregate(&vals, AggregationFn::Min), Decimal(1.5));
+        assert_eq!(aggregate(&vals, AggregationFn::Max), Integer(3));
     }
 
     #[test]

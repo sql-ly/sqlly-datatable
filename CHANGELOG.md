@@ -5,6 +5,22 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-07-15
+
+### Added
+- Optional save-configuration button in the pivot controls sidebar, rendered
+  as a small disk icon next to the Layout section. It only appears when a
+  host wires up the action via `SqllyDataTableBuilder::pivot_save_config`,
+  `SqllyDataTable::set_pivot_save_config`, or `PivotState::on_save_config`,
+  and invokes the handler with the live `PivotConfig`.
+- Sidebar chips (fields, filters, columns, rows, and values) show a hover
+  tooltip with the full name whenever their label is chopped.
+
+### Fixed
+- Sidebar chip labels no longer extend past the chip boundary: text is
+  ellipsized so the remove button — and, for values chips, the aggregation
+  picker — always stay visible, even at the minimum sidebar width.
+
 ## [2.1.0] - 2026-07-15
 
 ### Added

@@ -24,7 +24,12 @@ use crate::pivot::engine::{compute_pivot, PivotNode, PivotResult, TOTAL_KEY};
 
 use gpui::{px, App, Bounds, FocusHandle, Pixels, Point, ScrollHandle, Size};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
+
+/// Callback invoked when the user clicks the sidebar's save-configuration
+/// button. Receives the live [`PivotConfig`] to persist.
+pub type PivotSaveConfigHandler = Rc<dyn Fn(&PivotConfig, &mut App)>;
 
 /// What kind of line a visible pivot row is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,6 +204,8 @@ pub const DEFAULT_PIVOT_COLUMN_WIDTH: f32 = 140.0;
 pub const MIN_PIVOT_ROW_HEIGHT: f32 = 18.0;
 /// Smallest supported pivot value-column width.
 pub const MIN_PIVOT_COLUMN_WIDTH: f32 = 40.0;
+/// Default width of the pivot controls sidebar, in logical pixels.
+pub const DEFAULT_PIVOT_SIDEBAR_WIDTH: f32 = 260.0;
 
 #[derive(Clone, Copy, Debug)]
 enum PivotResizeDrag {
@@ -250,6 +257,12 @@ pub struct PivotState {
     pub(crate) filter_popover: Option<PivotFilterPopover>,
     /// Whether the sidebar's aggregation picker is expanded.
     pub agg_menu_open: bool,
+    /// Registered save-configuration action. The sidebar's save button only
+    /// renders while this is `Some`.
+    pub(crate) save_config_handler: Option<PivotSaveConfigHandler>,
+    /// Current width of the pivot controls sidebar, kept in sync by the host
+    /// widget. The sidebar uses it to decide when chip labels are truncated.
+    pub(crate) sidebar_width: f32,
     /// Registered right-click provider; `None` shows the built-in menu.
     pub(crate) context_menu_provider: Option<PivotContextMenuProviderHandle>,
     /// Open right-click menu, if any.
@@ -321,6 +334,8 @@ impl PivotState {
             filter_values: HashMap::new(),
             filter_popover: None,
             agg_menu_open: false,
+            save_config_handler: None,
+            sidebar_width: DEFAULT_PIVOT_SIDEBAR_WIDTH,
             context_menu_provider: None,
             menu: None,
             pending_drill_down: None,
@@ -747,6 +762,31 @@ impl PivotState {
         provider: impl crate::pivot::context_menu::PivotContextMenuProvider + 'static,
     ) {
         self.context_menu_provider = Some(PivotContextMenuProviderHandle::new(provider));
+    }
+
+    /// Register (or replace) the save-configuration action. While registered,
+    /// the sidebar renders a save button next to the Layout section that
+    /// invokes the handler with the live [`PivotConfig`].
+    pub fn on_save_config(&mut self, handler: impl Fn(&PivotConfig, &mut App) + 'static) {
+        self.save_config_handler = Some(Rc::new(handler));
+    }
+
+    /// Remove the save-configuration action; the sidebar's save button
+    /// disappears.
+    pub fn clear_save_config_handler(&mut self) {
+        self.save_config_handler = None;
+    }
+
+    /// Whether a save-configuration action is currently registered.
+    #[must_use]
+    pub fn has_save_config_handler(&self) -> bool {
+        self.save_config_handler.is_some()
+    }
+
+    /// The registered save-configuration action, if any.
+    #[must_use]
+    pub fn save_config_handler(&self) -> Option<PivotSaveConfigHandler> {
+        self.save_config_handler.clone()
     }
 
     /// The grouping path for a row-axis key ([`TOTAL_KEY`] → empty).

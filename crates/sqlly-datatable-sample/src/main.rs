@@ -21,6 +21,9 @@ fn main() {
             .context_menu_provider(SampleMenuProvider)
             .pivot(sample_pivot_config())
             .pivot_context_menu_provider(SamplePivotMenuProvider)
+            .pivot_save_config(|config, _cx| {
+                println!("save pivot config: {config:?}");
+            })
             .build(cx);
         let focus = view.state.read(cx).focus_handle.clone();
 
