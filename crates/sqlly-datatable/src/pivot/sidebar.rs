@@ -7,16 +7,16 @@
 //! `move_field` API available to programmatic callers, then triggers
 //! `recompute()`.
 
+use crate::grid::theme::GridTheme;
 use crate::pivot::aggregation::AggregationFn;
 use crate::pivot::config::PivotZone;
 use crate::pivot::state::PivotState;
 
 use gpui::{
-    anchored, deferred, div, point, px, App, AppContext as _, Context, Corner, Entity,
-    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Window,
+    anchored, deferred, div, point, px, App, AppContext as _, Context, Corner, Entity, FontWeight,
+    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement,
+    Render, SharedString, StatefulInteractiveElement, Styled, Window,
 };
-use gpui_ui_kit::accordion::{Accordion, AccordionItem, AccordionMode, AccordionTheme};
 
 /// Draw priority for the filter popover overlay (matches the grid's menus).
 const POPOVER_PRIORITY: usize = 1_000_000;
@@ -167,6 +167,81 @@ impl PivotSidebar {
         } else {
             self.expanded_sections.retain(|section| section != id);
         }
+    }
+
+    /// One collapsible sidebar section: a clickable header row (title, an
+    /// optional extra control next to the title, expand indicator) over an
+    /// optional content body. Hand-rolled — instead of the `gpui-ui-kit`
+    /// accordion, whose header only accepts a title string — so the Layout
+    /// header can host the save-configuration button.
+    #[allow(clippy::too_many_arguments)]
+    fn section(
+        sidebar: &Entity<PivotSidebar>,
+        theme: &GridTheme,
+        id: &'static str,
+        title: &'static str,
+        header_extra: Option<gpui::AnyElement>,
+        expanded: bool,
+        first: bool,
+        content: gpui::AnyElement,
+    ) -> gpui::AnyElement {
+        let sidebar = sidebar.clone();
+        let section_id: SharedString = id.into();
+        let hover_bg = theme.menu_hover_bg;
+
+        let mut header = div()
+            .id(SharedString::from(format!("pivot-section-{id}")))
+            .flex()
+            .items_center()
+            .justify_between()
+            .px(px(16.0))
+            .py(px(12.0))
+            .bg(theme.header_bg)
+            .cursor_pointer()
+            .hover(move |style| style.bg(hover_bg))
+            .on_mouse_up(MouseButton::Left, move |_e: &MouseUpEvent, _w, cx| {
+                sidebar.update(cx, |this, cx| {
+                    this.set_section_expanded(&section_id, !expanded);
+                    cx.notify();
+                });
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.header_fg)
+                            .child(title),
+                    )
+                    .children(header_extra),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(theme.muted_text)
+                    .child(if expanded { "▼" } else { "▶" }),
+            );
+        if !first {
+            header = header.border_t_1().border_color(theme.grid_line);
+        }
+
+        let mut wrapper = div().flex().flex_col().child(header);
+        if expanded {
+            wrapper = wrapper.child(
+                div()
+                    .px(px(16.0))
+                    .py(px(12.0))
+                    .bg(theme.menu_bg)
+                    .border_t_1()
+                    .border_color(theme.grid_line)
+                    .child(content),
+            );
+        }
+        wrapper.into_any_element()
     }
 
     /// A draggable field chip. `zone` is `None` for the source field list.
@@ -993,45 +1068,49 @@ impl Render for PivotSidebar {
                     .children(field_chips),
             );
 
-        // Save-configuration button: only rendered while a host wired up the
-        // action (via `PivotState::on_save_config` or the widget builder).
-        let save_row = save_handler.map(|handler| {
+        // Save-configuration button, rendered in the Layout section header
+        // next to its title. Only present while a host wired up the action
+        // (via `PivotState::on_save_config` or the widget builder).
+        let save_button = save_handler.map(|handler| {
             let state_save = self.state.clone();
             let icon_color = theme.muted_text;
-            let hover_bg = theme.menu_hover_bg;
+            let hover_bg = theme.pivot_drop_zone_active_bg;
             let tip_bg = theme.menu_bg;
             let tip_fg = theme.menu_fg;
             let tip_border = theme.grid_line;
-            div().flex().justify_end().child(
-                div()
-                    .id("pivot-save-config")
-                    .p(px(3.0))
-                    .rounded(px(3.0))
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(hover_bg))
-                    .child(disk_icon(icon_color))
-                    .tooltip(move |_window, cx| {
-                        cx.new(|_| ChipTooltip {
-                            label: "Save configuration".into(),
-                            bg: tip_bg,
-                            fg: tip_fg,
-                            border: tip_border,
-                        })
-                        .into()
+            div()
+                .id("pivot-save-config")
+                .p(px(2.0))
+                .rounded(px(3.0))
+                .cursor_pointer()
+                .hover(move |style| style.bg(hover_bg))
+                .child(disk_icon(icon_color))
+                .tooltip(move |_window, cx| {
+                    cx.new(|_| ChipTooltip {
+                        label: "Save configuration".into(),
+                        bg: tip_bg,
+                        fg: tip_fg,
+                        border: tip_border,
                     })
-                    .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
-                        cx.stop_propagation();
-                        let config = state_save.read(cx).config.clone();
-                        handler(&config, cx);
-                    }),
-            )
+                    .into()
+                })
+                .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
+                    cx.stop_propagation();
+                    let config = state_save.read(cx).config.clone();
+                    handler(&config, cx);
+                })
+                // The section header toggles on mouse-up; swallow it so a
+                // click on the save button doesn't also collapse the section.
+                .on_mouse_up(MouseButton::Left, |_e: &MouseUpEvent, _w, cx| {
+                    cx.stop_propagation();
+                })
+                .into_any_element()
         });
 
         let layout = div()
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .children(save_row)
             .child(Self::zone(
                 &self.state,
                 PivotZone::Filters,
@@ -1072,28 +1151,44 @@ impl Render for PivotSidebar {
             .child(options)
             .child(tools);
 
-        let accordion_theme = AccordionTheme {
-            header_bg: theme.header_bg.into(),
-            header_hover_bg: theme.menu_hover_bg.into(),
-            content_bg: theme.menu_bg.into(),
-            border: theme.grid_line.into(),
-            title_color: theme.header_fg.into(),
-            indicator_color: theme.muted_text.into(),
-        };
         let sidebar = cx.entity().clone();
-        let accordion = Accordion::new()
-            .mode(AccordionMode::Multiple)
-            .expanded(self.expanded_sections.clone())
-            .theme(accordion_theme)
-            .item(AccordionItem::new("fields", "Fields").content(fields))
-            .item(AccordionItem::new("layout", "Layout").content(layout))
-            .item(AccordionItem::new("display", "Display and export").content(display))
-            .on_change(move |id, expanded, _window, cx| {
-                sidebar.update(cx, |this, cx| {
-                    this.set_section_expanded(id, expanded);
-                    cx.notify();
-                });
-            });
+        let is_expanded = |id: &str| self.expanded_sections.iter().any(|section| section == id);
+        let sections = div()
+            .flex()
+            .flex_col()
+            .border_1()
+            .border_color(theme.grid_line)
+            .rounded_lg()
+            .child(Self::section(
+                &sidebar,
+                &theme,
+                "fields",
+                "Fields",
+                None,
+                is_expanded("fields"),
+                true,
+                fields.into_any_element(),
+            ))
+            .child(Self::section(
+                &sidebar,
+                &theme,
+                "layout",
+                "Layout",
+                save_button,
+                is_expanded("layout"),
+                false,
+                layout.into_any_element(),
+            ))
+            .child(Self::section(
+                &sidebar,
+                &theme,
+                "display",
+                "Display and export",
+                None,
+                is_expanded("display"),
+                false,
+                display.into_any_element(),
+            ));
 
         div()
             .id("pivot-sidebar")
@@ -1112,7 +1207,7 @@ impl Render for PivotSidebar {
                     .text_size(px(13.0))
                     .child("Pivot Controls"),
             )
-            .child(accordion)
+            .child(sections)
             .children(Self::render_filter_popover(&self.state, cx))
     }
 }

@@ -5,6 +5,14 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1] - 2026-07-15
+
+### Changed
+- The pivot sidebar's save-configuration button moved into the Layout section
+  header, directly next to its title. The sidebar's collapsible sections are
+  now rendered in-crate (visually unchanged) because the `gpui-ui-kit`
+  accordion header cannot host extra controls.
+
 ## [2.2.0] - 2026-07-15
 
 ### Added
