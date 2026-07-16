@@ -74,7 +74,7 @@ dedicated high-contrast palette (which does not exist yet).
 | Hovering a column header reveals the outlined button with `-` hint | [x] | [ ] | [ ] |
 | Sorted column shows bold accent `↑` (asc) / `↓` (desc), 33% larger than cell text | [x] | [ ] | [ ] |
 | Sort glyph swaps `↑`→`↓`→off when cycling the sort button | [ ] | [ ] | [ ] |
-| Filter funnel icon (right-click header → Filter…, apply one) paints at the larger size next to the sort button | [ ] | [ ] | [ ] |
+| Active-filter 🔽 emoji (right-click header → Filter…, apply one) paints next to the sort button | [ ] | [ ] | [ ] |
 | Drag-selection marquee shows a 1px accent outline while dragging | [ ] | [ ] | [ ] |
 | Grouped column shows the 3px accent underline in its header | [ ] | [ ] | [ ] |
 
@@ -98,9 +98,11 @@ dedicated high-contrast palette (which does not exist yet).
 | Field chips: uniform height and perfectly even gaps (measured 24px chips / 28px pitch on macOS) | [x] | [ ] | [ ] |
 | Chip gaps stay even while scrolling the field list | [ ] | [ ] | [ ] |
 | Long/hostile chip labels ("interés compuesto…", emoji/CJK/Arabic) ellipsize with hover tooltip | [ ] | [ ] | [ ] |
+| Filters-zone chip shows 🔽 while its filter is active (open the trans_part checklist, uncheck a value) | [ ] | [ ] | [ ] |
 | Drop-zone hover highlight while dragging a chip over each zone | [ ] | [ ] | [ ] |
 | Drag ghost matches chip styling (24px, themed) | [ ] | [ ] | [ ] |
 | Per-field format dialog (double-click a zone chip): themed dialog over the darkened scrim (`overlay_scrim`) | [ ] | [ ] | [ ] |
+| Display and export: 16px checkboxes, accent ✓ when checked, readable labels/buttons, hover states | [ ] | [ ] | [ ] |
 
 ## 6. Menus & popups
 

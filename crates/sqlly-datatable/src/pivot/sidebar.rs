@@ -468,7 +468,7 @@ impl PivotSidebar {
                             name,
                             Some(zone),
                             true,
-                            filter_on.then_some("●"),
+                            filter_on.then_some("🔽"),
                             label_budget,
                             window,
                             cx,
@@ -719,22 +719,44 @@ impl PivotSidebar {
     ) -> gpui::AnyElement {
         let theme = state.read(cx).theme.clone();
         let state_toggle = state.clone();
+        let hover_bg = theme.menu_hover_bg;
+        // Checked: accent-filled box with a knockout check (the theme's `bg`
+        // reads against the accent in both light and dark). Unchecked: an
+        // outlined empty box.
         let boxed = div()
-            .w(px(12.0))
-            .h(px(12.0))
+            .w(px(16.0))
+            .h(px(16.0))
+            .flex_none()
+            .rounded(px(3.0))
             .border_1()
-            .border_color(theme.grid_line)
-            .bg(theme.menu_bg)
+            .border_color(if checked {
+                theme.sort_indicator
+            } else {
+                theme.grid_line
+            })
+            .bg(if checked {
+                theme.sort_indicator
+            } else {
+                theme.menu_bg
+            })
             .flex()
             .items_center()
             .justify_center()
-            .children(checked.then(|| div().w(px(6.0)).h(px(6.0)).bg(theme.sort_indicator)));
+            .text_size(px(12.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(theme.bg)
+            .children(checked.then_some("✓"));
         div()
+            .id(SharedString::from(format!("pivot-option-{label}")))
             .flex()
             .items_center()
-            .gap(px(6.0))
+            .gap(px(8.0))
+            .px(px(4.0))
+            .py(px(3.0))
+            .rounded(px(4.0))
             .cursor_pointer()
-            .text_size(px(12.0))
+            .hover(move |style| style.bg(hover_bg))
+            .text_size(px(13.0))
             .text_color(theme.menu_fg)
             .child(boxed)
             .child(label)
@@ -757,15 +779,18 @@ impl PivotSidebar {
     ) -> gpui::AnyElement {
         let theme = state.read(cx).theme.clone();
         let state_btn = state.clone();
+        let hover_bg = theme.menu_hover_bg;
         div()
-            .px(px(6.0))
-            .py(px(2.0))
-            .rounded(px(3.0))
+            .id(SharedString::from(format!("pivot-button-{label}")))
+            .px(px(10.0))
+            .py(px(4.0))
+            .rounded(px(4.0))
             .border_1()
             .border_color(theme.grid_line)
             .bg(theme.pivot_drop_zone_bg)
+            .hover(move |style| style.bg(hover_bg))
             .text_color(theme.menu_fg)
-            .text_size(px(11.0))
+            .text_size(px(12.0))
             .cursor_pointer()
             .child(label)
             .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
@@ -1261,11 +1286,11 @@ impl Render for PivotSidebar {
         let options = div()
             .flex()
             .flex_col()
-            .gap(px(4.0))
+            .gap(px(6.0))
             .child(
                 div()
                     .text_color(theme.muted_text)
-                    .text_size(px(11.0))
+                    .text_size(px(12.0))
                     .child("Totals"),
             )
             .child(Self::option_row(
@@ -1300,11 +1325,11 @@ impl Render for PivotSidebar {
         let tools = div()
             .flex()
             .flex_col()
-            .gap(px(4.0))
+            .gap(px(6.0))
             .child(
                 div()
                     .text_color(theme.muted_text)
-                    .text_size(px(11.0))
+                    .text_size(px(12.0))
                     .child("Groups"),
             )
             .child(
@@ -1344,7 +1369,7 @@ impl Render for PivotSidebar {
             .child(
                 div()
                     .text_color(theme.muted_text)
-                    .text_size(px(11.0))
+                    .text_size(px(12.0))
                     .child("Export"),
             )
             .child(Self::text_button(

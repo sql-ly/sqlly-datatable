@@ -203,20 +203,14 @@ fn fill_quad(window: &mut Window, x: f32, y: f32, w: f32, h: f32, color: Hsla) {
     });
 }
 
-/// Painted size multiplier for indicator glyphs (sort arrows, hover hints)
-/// and the filter funnel, relative to the grid font size.
+/// Painted size multiplier for indicator glyphs (sort arrows, hover hints,
+/// the active-filter marker), relative to the grid font size.
 pub(crate) const ICON_SCALE: f32 = 4.0 / 3.0;
 
-fn paint_filter_icon(window: &mut Window, x: f32, y: f32, color: Hsla) {
-    let rows: [(f32, f32); 5] = [(10.0, 2.0), (8.0, 2.0), (6.0, 2.0), (4.0, 2.0), (2.0, 4.0)];
-    let mut cy = y;
-    for (w, h) in rows {
-        let (w, h) = (w * ICON_SCALE, h * ICON_SCALE);
-        let offset = (10.0 * ICON_SCALE - w) * 0.5;
-        fill_quad(window, x + offset, cy, w, h, color);
-        cy += h;
-    }
-}
+/// Glyph painted next to a column's sort button while a filter is active on
+/// it. An emoji, so it renders from the system color-emoji fallback rather
+/// than the grid's text color.
+const FILTER_ICON: &str = "🔽";
 
 pub(crate) fn paint_scrollbars(
     data: &PaintData,
@@ -668,11 +662,14 @@ pub(crate) fn paint_grid(
                 );
             }
             if data.filters_active[ci] {
-                paint_filter_icon(
+                paint_icon(
                     window,
-                    btn_x - 10.0 * ICON_SCALE - 4.0,
-                    oy + (hdr_h - 12.0 * ICON_SCALE) * 0.5,
+                    cx,
+                    FILTER_ICON,
+                    btn_x - fs * ICON_SCALE - 4.0,
+                    oy + (hdr_h - fs * ICON_SCALE) * 0.5,
                     theme.sort_indicator,
+                    false,
                 );
             }
             fill_quad(window, x + w, oy, 1.0, hdr_h, theme.grid_line);

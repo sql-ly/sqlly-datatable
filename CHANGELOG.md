@@ -5,6 +5,19 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- The active-filter indicator is the 🔽 emoji in both views (the grid's
+  hand-drawn funnel next to the sort button, and the `●` marker on the
+  pivot sidebar's Filters-zone chips), rendered via the system color-emoji
+  fallback.
+- The pivot sidebar's Display and export section is easier to read and hit:
+  16px checkboxes with an accent-filled ✓ checked state (knockout check in
+  the theme's background color), 13px row labels with hover feedback and a
+  larger click target, 12px buttons with real padding and hover states, and
+  12px section labels.
+
 ## [3.0.1] - 2026-07-16
 
 ### Added
