@@ -270,7 +270,15 @@ fn sample_data() -> GridData {
             ColumnKind::Date => 150.0,
             ColumnKind::None => 120.0,
         };
-        columns.push(Column::new(format!("field_{i:02}"), kind, width));
+        // One deliberately hostile column *name* (long + emoji/CJK/RTL) so
+        // sidebar field chips, grid headers, and drop-zone chips exercise
+        // label truncation and hover tooltips.
+        let name = if i == 4 {
+            "interés compuesto acumulado 💸 手数料 عمولة sobre el saldo".to_owned()
+        } else {
+            format!("field_{i:02}")
+        };
+        columns.push(Column::new(name, kind, width));
     }
 
     // Deterministic pseudo-random generator — enough variety across 100k rows
@@ -304,6 +312,12 @@ fn sample_data() -> GridData {
         row.push(Text(narratives[r % narratives.len()].into()));
         row.push(Boolean(r % 2 == 0));
         for (i, col) in columns.iter().enumerate().skip(4) {
+            // Sprinkle NULLs through the extra columns so the italic
+            // placeholder over `null_bg` is visible without special data.
+            if (r + i) % 13 == 0 {
+                row.push(None);
+                continue;
+            }
             let cell = match col.kind {
                 ColumnKind::Text => Text(format!("row {r} field {i:02}")),
                 ColumnKind::Integer => Integer((r as i64).wrapping_mul((i as i64) + 7)),
@@ -955,6 +969,13 @@ impl PivotContextMenuProvider for SamplePivotMenuProvider {
             "copy-driving-count",
             format!("Driving source rows: {}", request.source_row_count()),
         ));
+        // Column-label sort has no built-in affordance; expose the API here
+        // so the style checklist can exercise the header sort glyph.
+        items.push(PivotMenuItem::separator());
+        items.push(PivotMenuItem::action(
+            "sort-column-labels",
+            "Sort column labels (cycle)",
+        ));
         items
     }
 
@@ -962,9 +983,13 @@ impl PivotContextMenuProvider for SamplePivotMenuProvider {
         &self,
         action_id: &str,
         request: &PivotContextMenuRequest,
-        _state: &mut PivotState,
+        state: &mut PivotState,
         cx: &mut App,
     ) {
+        if action_id == "sort-column-labels" {
+            state.cycle_col_label_sort();
+            return;
+        }
         let text = match action_id {
             "copy-cell-path" => pivot_cell_path(request).unwrap_or_default(),
             "copy-cell-summary" => request
