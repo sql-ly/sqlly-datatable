@@ -1,10 +1,10 @@
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Bounds, ClipboardItem, Context, Entity, Window,
-    WindowBounds, WindowOptions,
+    div, prelude::*, px, size, App, Bounds, ClipboardItem, Context, Entity, Window, WindowBounds,
+    WindowOptions,
 };
 use sqlly_datatable::{
     AggregationFn, Column, ColumnKind, ColumnOverride, ContextMenuItem, ContextMenuProvider,
-    ContextMenuRequest, GridConfig, GridData, GridState, NumberFormat, PivotConfig,
+    ContextMenuRequest, GridConfig, GridData, GridState, GridThemePair, NumberFormat, PivotConfig,
     PivotContextMenuProvider, PivotContextMenuRequest, PivotMenuItem, PivotState, SqllyDataTable,
 };
 
@@ -18,6 +18,7 @@ fn main() {
 
         let view = SqllyDataTable::builder(data)
             .config(config)
+            .theme_family(ThemeChoice::Signature.pair())
             .context_menu_provider(SampleMenuProvider)
             .pivot(sample_pivot_config())
             .pivot_context_menu_provider(SamplePivotMenuProvider)
@@ -45,7 +46,10 @@ fn main() {
         // drop the pivot parts created by the builder.
         match cx.open_window(options, move |_window, cx| {
             let table = cx.new(|_cx| view);
-            cx.new(|_cx| RootView { table })
+            cx.new(|_cx| RootView {
+                table,
+                theme_choice: ThemeChoice::Signature,
+            })
         }) {
             Ok(window) => {
                 let _ = window.update(cx, |_view, window, _cx| {
@@ -64,25 +68,128 @@ fn main() {
     });
 }
 
-/// Root view that stacks a fixed 500px area above the data grid.
+/// The two theme families shipped with the crate, as offered by the sample
+/// app's switcher.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ThemeChoice {
+    Neutral,
+    Signature,
+}
+
+impl ThemeChoice {
+    fn pair(self) -> GridThemePair {
+        match self {
+            Self::Neutral => GridThemePair::neutral(),
+            Self::Signature => GridThemePair::signature(),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Neutral => "Neutral",
+            Self::Signature => "Signature",
+        }
+    }
+}
+
+/// Root view: a themed toolbar (title + theme-family switcher) above the
+/// grid. The toolbar paints from the grid's current `GridTheme`, so it
+/// follows both the family switcher and the OS light/dark appearance.
 struct RootView {
     table: Entity<SqllyDataTable>,
+    theme_choice: ThemeChoice,
+}
+
+impl RootView {
+    fn segment(
+        &self,
+        choice: ThemeChoice,
+        theme: &sqlly_datatable::GridTheme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let active = self.theme_choice == choice;
+        let hover_bg = theme.menu_hover_bg;
+        let hover_fg = theme.header_fg;
+        div()
+            .id(choice.label())
+            .px(px(12.0))
+            .py(px(3.0))
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .text_size(px(12.0))
+            .when(active, |seg| {
+                seg.bg(theme.selection_bg).text_color(theme.header_fg)
+            })
+            .when(!active, |seg| {
+                seg.text_color(theme.muted_text)
+                    .hover(move |seg| seg.bg(hover_bg).text_color(hover_fg))
+            })
+            .on_click(cx.listener(move |this, _event, window, cx| {
+                if this.theme_choice == choice {
+                    return;
+                }
+                this.theme_choice = choice;
+                this.table.update(cx, |table, cx| {
+                    table.set_theme_family(choice.pair(), window, cx);
+                });
+                cx.notify();
+            }))
+            .child(choice.label())
+    }
 }
 
 impl Render for RootView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.table.read(cx).state.read(cx).theme.clone();
+        let toolbar = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_between()
+            .h(px(44.0))
+            .px(px(12.0))
+            .bg(theme.header_bg)
+            .border_b_1()
+            .border_color(theme.grid_line)
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.header_fg)
+                    .child("sqlly-datatable"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(theme.muted_text)
+                            .child("Theme"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.0))
+                            .p(px(2.0))
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(theme.grid_line)
+                            .bg(theme.bg)
+                            .child(self.segment(ThemeChoice::Neutral, &theme, cx))
+                            .child(self.segment(ThemeChoice::Signature, &theme, cx)),
+                    ),
+            );
+
         div()
             .flex()
             .flex_col()
             .size_full()
-            .child(
-                div()
-                    .h(px(500.0))
-                    .w_full()
-                    .flex_none()
-                    .bg(rgb(0x1e_1e_28))
-                    .child("500px area above the grid"),
-            )
+            .bg(theme.bg)
+            .child(toolbar)
             .child(div().flex_1().min_h_0().child(self.table.clone()))
     }
 }
@@ -142,9 +249,9 @@ fn sample_data() -> GridData {
     // default formatter.
     let mut columns = Vec::with_capacity(40);
     columns.push(Column::new("amount", ColumnKind::Decimal, 140.0));
-    columns.push(Column::new("currency_id", ColumnKind::Integer, 110.0));
+    columns.push(Column::new("currency_id", ColumnKind::Integer, 130.0));
     columns.push(Column::new("narrative", ColumnKind::Text, 260.0));
-    columns.push(Column::new("trans_part", ColumnKind::Boolean, 100.0));
+    columns.push(Column::new("trans_part", ColumnKind::Boolean, 120.0));
 
     let extra_kinds = [
         ColumnKind::Text,
@@ -157,9 +264,9 @@ fn sample_data() -> GridData {
         let kind = extra_kinds[i % extra_kinds.len()];
         let width = match kind {
             ColumnKind::Text => 200.0,
-            ColumnKind::Integer => 110.0,
+            ColumnKind::Integer => 120.0,
             ColumnKind::Decimal => 140.0,
-            ColumnKind::Boolean => 100.0,
+            ColumnKind::Boolean => 120.0,
             ColumnKind::Date => 150.0,
             ColumnKind::None => 120.0,
         };
@@ -386,14 +493,16 @@ impl ContextMenuProvider for SampleMenuProvider {
                 "copy-selection",
                 format!("Copy {} selected cell(s)", request.selected_cell_count()),
             ));
-            items.push(ContextMenuItem::action(
-                "selection-summary",
-                format!(
-                    "Selection spans {} row(s) × {} col(s)",
-                    request.selected_row_count(),
-                    request.selected_cell_count()
-                ),
-            ));
+            let rows = request.selected_row_count();
+            let cells = request.selected_cell_count();
+            // `selected_row_count` is 0 for column-oriented selections, so
+            // the column count is only derivable when rows are known.
+            let summary = if rows > 0 {
+                format!("Selection spans {} row(s) × {} col(s)", rows, cells / rows)
+            } else {
+                format!("Selection spans {cells} cell(s) in whole column(s)")
+            };
+            items.push(ContextMenuItem::action("selection-summary", summary));
             // --- 10 additional selection items ---
             items.push(ContextMenuItem::action(
                 "copy-selection-values",

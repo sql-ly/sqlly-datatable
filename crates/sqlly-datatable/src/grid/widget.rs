@@ -12,7 +12,7 @@ use crate::grid::context_menu::{
 use crate::grid::paint::{paint_grid, paint_status_bar, PaintData, StatusBarData};
 use crate::grid::state::state_inner;
 use crate::grid::state::{FilterInput, GridState, EDGE_SCROLL_TICK_MS};
-use crate::grid::theme::GridTheme;
+use crate::grid::theme::{GridTheme, GridThemePair};
 use crate::grid::{menu, HitResult, MenuItem, SortDirection};
 use crate::pivot::config::PivotConfig;
 use crate::pivot::context_menu::{PivotContextMenuProvider, PivotContextMenuProviderHandle};
@@ -25,7 +25,7 @@ use crate::pivot::widget::PivotGrid;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    anchored, canvas, deferred, div, hsla, point, pulsating_between, px, relative, Animation,
+    anchored, canvas, deferred, div, point, pulsating_between, px, relative, Animation,
     AnimationExt, App, AppContext, Context, Corner, Div, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, Render, ScrollWheelEvent, StatefulInteractiveElement, Styled,
@@ -130,6 +130,7 @@ impl SqllyDataTable {
             config: GridConfig::default(),
             context_menu_provider: None,
             theme: None,
+            theme_family: None,
             debug_bar: false,
             grouped_column: None,
             pivot: None,
@@ -155,6 +156,28 @@ impl SqllyDataTable {
     #[must_use]
     pub fn active_tab(&self) -> GridTab {
         self.active_tab
+    }
+
+    /// Swap the light/dark theme family at runtime while keeping automatic
+    /// OS light/dark following. The pair's variant matching the current
+    /// window appearance is applied immediately; subsequent appearance
+    /// changes resolve against the new family. Re-enables appearance
+    /// following if it was disabled by an explicit
+    /// [`SqllyDataTableBuilder::theme`] override.
+    pub fn set_theme_family(
+        &mut self,
+        family: GridThemePair,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.follow_system_appearance = true;
+        let appearance = window.appearance();
+        self.state.update(cx, |s, cx| {
+            s.theme = family.for_appearance(appearance);
+            s.theme_family = family;
+            cx.notify();
+        });
+        cx.notify();
     }
 
     /// Whether the visible pivot tab currently rejects activation.
@@ -363,6 +386,7 @@ pub struct SqllyDataTableBuilder {
     config: GridConfig,
     context_menu_provider: Option<ContextMenuProviderHandle>,
     theme: Option<GridTheme>,
+    theme_family: Option<GridThemePair>,
     debug_bar: bool,
     grouped_column: Option<usize>,
     pivot: Option<PivotConfig>,
@@ -388,6 +412,18 @@ impl SqllyDataTableBuilder {
     #[must_use]
     pub fn theme(mut self, theme: GridTheme) -> Self {
         self.theme = Some(theme);
+        self
+    }
+
+    /// Choose the light/dark theme family used while following the OS window
+    /// appearance (default: [`GridThemePair::neutral`]). Unlike
+    /// [`SqllyDataTableBuilder::theme`], this keeps automatic light/dark
+    /// following — the pair's matching variant is applied whenever the
+    /// system appearance changes. Ignored when an explicit theme override is
+    /// also supplied.
+    #[must_use]
+    pub fn theme_family(mut self, family: GridThemePair) -> Self {
+        self.theme_family = Some(family);
         self
     }
 
@@ -502,6 +538,7 @@ impl SqllyDataTableBuilder {
         let focus = cx.focus_handle();
         let provider = self.context_menu_provider;
         let theme_override = self.theme;
+        let theme_family = self.theme_family;
         let debug_bar = self.debug_bar;
         let grouped_column = self.grouped_column;
         let pivot_config = self.pivot;
@@ -517,6 +554,10 @@ impl SqllyDataTableBuilder {
             s.debug_bar_enabled = debug_bar;
             s.set_grouped_column(grouped_column);
             s.self_weak = Some(cx.weak_entity());
+            if let Some(family) = theme_family {
+                s.theme = family.light.clone();
+                s.theme_family = family;
+            }
             if let Some(theme) = theme_override {
                 s.theme = theme;
             }
@@ -564,14 +605,16 @@ impl Render for SqllyDataTable {
         // swaps the grid theme whenever the system appearance changes. Skipped
         // when the caller supplied an explicit theme override.
         if self.follow_system_appearance && self.appearance_subscription.is_none() {
-            let initial = GridTheme::for_appearance(window.appearance());
-            self.state.update(cx, |s, _cx| s.theme = initial);
+            let appearance = window.appearance();
+            self.state.update(cx, |s, _cx| {
+                s.theme = s.theme_family.for_appearance(appearance);
+            });
             let state_appearance = self.state.clone();
             self.appearance_subscription =
                 Some(window.observe_window_appearance(move |window, cx| {
-                    let theme = GridTheme::for_appearance(window.appearance());
+                    let appearance = window.appearance();
                     state_appearance.update(cx, |s, cx| {
-                        s.theme = theme;
+                        s.theme = s.theme_family.for_appearance(appearance);
                         cx.notify();
                     });
                 }));
@@ -1707,7 +1750,7 @@ fn render_busy_overlay(
         .flex()
         .items_center()
         .justify_center()
-        .bg(hsla(0.0, 0.0, 0.0, 0.35))
+        .bg(theme.overlay_scrim)
         .child(card);
 
     Some(overlay)

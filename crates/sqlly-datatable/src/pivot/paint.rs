@@ -9,6 +9,7 @@
 use crate::config::{ResolvedColumnFormat, TextAlignment};
 use crate::data::CellValue;
 use crate::format::format_cell;
+use crate::grid::paint::ICON_SCALE;
 use crate::grid::selection::SortDirection;
 use crate::grid::state::SCROLLBAR_SIZE;
 use crate::grid::theme::GridTheme;
@@ -22,13 +23,6 @@ use gpui::{
     point, px, size, App, Bounds, ContentMask, CursorStyle, Hsla, PaintQuad, Pixels, Point, Window,
 };
 use std::sync::Arc;
-
-const SCROLLBAR_THUMB_COLOR: Hsla = Hsla {
-    h: 0.0,
-    s: 0.0,
-    l: 0.55,
-    a: 1.0,
-};
 
 /// Lightweight snapshot handed to the canvas paint closure.
 #[derive(Clone)]
@@ -224,7 +218,7 @@ pub(crate) fn paint_pivot_grid(
     let text_system = window.text_system().clone();
     let font_size = px(fs);
     let line_height = px(fs * 1.2);
-    let font = gpui::font("monospace");
+    let font = crate::grid::paint::grid_font();
     let bold_font = {
         let mut f = font.clone();
         f.weight = gpui::FontWeight::BOLD;
@@ -280,6 +274,27 @@ pub(crate) fn paint_pivot_grid(
                      max_w: Option<f32>| {
         paint_txt_weighted(win, cx, text, x, y, color, max_w, false);
     };
+    // Indicator glyphs (sort arrows, hover hints) paint larger than cell
+    // text so they read at a glance (matches the flat grid).
+    let icon_fs = px(fs * ICON_SCALE);
+    let icon_line_height = px(fs * ICON_SCALE * 1.2);
+    let paint_icon =
+        |win: &mut Window, cx: &mut App, text: &str, x: f32, y: f32, color: Hsla, bold: bool| {
+            let run = gpui::TextRun {
+                len: text.len(),
+                color,
+                font: if bold {
+                    bold_font.clone()
+                } else {
+                    font.clone()
+                },
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped = text_system.shape_line(text.to_owned().into(), icon_fs, &[run], None);
+            let _ = shaped.paint(Point { x: px(x), y: px(y) }, icon_line_height, win, cx);
+        };
 
     fill_quad(window, ox, oy, sw, sh, theme.bg);
 
@@ -515,6 +530,24 @@ pub(crate) fn paint_pivot_grid(
             theme.muted_text,
             Some(sw - rhw - 16.0),
         );
+        // Column-label sort (set from the context menu) gets the same bold
+        // accent direction glyph as the other sort targets.
+        if let Some((PivotSortKey::ColLabel, dir)) = data.sort {
+            let names_w = text_w_approx(&names, cw).min(sw - rhw - 16.0);
+            paint_icon(
+                window,
+                cx,
+                if dir == SortDirection::Ascending {
+                    "↑"
+                } else {
+                    "↓"
+                },
+                ox + rhw + 8.0 + names_w + 6.0,
+                caption_y - fs * (ICON_SCALE - 1.0) * 0.5,
+                theme.sort_indicator,
+                true,
+            );
+        }
     }
 
     // Column label rows (levels 1..header_levels).
@@ -554,9 +587,38 @@ pub(crate) fn paint_pivot_grid(
                             x + (col_w - tw) * 0.5,
                             ly + (hdr_row_h - fs) * 0.5,
                             theme.pivot_total_fg,
-                            Some(col_w - 8.0),
+                            Some(col_w - 8.0 - cw * ICON_SCALE),
                             true,
                         );
+                        let sorted = match data.sort {
+                            Some((PivotSortKey::RowsByColumn(k), dir)) if k == vc.key => Some(dir),
+                            _ => None,
+                        };
+                        let hovered = matches!(
+                            data.hover_hit,
+                            Some(PivotHitResult::ColHeader { col: hc, .. }) if hc == c
+                        );
+                        let gx = x + col_w - cw * ICON_SCALE - 6.0;
+                        let gy = ly + (hdr_row_h - fs * ICON_SCALE) * 0.5;
+                        match sorted {
+                            Some(dir) => paint_icon(
+                                window,
+                                cx,
+                                if dir == SortDirection::Ascending {
+                                    "↑"
+                                } else {
+                                    "↓"
+                                },
+                                gx,
+                                gy,
+                                theme.sort_indicator,
+                                true,
+                            ),
+                            None if hovered => {
+                                paint_icon(window, cx, "-", gx, gy, theme.pivot_total_fg, false);
+                            }
+                            None => {}
+                        }
                         fill_quad(window, x, ly, 1.0, hdr_h - hdr_row_h, theme.grid_line);
                     }
                     c += 1;
@@ -574,8 +636,38 @@ pub(crate) fn paint_pivot_grid(
                         x + (col_w - tw) * 0.5,
                         ly + (hdr_row_h - fs) * 0.5,
                         theme.header_fg,
-                        Some(col_w - 8.0),
+                        Some(col_w - 8.0 - cw * ICON_SCALE),
                     );
+                    let sorted = match data.sort {
+                        Some((PivotSortKey::RowsByColumn(k), dir)) if k == vc.key => Some(dir),
+                        _ => None,
+                    };
+                    let hovered = matches!(
+                        data.hover_hit,
+                        Some(PivotHitResult::ColHeader { level: hl, col: hc })
+                            if hl == level && hc == c
+                    );
+                    let gx = x + col_w - cw * ICON_SCALE - 6.0;
+                    let gy = ly + (hdr_row_h - fs * ICON_SCALE) * 0.5;
+                    match sorted {
+                        Some(dir) => paint_icon(
+                            window,
+                            cx,
+                            if dir == SortDirection::Ascending {
+                                "↑"
+                            } else {
+                                "↓"
+                            },
+                            gx,
+                            gy,
+                            theme.sort_indicator,
+                            true,
+                        ),
+                        None if hovered => {
+                            paint_icon(window, cx, "-", gx, gy, theme.header_fg, false);
+                        }
+                        None => {}
+                    }
                     c += 1;
                     continue;
                 }
@@ -597,6 +689,36 @@ pub(crate) fn paint_pivot_grid(
                             theme.pivot_total_fg,
                             None,
                         );
+                        let sorted = match data.sort {
+                            Some((PivotSortKey::RowsByColumn(k), dir)) if k == vc.key => Some(dir),
+                            _ => None,
+                        };
+                        let hovered = matches!(
+                            data.hover_hit,
+                            Some(PivotHitResult::ColHeader { level: hl, col: hc })
+                                if hl == level && hc == c
+                        );
+                        let gx = x + col_w - cw * ICON_SCALE - 6.0;
+                        let gy = ly + (hdr_row_h - fs * ICON_SCALE) * 0.5;
+                        match sorted {
+                            Some(dir) => paint_icon(
+                                window,
+                                cx,
+                                if dir == SortDirection::Ascending {
+                                    "↑"
+                                } else {
+                                    "↓"
+                                },
+                                gx,
+                                gy,
+                                theme.sort_indicator,
+                                true,
+                            ),
+                            None if hovered => {
+                                paint_icon(window, cx, "-", gx, gy, theme.pivot_total_fg, false);
+                            }
+                            None => {}
+                        }
                     }
                     c += 1;
                     continue;
@@ -647,25 +769,18 @@ pub(crate) fn paint_pivot_grid(
                     if collapsed_here {
                         label.push_str(" Total");
                     }
-                    if level == levels - 1 {
-                        if let Some((PivotSortKey::RowsByColumn(k), dir)) = data.sort {
-                            if k == vc.key {
-                                label.push(' ');
-                                label.push(if dir == SortDirection::Ascending {
-                                    '^'
-                                } else {
-                                    'v'
-                                });
-                            }
-                        }
-                    }
+                    // The innermost level is a sort target; reserve room at
+                    // the right edge for the sort glyph so labels don't jump
+                    // when it appears (mirrors the flat grid's header).
+                    let sortable = level == levels - 1;
+                    let reserve = if sortable { cw * ICON_SCALE + 8.0 } else { 0.0 };
                     let mut color = theme.header_fg;
                     let mut lx = label_x;
                     if let Some(&(align, red)) = data.col_label_fmts.get(depth) {
                         lx = aligned_x(
                             align,
                             label_x,
-                            span_x + span_w - 4.0,
+                            span_x + span_w - 4.0 - reserve,
                             text_w_approx(&label, cw),
                         );
                         if red && cell_is_negative(&node_ref.sort_key) {
@@ -679,8 +794,40 @@ pub(crate) fn paint_pivot_grid(
                         lx,
                         ly + (hdr_row_h - fs) * 0.5,
                         color,
-                        Some(span_x + span_w - lx - 4.0),
+                        Some(span_x + span_w - lx - 4.0 - reserve),
                     );
+                    if sortable {
+                        let sorted = match data.sort {
+                            Some((PivotSortKey::RowsByColumn(k), dir)) if k == vc.key => Some(dir),
+                            _ => None,
+                        };
+                        let hovered = matches!(
+                            data.hover_hit,
+                            Some(PivotHitResult::ColHeader { level: hl, col: hc })
+                                if hl == level && hc >= run_start && hc < run_end
+                        );
+                        let gx = span_x + span_w - cw * ICON_SCALE - 6.0;
+                        let gy = ly + (hdr_row_h - fs * ICON_SCALE) * 0.5;
+                        match sorted {
+                            Some(dir) => paint_icon(
+                                window,
+                                cx,
+                                if dir == SortDirection::Ascending {
+                                    "↑"
+                                } else {
+                                    "↓"
+                                },
+                                gx,
+                                gy,
+                                theme.sort_indicator,
+                                true,
+                            ),
+                            None if hovered => {
+                                paint_icon(window, cx, "-", gx, gy, theme.header_fg, false);
+                            }
+                            None => {}
+                        }
+                    }
                 }
                 fill_quad(window, span_x, ly, 1.0, hdr_row_h, theme.grid_line);
                 fill_quad(
@@ -716,24 +863,46 @@ pub(crate) fn paint_pivot_grid(
         Some(rhw - 16.0),
     );
     if !data.result.row_field_names.is_empty() {
-        let mut names = data.result.row_field_names.join(" ▸ ");
-        if let Some((PivotSortKey::RowLabel, dir)) = data.sort {
-            names.push(' ');
-            names.push(if dir == SortDirection::Ascending {
-                '^'
-            } else {
-                'v'
-            });
-        }
+        let names = data.result.row_field_names.join(" ▸ ");
+        let ny = oy + hdr_h - hdr_row_h + (hdr_row_h - fs) * 0.5;
+        // Clicking the corner cycles the row-label sort; give it the same
+        // affordance as a sortable column header (reserved glyph slot,
+        // hover hint, bold accent direction glyph).
         paint_txt(
             window,
             cx,
             &names,
             ox + 8.0,
-            oy + hdr_h - hdr_row_h + (hdr_row_h - fs) * 0.5,
+            ny,
             theme.muted_text,
-            Some(rhw - 16.0),
+            Some(rhw - 16.0 - cw * ICON_SCALE - 6.0),
         );
+        let sorted = match data.sort {
+            Some((PivotSortKey::RowLabel, dir)) => Some(dir),
+            _ => None,
+        };
+        let hovered = matches!(data.hover_hit, Some(PivotHitResult::Corner));
+        let gx = ox + rhw - cw * ICON_SCALE - 8.0;
+        let ny = ny - fs * (ICON_SCALE - 1.0) * 0.5;
+        match sorted {
+            Some(dir) => paint_icon(
+                window,
+                cx,
+                if dir == SortDirection::Ascending {
+                    "↑"
+                } else {
+                    "↓"
+                },
+                gx,
+                ny,
+                theme.sort_indicator,
+                true,
+            ),
+            None if hovered => {
+                paint_icon(window, cx, "-", gx, ny, theme.header_fg, false);
+            }
+            None => {}
+        }
     }
 
     // Frame lines.
@@ -782,7 +951,7 @@ fn paint_pivot_scrollbars(
                 track_y + frac * (track_h - thumb_h),
                 SCROLLBAR_SIZE - 6.0,
                 thumb_h,
-                SCROLLBAR_THUMB_COLOR,
+                theme.scrollbar_thumb,
             );
         }
     }
@@ -802,7 +971,7 @@ fn paint_pivot_scrollbars(
                 track_y + 3.0,
                 thumb_w,
                 SCROLLBAR_SIZE - 6.0,
-                SCROLLBAR_THUMB_COLOR,
+                theme.scrollbar_thumb,
             );
         }
     }

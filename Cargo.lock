@@ -4896,7 +4896,7 @@ dependencies = [
 
 [[package]]
 name = "sqlly-datatable"
-version = "2.3.0"
+version = "3.0.0"
 dependencies = [
  "gpui",
  "gpui-ui-kit",
@@ -4906,7 +4906,7 @@ dependencies = [
 
 [[package]]
 name = "sqlly-datatable-sample"
-version = "2.3.0"
+version = "3.0.0"
 dependencies = [
  "gpui",
  "sqlly-datatable",

@@ -33,6 +33,12 @@ const CHIP_CHROME: f32 = 18.0;
 /// Flex gap between a chip's label and its trailing glyphs (marker, picker
 /// arrow, remove button).
 const CHIP_GAP: f32 = 6.0;
+
+/// Fixed outer height of every field chip (source list, zone chips, drag
+/// ghost). An explicit integer height keeps the stacked-chip rhythm exact:
+/// with padding-derived heights the fractional text line height made the
+/// 3px list gaps render as anything from 2px to 4px.
+const CHIP_HEIGHT: f32 = 24.0;
 /// Chip label font size.
 const CHIP_FONT_SIZE: f32 = 12.0;
 /// Zone-marker / badge font size.
@@ -130,7 +136,9 @@ impl Render for DragGhost {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .px(px(8.0))
-            .py(px(3.0))
+            .h(px(CHIP_HEIGHT))
+            .flex()
+            .items_center()
             .rounded(px(4.0))
             .bg(self.bg)
             .border_1()
@@ -283,7 +291,8 @@ impl PivotSidebar {
         let mut chip = div()
             .id(id)
             .px(px(8.0))
-            .py(px(3.0))
+            .h(px(CHIP_HEIGHT))
+            .flex_none()
             .rounded(px(4.0))
             .bg(theme.pivot_chip_bg)
             .border_1()
@@ -569,7 +578,8 @@ impl PivotSidebar {
         let mut chip = div()
             .id("pivot-values-chip")
             .px(px(8.0))
-            .py(px(3.0))
+            .h(px(CHIP_HEIGHT))
+            .flex_none()
             .rounded(px(4.0))
             .bg(theme.pivot_chip_bg)
             .border_1()
@@ -1352,7 +1362,7 @@ impl Render for PivotSidebar {
         let fields = div()
             .flex()
             .flex_col()
-            .gap(px(3.0))
+            .gap(px(8.0))
             .child(
                 div()
                     .text_color(theme.muted_text)
@@ -1364,7 +1374,7 @@ impl Render for PivotSidebar {
                     .id("pivot-field-list")
                     .flex()
                     .flex_col()
-                    .gap(px(3.0))
+                    .gap(px(4.0))
                     .max_h(px(220.0))
                     .overflow_y_scroll()
                     .children(field_chips),
@@ -1412,7 +1422,7 @@ impl Render for PivotSidebar {
         let layout = div()
             .flex()
             .flex_col()
-            .gap(px(6.0))
+            .gap(px(8.0))
             .child(Self::zone(
                 &self.state,
                 PivotZone::Filters,

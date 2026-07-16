@@ -377,7 +377,7 @@ impl PivotState {
             row_header_width: 220.0,
             value_col_width: DEFAULT_PIVOT_COLUMN_WIDTH,
             font_size: 13.0,
-            char_width: 7.9,
+            char_width: crate::grid::paint::default_char_width(13.0),
             resize_drag: None,
         };
         state.recompute();

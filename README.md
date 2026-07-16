@@ -28,6 +28,32 @@ A configurable data grid component for GPUI, built for the needs of [sqlly.app](
 - **Context menu** — right-click column headers for select / copy / copy-with-headers / sort / clear sort / filter / clear filter. Fully customizable via `ContextMenuProvider` (see below).
 - **Keyboard navigation** — arrow keys, page up/down, select all, copy, copy-with-headers, configurable per platform.
 - **Status bar** — shows click position, scroll offsets, cell coordinates, and hover info.
+- **Theming** — two shipped theme families, each with light and dark variants that follow the OS appearance, and full custom theming (every color is a public field). See below.
+
+## Theming
+
+Two complete theme families ship with the crate. Each is a `GridThemePair` — a light and a dark `GridTheme` — and the widget automatically applies the variant matching the OS window appearance (and swaps live when the system appearance changes):
+
+- **Neutral** (`GridThemePair::neutral()`, the default) — chroma-free gray surfaces with one restrained azure accent. Designed to blend into a host application.
+- **Signature** (`GridThemePair::signature()`) — the crate's own look, built around a teal anchor (`oklch(0.47 0.115 195)`): subtly tinted neutrals with a committed accent carrying selection, pivot chips, and the totals hierarchy.
+
+```rust
+use sqlly_datatable::{GridThemePair, SqllyDataTable};
+
+// Pick a shipped family at build time (keeps OS light/dark following):
+let view = SqllyDataTable::builder(data)
+    .theme_family(GridThemePair::signature())
+    .build(cx);
+
+// Swap families at runtime (e.g. from a settings menu):
+table.set_theme_family(GridThemePair::neutral(), window, cx);
+```
+
+All four shipped palettes were designed in OKLCH and are contrast-verified in unit tests: every text role meets WCAG AA (≥ 4.5:1) against every surface it is painted on, in both light and dark.
+
+Beyond the shipped pair, the grid is themable to the bone: every color — including scrollbar thumbs and the modal overlay scrim — is a public field on `GridTheme`, and nothing in the paint code is hardcoded. A host app can construct its own `GridThemePair` (keeping automatic light/dark following) or pass a single fixed `GridTheme` via `.theme(...)` to opt out of appearance following entirely.
+
+The sample app has a theme switcher in its toolbar demonstrating both families.
 
 ## Configuration
 

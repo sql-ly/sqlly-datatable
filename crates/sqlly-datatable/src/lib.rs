@@ -83,8 +83,8 @@ pub use filter::{ColumnFilter, FilterPredicate, NumberOp, TextOp};
 pub use grid::{
     BusyState, ColumnContext, ContextMenu, ContextMenuItem, ContextMenuProvider,
     ContextMenuRequest, ContextMenuSelection, ContextMenuTarget, FilterPanel, GridState, GridTab,
-    GridTheme, HitResult, MenuAction, MenuItem, PivotSidebarPosition, RowGroup, RowWindow,
-    ScrollbarAxis, SelectedCellContext, SelectedRowContext, Selection, SortDirection,
+    GridTheme, GridThemePair, HitResult, MenuAction, MenuItem, PivotSidebarPosition, RowGroup,
+    RowWindow, ScrollbarAxis, SelectedCellContext, SelectedRowContext, Selection, SortDirection,
     SqllyDataTable, SqllyDataTableBuilder,
 };
 pub use pivot::{

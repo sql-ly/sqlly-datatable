@@ -10,7 +10,7 @@ use crate::filter::{
 };
 use crate::format::format_cell;
 use crate::grid::state::state_inner::apply_edge_scroll;
-use crate::grid::theme::GridTheme;
+use crate::grid::theme::{GridTheme, GridThemePair};
 
 use crate::config::{GridConfig, ResolvedColumnFormat};
 use gpui::{
@@ -249,6 +249,12 @@ pub struct GridState {
     pub font_size: f32,
     pub char_width: f32,
     pub theme: GridTheme,
+    /// The light/dark pair used when the widget follows the OS window
+    /// appearance. Swap it (e.g. via
+    /// [`crate::grid::widget::SqllyDataTable::set_theme_family`]) to change
+    /// the shipped family — or supply a custom pair — while keeping
+    /// automatic light/dark following.
+    pub theme_family: GridThemePair,
     pub is_dragging: bool,
     pub drag_start: Option<Point<Pixels>>,
     pub drag_start_hit: Option<HitResult>,
@@ -711,8 +717,9 @@ impl GridState {
             header_height: 32.0,
             row_header_width: 50.0,
             font_size: 14.0,
-            char_width: 7.6,
+            char_width: crate::grid::paint::default_char_width(14.0),
             theme: GridTheme::default(),
+            theme_family: GridThemePair::default(),
             is_dragging: false,
             drag_start: None,
             drag_start_hit: None,

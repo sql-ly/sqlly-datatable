@@ -20,10 +20,46 @@ use gpui::{
 };
 use std::sync::Arc;
 
-const SCROLLBAR_THUMB_COLOR: Hsla = hsla_const(0.0, 0.0, 0.55, 1.0);
-
 const fn hsla_const(h: f32, s: f32, l: f32, a: f32) -> Hsla {
     Hsla { h, s, l, a }
+}
+
+/// The monospace face used for all canvas-painted text (cells, headers,
+/// pivot, status bar). The generic `"monospace"` request resolves to a
+/// single-face family on macOS, which silently drops the bold and italic
+/// variants the painters ask for — so name a real family per platform and
+/// carry the others as fallbacks.
+pub(crate) fn grid_font() -> gpui::Font {
+    #[cfg(target_os = "macos")]
+    let family = "Menlo";
+    #[cfg(target_os = "windows")]
+    let family = "Consolas";
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let family = "DejaVu Sans Mono";
+    gpui::Font {
+        family: family.into(),
+        features: gpui::FontFeatures::default(),
+        weight: gpui::FontWeight::NORMAL,
+        style: gpui::FontStyle::Normal,
+        fallbacks: Some(gpui::FontFallbacks::from_fonts(vec![
+            "Menlo".into(),
+            "Consolas".into(),
+            "DejaVu Sans Mono".into(),
+            "monospace".into(),
+        ])),
+    }
+}
+
+/// Advance width of one glyph of [`grid_font`] at the given size, from the
+/// family's em-square metrics (Menlo and DejaVu Sans Mono ≈ 0.602 em,
+/// Consolas ≈ 0.55 em). Seed value for the `char_width` approximations;
+/// hosts that change the font size or family can override the stored field.
+pub(crate) fn default_char_width(font_size: f32) -> f32 {
+    #[cfg(target_os = "windows")]
+    let ratio = 0.55;
+    #[cfg(not(target_os = "windows"))]
+    let ratio = 0.6022;
+    font_size * ratio
 }
 
 #[derive(Clone)]
@@ -149,11 +185,16 @@ fn fill_quad(window: &mut Window, x: f32, y: f32, w: f32, h: f32, color: Hsla) {
     });
 }
 
+/// Painted size multiplier for indicator glyphs (sort arrows, hover hints)
+/// and the filter funnel, relative to the grid font size.
+pub(crate) const ICON_SCALE: f32 = 4.0 / 3.0;
+
 fn paint_filter_icon(window: &mut Window, x: f32, y: f32, color: Hsla) {
     let rows: [(f32, f32); 5] = [(10.0, 2.0), (8.0, 2.0), (6.0, 2.0), (4.0, 2.0), (2.0, 4.0)];
     let mut cy = y;
     for (w, h) in rows {
-        let offset = (10.0 - w) * 0.5;
+        let (w, h) = (w * ICON_SCALE, h * ICON_SCALE);
+        let offset = (10.0 * ICON_SCALE - w) * 0.5;
         fill_quad(window, x + offset, cy, w, h, color);
         cy += h;
     }
@@ -204,7 +245,7 @@ pub(crate) fn paint_scrollbars(
                 thumb_y,
                 SCROLLBAR_SIZE - 6.0,
                 thumb_h,
-                SCROLLBAR_THUMB_COLOR,
+                theme.scrollbar_thumb,
             );
         }
     }
@@ -226,7 +267,7 @@ pub(crate) fn paint_scrollbars(
                 track_y + 3.0,
                 thumb_w,
                 SCROLLBAR_SIZE - 6.0,
-                SCROLLBAR_THUMB_COLOR,
+                theme.scrollbar_thumb,
             );
         }
     }
@@ -269,10 +310,15 @@ pub(crate) fn paint_grid(
     let text_system = window.text_system().clone();
     let font_size = px(fs);
     let line_height = px(fs * 1.2);
-    let font = gpui::font("monospace");
+    let font = grid_font();
     let italic_font = {
         let mut f = font.clone();
         f.style = gpui::FontStyle::Italic;
+        f
+    };
+    let bold_font = {
+        let mut f = font.clone();
+        f.weight = gpui::FontWeight::BOLD;
         f
     };
     let paint_txt_styled = |win: &mut Window,
@@ -282,8 +328,15 @@ pub(crate) fn paint_grid(
                             y: f32,
                             color: Hsla,
                             max_w: Option<f32>,
-                            italic: bool| {
-        let face = if italic { &italic_font } else { &font };
+                            italic: bool,
+                            bold: bool| {
+        let face = if italic {
+            &italic_font
+        } else if bold {
+            &bold_font
+        } else {
+            &font
+        };
         let mk_run = |t: &str| gpui::TextRun {
             len: t.len(),
             color,
@@ -317,8 +370,35 @@ pub(crate) fn paint_grid(
                      y: f32,
                      color: Hsla,
                      max_w: Option<f32>| {
-        paint_txt_styled(win, cx, text, x, y, color, max_w, false);
+        paint_txt_styled(win, cx, text, x, y, color, max_w, false, false);
     };
+    let paint_txt_bold = |win: &mut Window,
+                          cx: &mut App,
+                          text: &str,
+                          x: f32,
+                          y: f32,
+                          color: Hsla,
+                          max_w: Option<f32>| {
+        paint_txt_styled(win, cx, text, x, y, color, max_w, false, true);
+    };
+    // Indicator glyphs (sort arrows, hover hints) paint larger than cell
+    // text so they read at a glance.
+    let icon_fs = px(fs * ICON_SCALE);
+    let icon_line_height = px(fs * ICON_SCALE * 1.2);
+    let paint_icon =
+        |win: &mut Window, cx: &mut App, text: &str, x: f32, y: f32, color: Hsla, bold: bool| {
+            let face = if bold { &bold_font } else { &font };
+            let run = gpui::TextRun {
+                len: text.len(),
+                color,
+                font: face.clone(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped = text_system.shape_line(text.to_owned().into(), icon_fs, &[run], None);
+            let _ = shaped.paint(Point { x: px(x), y: px(y) }, icon_line_height, win, cx);
+        };
 
     fill_quad(window, ox, oy, sw, sh, theme.bg);
     fill_quad(window, ox, oy, rhw, sh, theme.row_header_bg);
@@ -370,7 +450,7 @@ pub(crate) fn paint_grid(
                 let marker = if group.collapsed { ">" } else { "v" };
                 let noun = if group.row_count == 1 { "row" } else { "rows" };
                 let label = format!("{marker}  {}  ({} {noun})", group.label, group.row_count);
-                paint_txt(
+                paint_txt_bold(
                     window,
                     cx,
                     &label,
@@ -443,6 +523,7 @@ pub(crate) fn paint_grid(
                     color,
                     Some(w - 16.0),
                     is_null && fmt.null.italic,
+                    false,
                 );
                 fill_quad(window, x + w, y, 1.0, row_h, theme.grid_line);
                 col_x += w;
@@ -503,7 +584,7 @@ pub(crate) fn paint_grid(
             if data.grouped_column == Some(ci) {
                 fill_quad(window, x, oy + hdr_h - 3.0, w, 3.0, theme.sort_indicator);
             }
-            paint_txt(
+            paint_txt_bold(
                 window,
                 cx,
                 &col.name,
@@ -514,50 +595,65 @@ pub(crate) fn paint_grid(
             );
             let btn_w = 20.0;
             let btn_x = x + w - btn_w;
-            // The sort button shares the column header's background color, set off
-            // from the header only by a 1px outline drawn around it.
-            let btn_bg = theme.header_bg;
             let btn_y = oy + 4.0;
             let btn_h = hdr_h - 8.0;
-            fill_quad(window, btn_x, btn_y, btn_w, btn_h, btn_bg);
-            // 1px outline around the button (top, bottom, left, right edges).
-            fill_quad(window, btn_x, btn_y, btn_w, 1.0, theme.grid_line);
-            fill_quad(
-                window,
-                btn_x,
-                btn_y + btn_h - 1.0,
-                btn_w,
-                1.0,
-                theme.grid_line,
+            let sorted = matches!(data.sort, Some((sc, _)) if sc == ci);
+            let hovered = matches!(
+                data.hover_hit,
+                Some(HitResult::SortButton(h) | HitResult::ColumnHeader(h)) if h == ci
             );
-            fill_quad(window, btn_x, btn_y, 1.0, btn_h, theme.grid_line);
-            fill_quad(
-                window,
-                btn_x + btn_w - 1.0,
-                btn_y,
-                1.0,
-                btn_h,
-                theme.grid_line,
-            );
-            let (ind, ind_color) = match data.sort {
-                Some((sc, SortDirection::Ascending)) if sc == ci => ("^", theme.sort_indicator),
-                Some((sc, SortDirection::Descending)) if sc == ci => ("v", theme.sort_indicator),
-                _ => ("-", theme.header_fg),
+            // The sort affordance stays quiet at rest: the outlined button
+            // (with a "-" cycle hint) appears only while the column header is
+            // hovered, and a sorted column shows just the accent direction
+            // glyph. The hit target itself is unchanged.
+            if hovered && !sorted {
+                fill_quad(window, btn_x, btn_y, btn_w, btn_h, theme.header_bg);
+                // 1px outline around the button (top, bottom, left, right).
+                fill_quad(window, btn_x, btn_y, btn_w, 1.0, theme.grid_line);
+                fill_quad(
+                    window,
+                    btn_x,
+                    btn_y + btn_h - 1.0,
+                    btn_w,
+                    1.0,
+                    theme.grid_line,
+                );
+                fill_quad(window, btn_x, btn_y, 1.0, btn_h, theme.grid_line);
+                fill_quad(
+                    window,
+                    btn_x + btn_w - 1.0,
+                    btn_y,
+                    1.0,
+                    btn_h,
+                    theme.grid_line,
+                );
+            }
+            let indicator = match data.sort {
+                Some((sc, SortDirection::Ascending)) if sc == ci => {
+                    Some(("↑", theme.sort_indicator, true))
+                }
+                Some((sc, SortDirection::Descending)) if sc == ci => {
+                    Some(("↓", theme.sort_indicator, true))
+                }
+                _ if hovered => Some(("-", theme.header_fg, false)),
+                _ => None,
             };
-            paint_txt(
-                window,
-                cx,
-                ind,
-                btn_x + (btn_w - cw) * 0.5,
-                oy + (hdr_h - fs) * 0.5,
-                ind_color,
-                None,
-            );
+            if let Some((ind, ind_color, ind_bold)) = indicator {
+                paint_icon(
+                    window,
+                    cx,
+                    ind,
+                    btn_x + (btn_w - cw * ICON_SCALE) * 0.5,
+                    oy + (hdr_h - fs * ICON_SCALE) * 0.5,
+                    ind_color,
+                    ind_bold,
+                );
+            }
             if data.filters_active[ci] {
                 paint_filter_icon(
                     window,
-                    btn_x - 14.0,
-                    oy + (hdr_h - 12.0) * 0.5,
+                    btn_x - 10.0 * ICON_SCALE - 4.0,
+                    oy + (hdr_h - 12.0 * ICON_SCALE) * 0.5,
                     theme.sort_indicator,
                 );
             }
@@ -578,6 +674,8 @@ pub(crate) fn paint_grid(
         let (sx1, sy1) = (ox + f32::from(current.x), oy + f32::from(current.y));
         let (rx, ry) = (sx0.min(sx1), sy0.min(sy1));
         let (rw, rh) = ((sx1 - sx0).abs(), (sy1 - sy0).abs());
+        // Accent marquee outline so the drag rectangle reads while cells
+        // beneath are still catching up with the live selection.
         window.with_content_mask(clip(ox, oy, sw, sh), |window| {
             window.paint_quad(PaintQuad {
                 bounds: Bounds {
@@ -588,8 +686,8 @@ pub(crate) fn paint_grid(
                     size: size(px(rw), px(rh)),
                 },
                 background: hsla_const(0.0, 0.0, 0.0, 0.0).into(),
-                border_color: hsla_const(0.0, 0.0, 0.0, 0.0),
-                border_widths: Default::default(),
+                border_color: theme.sort_indicator,
+                border_widths: gpui::Edges::all(px(1.0)),
                 corner_radii: Default::default(),
                 border_style: Default::default(),
             });
@@ -629,7 +727,7 @@ pub(crate) fn paint_status_bar(
     let text_system = window.text_system().clone();
     let font_size = px(fs);
     let line_height = px(fs * 1.2);
-    let font = gpui::font("monospace");
+    let font = grid_font();
     let run = gpui::TextRun {
         len: data.text.len(),
         color: theme.text_fg,

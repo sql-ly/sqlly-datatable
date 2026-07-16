@@ -275,6 +275,10 @@ fn action_index(items: &[MenuItem], row: usize) -> Option<usize> {
 }
 
 /// Stable palette for menu chrome.
+#[deprecated(
+    since = "3.0.0",
+    note = "menu chrome is themed; use `GridTheme::menu_bg` instead"
+)]
 #[must_use]
 pub fn background() -> Hsla {
     Hsla {

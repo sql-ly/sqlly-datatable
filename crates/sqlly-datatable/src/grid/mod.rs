@@ -22,7 +22,7 @@ pub use selection::{HitResult, ScrollbarAxis, Selection, SortDirection};
 pub use state::{
     BusyState, FilterInput, FilterPanel, FilterValueRow, GridState, RowGroup, RowWindow,
 };
-pub use theme::GridTheme;
+pub use theme::{GridTheme, GridThemePair};
 pub use widget::{GridTab, PivotSidebarPosition, SqllyDataTable, SqllyDataTableBuilder};
 
 // Inline a couple of constants that callers used to read from the `grid` mod.

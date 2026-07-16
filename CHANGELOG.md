@@ -5,6 +5,70 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-07-16
+
+### Added
+- Two shipped theme families, each a light/dark `GridThemePair` that follows
+  the OS window appearance: **Neutral** (chroma-free surfaces, restrained
+  azure accent — the default) and **Signature** (teal-anchored tinted
+  neutrals with a committed accent). All four palettes are designed in OKLCH
+  and contrast-verified in unit tests: every text role meets WCAG AA
+  (≥ 4.5:1) against every surface it is painted on.
+- `GridThemePair` (exported at the crate root): a light/dark pair with
+  `neutral()`, `signature()`, and `for_appearance(..)`. Hosts can supply a
+  custom pair and keep automatic light/dark following.
+- `SqllyDataTableBuilder::theme_family(..)` to pick the family at build time
+  and `SqllyDataTable::set_theme_family(..)` to swap it at runtime; the
+  matching variant is applied immediately and future OS appearance changes
+  resolve against the new family. `GridState::theme_family` holds the pair.
+- New `GridTheme` fields: `scrollbar_thumb` (was a hardcoded constant in the
+  grid and pivot painters) and `overlay_scrim` (was a hardcoded translucent
+  black behind the pivot format dialog). No color painted by the widget is
+  hardcoded anymore.
+- The sample app toolbar (replacing the placeholder 500px panel) with a
+  Neutral/Signature theme switcher; the sample defaults to Signature.
+
+### Changed
+- `GridTheme::default()`/`light()`/`dark()` now alias the Neutral family
+  palettes. Selection fills are opaque in all shipped palettes (previously
+  50% alpha), so text contrast on selections is deterministic.
+- Grid column-header labels and flat-grid group-header rows paint bold,
+  matching the pivot's total styling, so structure leads the hierarchy.
+- Sort buttons are quiet at rest: the outlined button and `-` cycle hint
+  appear only while the column header is hovered, and a sorted column shows
+  a bold accent `↑`/`↓` glyph instead. Hit targets are unchanged.
+- The pivot's sort targets (innermost column headers, subtotal and
+  grand-total columns, and the corner's row-label sort) now use the same
+  affordance as the flat grid: a `-` hint on hover and a bold accent
+  `↑`/`↓` glyph when sorted, replacing the plain `^`/`v` appended to the
+  label text. The column-label sort (from the context menu) shows its glyph
+  next to the column field caption.
+- Sort arrows, hover hints, and the filter funnel paint one-third larger
+  than cell text so state reads at a glance.
+- Pivot sidebar field chips have a fixed 24px height and never flex-shrink;
+  previously the scrollable list compressed each chip unevenly, so the
+  nominal 3px gaps rendered as anything from 2px to 4px. Chip gaps are now
+  a uniform 4px, with an 8px rhythm between sidebar sections.
+- The drag-selection marquee paints a 1px accent outline (previously a fully
+  transparent quad, i.e. invisible).
+- Sample app: semibold toolbar title, wider default integer/boolean columns
+  so header labels fit the bold face, and a corrected selection-summary
+  menu line (it previously printed the cell count as the column count).
+
+### Fixed
+- Canvas-painted text (cells, headers, pivot, status bar) now requests a
+  real monospace family per platform — Menlo on macOS, Consolas on Windows,
+  DejaVu Sans Mono elsewhere, each with cross-platform fallbacks — instead
+  of the generic `"monospace"`, which resolved to a single-face family on
+  macOS and silently dropped the bold and italic variants. The pivot's bold
+  grand totals (added in 2.3.0) and italic null placeholders now actually
+  render, and the default `char_width` approximations derive from the real
+  font's advance metrics.
+
+### Deprecated
+- `grid::menu::background()` — menu chrome is themed; use
+  `GridTheme::menu_bg`.
+
 ## [2.3.0] - 2026-07-15
 
 ### Added
