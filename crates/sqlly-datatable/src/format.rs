@@ -478,6 +478,29 @@ mod tests {
         assert_eq!(format_number(-0.0, &fmt), "0.00");
     }
 
+    /// Hostile numeric input must never panic the formatter — `NaN` and the
+    /// infinities flow straight from SQL sources (0.0/0.0 aggregates, etc.).
+    #[test]
+    fn format_number_nan_and_infinity_do_not_panic() {
+        for sep in [false, true] {
+            for parens in [false, true] {
+                let fmt = NumberFormat {
+                    decimals: 2,
+                    thousands_separator: sep,
+                    negative_parentheses: parens,
+                    ..NumberFormat::default()
+                };
+                assert_eq!(format_number(f64::NAN, &fmt), "NaN");
+                assert_eq!(format_number(f64::INFINITY, &fmt), "inf");
+                let neg_inf = format_number(f64::NEG_INFINITY, &fmt);
+                assert!(
+                    neg_inf == "-inf" || neg_inf == "(inf)",
+                    "negative infinity renders with its sign channel: {neg_inf}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn format_number_thousands_separator_with_decimals() {
         let fmt = NumberFormat {

@@ -276,17 +276,26 @@ fn sample_data() -> GridData {
     // Deterministic pseudo-random generator — enough variety across 100k rows
     // without pulling in the `rand` crate.
     let mut rng = Lcg::new(0x0123_4567_89AB_CDEF);
+    // Includes deliberately hostile values — emoji ZWJ sequences, CJK, RTL,
+    // and an over-long label — so the sample exercises truncation, shaping,
+    // and pivot grouping against real-world text.
     let narratives = [
         "saldo de apertura",
         "cargo",
         "abono",
         "transferencia",
-        "comisión",
-        "interés",
+        "comisión 💸 手数料 عمولة",
+        "interés compuesto acumulado sobre el saldo pendiente del período anterior",
     ];
 
-    let mut rows = Vec::with_capacity(100_000);
-    for r in 0..100_000 {
+    // Row count override for testing edge cases (e.g. SQLLY_SAMPLE_ROWS=0
+    // shows the empty-result state).
+    let row_count: usize = std::env::var("SQLLY_SAMPLE_ROWS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100_000);
+    let mut rows = Vec::with_capacity(row_count);
+    for r in 0..row_count {
         let mut row = Vec::with_capacity(40);
         // Skewed positive with ~25% negatives so the pivot's red negative
         // styling shows up in totals and cells.

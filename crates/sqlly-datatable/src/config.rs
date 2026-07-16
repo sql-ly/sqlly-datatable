@@ -319,6 +319,10 @@ pub struct GridConfig {
     pub default_replacements: Vec<ReplacementRule>,
     pub replacement_timing: ReplacementTiming,
     pub column_overrides: Vec<ColumnOverride>,
+    /// Hint painted centered in the data area when the grid has zero rows
+    /// (e.g. an empty result set). Host-supplied so it can be localized;
+    /// set to an empty string to paint nothing.
+    pub empty_text: String,
 }
 
 impl Default for GridConfig {
@@ -333,6 +337,7 @@ impl Default for GridConfig {
             default_replacements: vec![],
             replacement_timing: ReplacementTiming::AfterFormat,
             column_overrides: vec![],
+            empty_text: "No rows".into(),
         }
     }
 }

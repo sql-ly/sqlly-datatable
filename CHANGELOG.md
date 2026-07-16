@@ -5,6 +5,29 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] - 2026-07-16
+
+### Added
+- `GridConfig::empty_text`: a hint painted centered in the data area when
+  the grid has zero rows (default "No rows"). Host-supplied so it can be
+  localized; set to an empty string to paint nothing. Note: adding this
+  field is breaking for full struct-literal construction of `GridConfig`
+  (use `..GridConfig::default()`).
+- Hardening test suite (`tests/hardening.rs`): hostile text (emoji ZWJ
+  sequences, CJK, RTL, 500-char values), `NaN`/`±inf` decimals, extreme
+  integers, empty result sets, and zero-column frames all survive sort,
+  filter, select-all, copy, and pointer sweeps without panicking.
+- The sample app grows deliberately hostile narrative values (emoji, CJK,
+  Arabic, an over-long label) and a `SQLLY_SAMPLE_ROWS` env override
+  (`SQLLY_SAMPLE_ROWS=0` shows the empty-result state).
+
+### Fixed
+- Cell-text truncation slices are clamped to UTF-8 char boundaries in both
+  painters; a mid-character byte index from the shaper would previously
+  have panicked the paint pass on multi-byte input.
+- The flat grid's quad painter skips zero/negative-size quads (parity with
+  the pivot painter) instead of handing degenerate geometry to the renderer.
+
 ## [3.0.0] - 2026-07-16
 
 ### Added

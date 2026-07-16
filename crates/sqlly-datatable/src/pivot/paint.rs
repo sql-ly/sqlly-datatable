@@ -253,7 +253,7 @@ pub(crate) fn paint_pivot_grid(
             Some(mw) if mw <= 0.0 => return,
             Some(mw) if f32::from(shaped.width) > mw => {
                 let byte_idx = shaped.index_for_x(px(mw)).unwrap_or(0);
-                let truncated = &text[..byte_idx.min(text.len())];
+                let truncated = &text[..crate::grid::paint::floor_char_boundary(text, byte_idx)];
                 text_system.shape_line(
                     truncated.to_owned().into(),
                     font_size,

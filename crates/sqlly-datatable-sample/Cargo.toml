@@ -17,4 +17,4 @@ expect_used = "allow"
 
 [dependencies]
 gpui = { version = "0.2" }
-sqlly-datatable = { version = "3.0.0", path = "../sqlly-datatable" }
+sqlly-datatable = { version = "3.0.1", path = "../sqlly-datatable" }

@@ -86,6 +86,8 @@ pub(crate) struct PaintData {
     pub(crate) char_width: f32,
     pub(crate) drag_rect: Option<(Point<Pixels>, Point<Pixels>)>,
     pub(crate) hover_hit: Option<HitResult>,
+    /// Hint painted centered in the data area when there are zero rows.
+    pub(crate) empty_text: String,
 }
 
 impl PaintData {
@@ -110,6 +112,7 @@ impl PaintData {
             char_width: s.char_width,
             drag_rect: s.drag_screen_rect(),
             hover_hit: s.hover_hit,
+            empty_text: s.config.empty_text.clone(),
         }
     }
 
@@ -166,7 +169,22 @@ impl StatusBarData {
     }
 }
 
+/// Largest index `<= idx` that falls on a UTF-8 char boundary of `text`.
+/// Guards the truncation slice: the shaper's byte index should always land
+/// on a boundary, but a mid-char index from a foreign glyph cluster would
+/// otherwise panic the paint pass on multi-byte input (emoji, CJK).
+pub(crate) fn floor_char_boundary(text: &str, idx: usize) -> usize {
+    let mut idx = idx.min(text.len());
+    while idx > 0 && !text.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
 fn fill_quad(window: &mut Window, x: f32, y: f32, w: f32, h: f32, color: Hsla) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
     window.paint_quad(PaintQuad {
         bounds: Bounds {
             origin: point(px(x), px(y)),
@@ -351,7 +369,7 @@ pub(crate) fn paint_grid(
             Some(mw) if mw <= 0.0 => return,
             Some(mw) if f32::from(shaped.width) > mw => {
                 let byte_idx = shaped.index_for_x(px(mw)).unwrap_or(0);
-                let truncated = &text[..byte_idx.min(text.len())];
+                let truncated = &text[..floor_char_boundary(text, byte_idx)];
                 text_system.shape_line(
                     truncated.to_owned().into(),
                     font_size,
@@ -666,6 +684,23 @@ pub(crate) fn paint_grid(
     fill_quad(window, ox, oy + hdr_h, sw, 1.0, theme.grid_line);
     fill_quad(window, ox + rhw, oy, 1.0, sh, theme.grid_line);
 
+    // Empty result set: a quiet centered hint instead of a bare void. The
+    // text is host-configurable (and localizable) via `GridConfig::empty_text`.
+    if data.display_row_count() == 0 && !data.empty_text.is_empty() {
+        let tw = text_w_approx(&data.empty_text, cw);
+        let tx = ox + rhw + ((sw - rhw) - tw) * 0.5;
+        let ty = oy + hdr_h + (sh - hdr_h - fs).max(0.0) * 0.35;
+        paint_txt(
+            window,
+            cx,
+            &data.empty_text,
+            tx.max(ox + rhw + 8.0),
+            ty,
+            theme.muted_text,
+            Some(sw - rhw - 16.0),
+        );
+    }
+
     if let Some((start, current)) = data.drag_rect {
         // `drag_rect` corners are grid-relative; shift by the grid origin to
         // paint them in the window's absolute coordinate space. Clipped to the
@@ -751,3 +786,31 @@ pub(crate) fn paint_status_bar(
 // Re-export MenuAction so widget code can mention it without a long path.
 #[allow(unused_imports)]
 pub(crate) use menu::MenuAction as _MenuAction;
+
+#[cfg(test)]
+mod tests {
+    use super::floor_char_boundary;
+
+    /// The truncation slice must land on char boundaries for multi-byte
+    /// input — a mid-char index would panic the paint pass.
+    #[test]
+    fn floor_char_boundary_handles_multibyte_input() {
+        let s = "a👍字م"; // ASCII, emoji (4 bytes), CJK (3), Arabic (2)
+        for idx in 0..=s.len() + 2 {
+            let b = floor_char_boundary(s, idx);
+            assert!(b <= s.len());
+            assert!(
+                s.is_char_boundary(b),
+                "idx {idx} floored to non-boundary {b}"
+            );
+            // Never floors past the char containing `idx`.
+            assert!(idx.min(s.len()) - b < 4);
+        }
+        assert_eq!(floor_char_boundary(s, 0), 0);
+        assert_eq!(floor_char_boundary(s, s.len()), s.len());
+        assert_eq!(floor_char_boundary("", 5), 0);
+        // Slicing at the floored index never panics.
+        let _ = &s[..floor_char_boundary(s, 3)];
+        let _ = &s[..floor_char_boundary(s, 6)];
+    }
+}

@@ -65,6 +65,7 @@ All formatting and behavior is externally configurable via `GridConfig` with per
 - **Strings** — case (upper/lower/title/none), max length in **characters**, truncation (ellipsis / cut-off / wrap), alignment. Truncation respects char boundaries so multi-byte input never panics.
 - **Replacement rules** — find/replace pairs applied before or after formatting.
 - **Key bindings** — `SELECT ALL`, `COPY`, `COPY WITH HEADERS`, `PAGE UP`, `PAGE DOWN`, context-menu modifier. `KeyBinding::matches` is strict about modifier sets (an unrequested modifier disqualifies the binding).
+- **Empty state** — `GridConfig::empty_text` paints a centered hint when the grid has zero rows (default "No rows", localizable, empty string to disable).
 
 ## Workspace
 
