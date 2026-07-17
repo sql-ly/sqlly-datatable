@@ -24,8 +24,8 @@ const POPOVER_PRIORITY: usize = 1_000_000;
 const FILTER_POPOVER_MAX_ROWS: usize = 200;
 
 /// Horizontal chrome between the sidebar edge and accordion content: sidebar
-/// padding (8×2), accordion border (1×2), accordion content padding (16×2).
-const SIDEBAR_CONTENT_CHROME: f32 = 50.0;
+/// padding (8×2), accordion border (1×2), accordion content padding (12×2).
+const SIDEBAR_CONTENT_CHROME: f32 = 42.0;
 /// Horizontal chrome of a drop-zone box: padding (6×2) + border (1×2).
 const ZONE_CHROME: f32 = 14.0;
 /// Horizontal chrome of a chip: padding (8×2) + border (1×2).
@@ -130,11 +130,12 @@ struct DragGhost {
     bg: gpui::Hsla,
     fg: gpui::Hsla,
     border: gpui::Hsla,
+    animations: bool,
 }
 
 impl Render for DragGhost {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let chip = div()
             .px(px(8.0))
             .h(px(CHIP_HEIGHT))
             .flex()
@@ -145,7 +146,15 @@ impl Render for DragGhost {
             .border_color(self.border)
             .text_color(self.fg)
             .text_size(px(12.0))
-            .child(self.label.clone())
+            .child(self.label.clone());
+        // The ghost is a direct extension of the pointer; a quick fade reads as
+        // the chip lifting off the sidebar rather than teleporting in.
+        crate::grid::motion::fade_in(
+            chip,
+            "pivot-drag-ghost",
+            crate::grid::motion::GHOST_ENTER_MS,
+            self.animations,
+        )
     }
 }
 
@@ -191,6 +200,7 @@ impl PivotSidebar {
         header_extra: Option<gpui::AnyElement>,
         expanded: bool,
         first: bool,
+        animations: bool,
         content: gpui::AnyElement,
     ) -> gpui::AnyElement {
         let sidebar = sidebar.clone();
@@ -202,7 +212,7 @@ impl PivotSidebar {
             .flex()
             .items_center()
             .justify_between()
-            .px(px(16.0))
+            .px(px(12.0))
             .py(px(12.0))
             .bg(theme.header_bg)
             .cursor_pointer()
@@ -239,15 +249,22 @@ impl PivotSidebar {
 
         let mut wrapper = div().flex().flex_col().child(header);
         if expanded {
-            wrapper = wrapper.child(
-                div()
-                    .px(px(16.0))
-                    .py(px(12.0))
-                    .bg(theme.menu_bg)
-                    .border_t_1()
-                    .border_color(theme.grid_line)
-                    .child(content),
-            );
+            let body = div()
+                .px(px(12.0))
+                .py(px(12.0))
+                .bg(theme.menu_bg)
+                .border_t_1()
+                .border_color(theme.grid_line)
+                .child(content);
+            // The chevron flips instantly; the revealed body fades in so the
+            // expand reads as a reveal, not a jump. No height tween — animating
+            // layout height janks, and an opacity fade is the native feel.
+            wrapper = wrapper.child(crate::grid::motion::fade_in(
+                body,
+                SharedString::from(format!("pivot-section-body-{id}")),
+                crate::grid::motion::SECTION_ENTER_MS,
+                animations,
+            ));
         }
         wrapper.into_any_element()
     }
@@ -271,10 +288,22 @@ impl PivotSidebar {
     ) -> gpui::AnyElement {
         let s = state.read(cx);
         let theme = s.theme.clone();
+        let animations = s.animations;
         let ghost_label = label.clone();
         let ghost_bg = theme.pivot_chip_bg;
         let ghost_fg = theme.pivot_chip_fg;
         let ghost_border = theme.grid_line;
+
+        // The accent-filled chip marks a field that is *placed* in a layout
+        // zone (Rows / Columns / Values / Filters). The source-list inventory
+        // (`zone == None`) is not active state, so it recedes to a quiet
+        // surface one step off the panel — the committed accent stays reserved
+        // for the placements, totals, and selection that actually carry it.
+        let (chip_bg, chip_fg) = if zone.is_some() {
+            (theme.pivot_chip_bg, theme.pivot_chip_fg)
+        } else {
+            (theme.header_bg, theme.menu_fg)
+        };
 
         let state_drop = state.clone();
         let state_remove = state.clone();
@@ -294,10 +323,10 @@ impl PivotSidebar {
             .h(px(CHIP_HEIGHT))
             .flex_none()
             .rounded(px(4.0))
-            .bg(theme.pivot_chip_bg)
+            .bg(chip_bg)
             .border_1()
             .border_color(theme.grid_line)
-            .text_color(theme.pivot_chip_fg)
+            .text_color(chip_fg)
             .text_size(px(CHIP_FONT_SIZE))
             .flex()
             .items_center()
@@ -311,6 +340,7 @@ impl PivotSidebar {
                         bg: ghost_bg,
                         fg: ghost_fg,
                         border: ghost_border,
+                        animations,
                     })
                 },
             )
@@ -559,6 +589,7 @@ impl PivotSidebar {
     ) -> gpui::AnyElement {
         let s = state.read(cx);
         let theme = s.theme.clone();
+        let animations = s.animations;
         let state_toggle = state.clone();
         let state_remove = state.clone();
 
@@ -598,6 +629,7 @@ impl PivotSidebar {
                         bg: ghost_bg,
                         fg: ghost_fg,
                         border: ghost_border,
+                        animations,
                     })
                 },
             )
@@ -720,32 +752,7 @@ impl PivotSidebar {
         let theme = state.read(cx).theme.clone();
         let state_toggle = state.clone();
         let hover_bg = theme.menu_hover_bg;
-        // Checked: accent-filled box with a knockout check (the theme's `bg`
-        // reads against the accent in both light and dark). Unchecked: an
-        // outlined empty box.
-        let boxed = div()
-            .w(px(16.0))
-            .h(px(16.0))
-            .flex_none()
-            .rounded(px(3.0))
-            .border_1()
-            .border_color(if checked {
-                theme.sort_indicator
-            } else {
-                theme.grid_line
-            })
-            .bg(if checked {
-                theme.sort_indicator
-            } else {
-                theme.menu_bg
-            })
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_size(px(12.0))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(theme.bg)
-            .children(checked.then_some("✓"));
+        let boxed = crate::grid::checkbox(checked, &theme);
         div()
             .id(SharedString::from(format!("pivot-option-{label}")))
             .flex()
@@ -810,35 +817,27 @@ impl PivotSidebar {
         let s = state.read(cx);
         let popover = s.filter_popover()?.clone();
         let theme = s.theme.clone();
+        let animations = s.animations;
         let field_name = s
             .source_columns()
             .get(popover.field)
             .map(|c| c.name.clone())
             .unwrap_or_default();
 
-        let checkbox = |checked: bool| {
-            let mut b = div()
-                .w(px(12.0))
-                .h(px(12.0))
-                .border_1()
-                .border_color(theme.grid_line)
-                .bg(theme.menu_bg)
-                .flex()
-                .items_center()
-                .justify_center();
-            if checked {
-                b = b.child(div().w(px(6.0)).h(px(6.0)).bg(theme.sort_indicator));
-            }
-            b
-        };
+        let checkbox = |checked: bool| crate::grid::checkbox(checked, &theme);
+        let hover_bg = theme.menu_hover_bg;
 
         let state_all = state.clone();
         let select_all = div()
+            .id("pivot-filter-select-all")
             .h(px(22.0))
             .flex()
             .items_center()
-            .gap(px(6.0))
+            .gap(px(8.0))
+            .px(px(4.0))
+            .rounded(px(4.0))
             .cursor_pointer()
+            .hover(move |style| style.bg(hover_bg))
             .child(checkbox(popover.all_checked()))
             .child("(Select All)")
             .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
@@ -858,11 +857,15 @@ impl PivotSidebar {
             let state_val = state.clone();
             value_rows.push(
                 div()
-                    .h(px(20.0))
+                    .id(("pivot-filter-value", i))
+                    .h(px(22.0))
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
+                    .gap(px(8.0))
+                    .px(px(4.0))
+                    .rounded(px(4.0))
                     .cursor_pointer()
+                    .hover(move |style| style.bg(hover_bg))
                     .child(checkbox(row.checked))
                     .child(div().text_color(theme.menu_fg).child(row.label.clone()))
                     .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
@@ -925,13 +928,13 @@ impl PivotSidebar {
             .flex()
             .flex_col()
             .w(px(240.0))
-            .p(px(8.0))
-            .gap(px(6.0))
+            .p(px(10.0))
+            .gap(px(8.0))
             .bg(theme.menu_bg)
             .border_1()
             .border_color(theme.grid_line)
             .text_color(theme.menu_fg)
-            .text_size(px(12.0))
+            .text_size(px(13.0))
             .child(
                 div()
                     .text_color(theme.muted_text)
@@ -964,16 +967,23 @@ impl PivotSidebar {
             anchored()
                 .anchor(Corner::TopLeft)
                 .position(point(popover.anchor.x, popover.anchor.y))
-                .child(div().occlude().child(body).on_mouse_down_out(
-                    move |_e: &MouseDownEvent, _window, cx| {
-                        state_backdrop.update(cx, |s, cx| {
-                            if s.filter_popover().is_some() {
-                                s.close_filter_popover();
-                                cx.notify();
-                            }
-                        });
-                    },
-                )),
+                .child(
+                    div()
+                        .occlude()
+                        .child(crate::grid::motion::pop_in(
+                            body,
+                            "pivot-filter-popover",
+                            animations,
+                        ))
+                        .on_mouse_down_out(move |_e: &MouseDownEvent, _window, cx| {
+                            state_backdrop.update(cx, |s, cx| {
+                                if s.filter_popover().is_some() {
+                                    s.close_filter_popover();
+                                    cx.notify();
+                                }
+                            });
+                        }),
+                ),
         )
         .with_priority(POPOVER_PRIORITY);
         Some(overlay)
@@ -992,6 +1002,7 @@ impl PivotSidebar {
         let dialog = *s.format_dialog()?;
         let fmt = s.format_dialog_format()?;
         let theme = s.theme.clone();
+        let animations = s.animations;
         let field_name = s
             .source_columns()
             .get(dialog.field)
@@ -1005,20 +1016,9 @@ impl PivotSidebar {
         let c_accent = theme.sort_indicator;
         let c_hover = theme.menu_hover_bg;
 
-        let checkbox = move |checked: bool| {
-            let mut b = div()
-                .w(px(12.0))
-                .h(px(12.0))
-                .border_1()
-                .border_color(c_line)
-                .bg(c_bg)
-                .flex()
-                .items_center()
-                .justify_center();
-            if checked {
-                b = b.child(div().w(px(6.0)).h(px(6.0)).bg(c_accent));
-            }
-            b
+        let checkbox = {
+            let theme = theme.clone();
+            move |checked: bool| crate::grid::checkbox(checked, &theme)
         };
 
         let check_row = |label: &'static str, checked: bool, apply: fn(&mut NumberFormat)| {
@@ -1232,16 +1232,23 @@ impl PivotSidebar {
             anchored()
                 .anchor(Corner::TopLeft)
                 .position(point(dialog.anchor.x, dialog.anchor.y))
-                .child(div().occlude().child(body).on_mouse_down_out(
-                    move |_e: &MouseDownEvent, _window, cx| {
-                        state_backdrop.update(cx, |s, cx| {
-                            if s.format_dialog().is_some() {
-                                s.close_format_dialog();
-                                cx.notify();
-                            }
-                        });
-                    },
-                )),
+                .child(
+                    div()
+                        .occlude()
+                        .child(crate::grid::motion::pop_in(
+                            body,
+                            "pivot-format-dialog",
+                            animations,
+                        ))
+                        .on_mouse_down_out(move |_e: &MouseDownEvent, _window, cx| {
+                            state_backdrop.update(cx, |s, cx| {
+                                if s.format_dialog().is_some() {
+                                    s.close_format_dialog();
+                                    cx.notify();
+                                }
+                            });
+                        }),
+                ),
         )
         .with_priority(POPOVER_PRIORITY);
         Some(overlay)
@@ -1250,7 +1257,7 @@ impl PivotSidebar {
 
 impl Render for PivotSidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (theme, columns, config, sidebar_width, save_handler) = {
+        let (theme, columns, config, sidebar_width, save_handler, animations) = {
             let s = self.state.read(cx);
             (
                 s.theme.clone(),
@@ -1258,6 +1265,7 @@ impl Render for PivotSidebar {
                 s.config.clone(),
                 s.sidebar_width,
                 s.save_config_handler.clone(),
+                s.animations,
             )
         };
         let content_w = sidebar_width - SIDEBAR_CONTENT_CHROME;
@@ -1293,7 +1301,7 @@ impl Render for PivotSidebar {
             .child(
                 div()
                     .text_color(theme.muted_text)
-                    .text_size(px(12.0))
+                    .text_size(px(11.0))
                     .child("Layout"),
             )
             .child(Self::option_row(
@@ -1306,7 +1314,7 @@ impl Render for PivotSidebar {
             .child(
                 div()
                     .text_color(theme.muted_text)
-                    .text_size(px(12.0))
+                    .text_size(px(11.0))
                     .child("Totals"),
             )
             .child(Self::option_row(
@@ -1345,7 +1353,7 @@ impl Render for PivotSidebar {
             .child(
                 div()
                     .text_color(theme.muted_text)
-                    .text_size(px(12.0))
+                    .text_size(px(11.0))
                     .child("Groups"),
             )
             .child(
@@ -1385,7 +1393,7 @@ impl Render for PivotSidebar {
             .child(
                 div()
                     .text_color(theme.muted_text)
-                    .text_size(px(12.0))
+                    .text_size(px(11.0))
                     .child("Export"),
             )
             .child(Self::text_button(
@@ -1528,6 +1536,7 @@ impl Render for PivotSidebar {
                 None,
                 is_expanded("fields"),
                 true,
+                animations,
                 fields.into_any_element(),
             ))
             .child(Self::section(
@@ -1538,6 +1547,7 @@ impl Render for PivotSidebar {
                 save_button,
                 is_expanded("layout"),
                 false,
+                animations,
                 layout.into_any_element(),
             ))
             .child(Self::section(
@@ -1548,6 +1558,7 @@ impl Render for PivotSidebar {
                 None,
                 is_expanded("display"),
                 false,
+                animations,
                 display.into_any_element(),
             ));
 
@@ -1565,7 +1576,8 @@ impl Render for PivotSidebar {
             .child(
                 div()
                     .text_color(theme.header_fg)
-                    .text_size(px(13.0))
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::SEMIBOLD)
                     .child("Pivot Controls"),
             )
             .child(sections)

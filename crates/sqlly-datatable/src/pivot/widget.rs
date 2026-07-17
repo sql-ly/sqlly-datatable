@@ -164,6 +164,7 @@ fn render_pivot_menu_overlay(
     let s = state.read(cx);
     let menu = s.menu.as_ref()?;
     let theme = s.theme.clone();
+    let animations = s.animations;
     let items = menu.items.clone();
     let hovered = menu.hovered;
     let cw = s.char_width;
@@ -248,18 +249,25 @@ fn render_pivot_menu_overlay(
         .children(rows);
 
     let state_backdrop = state.clone();
-    let overlay = deferred(anchored().position(point(px(abs_x), px(abs_y))).child(
-        div().occlude().child(menu_body).on_mouse_down_out(
-            move |_e: &MouseDownEvent, _window, cx| {
-                state_backdrop.update(cx, |s, cx| {
-                    if s.menu.is_some() {
-                        s.menu = None;
-                        cx.notify();
-                    }
-                });
-            },
+    let overlay = deferred(
+        anchored().position(point(px(abs_x), px(abs_y))).child(
+            div()
+                .occlude()
+                .child(crate::grid::motion::pop_in(
+                    menu_body,
+                    "pivot-context-menu",
+                    animations,
+                ))
+                .on_mouse_down_out(move |_e: &MouseDownEvent, _window, cx| {
+                    state_backdrop.update(cx, |s, cx| {
+                        if s.menu.is_some() {
+                            s.menu = None;
+                            cx.notify();
+                        }
+                    });
+                }),
         ),
-    ))
+    )
     .with_priority(PIVOT_MENU_PRIORITY);
     Some(overlay)
 }

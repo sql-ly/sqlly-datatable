@@ -5,6 +5,31 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.3] - 2026-07-17
+
+### Added
+- A restrained, native **motion layer**, on by default. Transient surfaces —
+  context menus, filter panels, popovers, the per-field format dialog, the
+  busy scrim, the pivot drag ghost, and sidebar accordion bodies — fade in on
+  appear (opacity only, ~110 ms, ease-out) instead of snapping into existence.
+  The data surface itself (cells, selection, hover, sort) stays instant by
+  design. One shared vocabulary drives every surface, so the whole crate moves
+  the same way.
+- `GridConfig::animations` (default `true`) to opt out. GPUI exposes no OS
+  reduce-motion signal, so this flag is the accessibility control: set it
+  `false` and every surface appears instantly. The pivot mirrors the flag from
+  the host grid at build time.
+
+### Changed
+- **Breaking (niche):** `GridConfig` gains an `animations: bool` field, which
+  breaks full struct-literal construction; use `..GridConfig::default()`.
+- Design consistency pass across the pivot and filter chrome: a single shared
+  checkbox affordance (previously hand-rolled at three sizes), a shared
+  cell-text inset between the flat grid and the pivot, hover states and
+  rounding on filter-checklist rows, source-list field chips that recede to a
+  quiet surface (the accent stays reserved for placed fields, totals, and
+  selection), and tightened sidebar spacing.
+
 ## [3.1.2] - 2026-07-17
 
 ### Added

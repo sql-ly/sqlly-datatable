@@ -3,9 +3,36 @@
 use gpui::{point, px, size, Bounds, TestAppContext};
 use sqlly_datatable::pivot::PivotHitResult;
 use sqlly_datatable::{
-    CellValue, Column, ColumnKind, GridData, GridTab, PivotConfig, PivotSidebarPosition,
-    SqllyDataTable,
+    CellValue, Column, ColumnKind, GridConfig, GridData, GridTab, PivotConfig,
+    PivotSidebarPosition, SqllyDataTable,
 };
+
+#[gpui::test]
+fn animations_flag_threads_from_config_into_pivot(cx: &mut TestAppContext) {
+    // The pivot renders its own transient surfaces (menu, popover, dialog,
+    // drag ghost, accordion bodies) from `PivotState`, which is built from a
+    // *snapshot* of the grid — so the motion opt-out has to be copied across at
+    // build time. This asserts that wiring: config off -> pivot off.
+    let mut cfg = GridConfig::default();
+    assert!(cfg.animations, "grid config defaults motion on");
+    cfg.animations = false;
+
+    let (view, cx) = cx.add_window_view(|_window, cx| {
+        let data = GridData::new(vec![], vec![]).expect("empty grid");
+        SqllyDataTable::builder(data)
+            .config(cfg)
+            .pivot(PivotConfig::default())
+            .build(cx)
+    });
+
+    view.update(cx, |table, cx| {
+        let pivot = table.pivot_state().expect("pivot enabled");
+        assert!(
+            !pivot.read(cx).animations,
+            "pivot mirrors the grid config's animations flag"
+        );
+    });
+}
 
 #[gpui::test]
 fn locked_pivot_stays_visible_but_rejects_activation(cx: &mut TestAppContext) {

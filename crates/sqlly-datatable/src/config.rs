@@ -342,6 +342,13 @@ pub struct GridConfig {
     /// (e.g. an empty result set). Host-supplied so it can be localized;
     /// set to an empty string to paint nothing.
     pub empty_text: String,
+    /// Whether transient surfaces (context menus, filter panels, popovers,
+    /// dialogs, the busy scrim, the pivot drag ghost) fade in on appear.
+    /// `true` by default — a fast, native entrance. GPUI exposes no OS
+    /// reduce-motion signal, so set this to `false` to honor a system "reduce
+    /// motion" preference: every surface then appears instantly. The data
+    /// surface (cells, selection, sort) is always instant regardless.
+    pub animations: bool,
 }
 
 impl Default for GridConfig {
@@ -357,6 +364,7 @@ impl Default for GridConfig {
             replacement_timing: ReplacementTiming::AfterFormat,
             column_overrides: vec![],
             empty_text: "No rows".into(),
+            animations: true,
         }
     }
 }
@@ -420,6 +428,14 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn animations_default_on() {
+        // The datatable ships motion enabled by default; hosts opt out for a
+        // reduce-motion preference. Locking the default guards against a silent
+        // flip that would ship the crate mute.
+        assert!(GridConfig::default().animations);
     }
 
     #[test]

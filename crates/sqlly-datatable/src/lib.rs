@@ -14,6 +14,11 @@
 //! * Configurable column resizing, mouse-driven scrollbars, and edge-scroll
 //!   during drag selection.
 //! * Clipboard copy of any selection (with or without headers).
+//! * A restrained native motion layer: transient surfaces (context menus,
+//!   filter panels, popovers, dialogs, the busy scrim, the pivot drag ghost)
+//!   fade in on appear, while the data surface stays instant. On by default;
+//!   set [`config::GridConfig::animations`] to `false` to honor a system
+//!   reduce-motion preference.
 //! * An optional **pivot tab** ([`SqllyDataTableBuilder::pivot`]): a
 //!   cross-tabulation view with a drag-and-drop field sidebar (rows /
 //!   columns / values / filters), count/sum/avg/min/max aggregation,

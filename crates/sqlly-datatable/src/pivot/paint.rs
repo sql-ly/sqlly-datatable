@@ -9,7 +9,7 @@
 use crate::config::{ResolvedColumnFormat, TextAlignment};
 use crate::data::CellValue;
 use crate::format::format_cell;
-use crate::grid::paint::ICON_SCALE;
+use crate::grid::paint::{CELL_TEXT_INSET, ICON_SCALE};
 use crate::grid::selection::SortDirection;
 use crate::grid::state::SCROLLBAR_SIZE;
 use crate::grid::theme::GridTheme;
@@ -447,9 +447,11 @@ pub(crate) fn paint_pivot_grid(
                         // Clamp into the cell so oversized values truncate
                         // instead of bleeding into the neighboring column.
                         let tx = match data.value_fmt.alignment() {
-                            crate::config::TextAlignment::Left => x + 8.0,
+                            crate::config::TextAlignment::Left => x + CELL_TEXT_INSET,
                             crate::config::TextAlignment::Center => x + (col_w - text_w) * 0.5,
-                            crate::config::TextAlignment::Right => x + col_w - text_w - 8.0,
+                            crate::config::TextAlignment::Right => {
+                                x + col_w - text_w - CELL_TEXT_INSET
+                            }
                         }
                         .max(x + 4.0);
                         paint_txt_weighted(

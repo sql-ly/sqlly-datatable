@@ -5,6 +5,7 @@
 
 pub mod context_menu;
 pub mod menu;
+pub(crate) mod motion;
 pub mod paint;
 pub mod selection;
 pub mod state;
@@ -27,3 +28,39 @@ pub use widget::{GridTab, PivotSidebarPosition, SqllyDataTable, SqllyDataTableBu
 
 // Inline a couple of constants that callers used to read from the `grid` mod.
 pub use state::SCROLLBAR_SIZE;
+
+use gpui::{div, prelude::*, px, Div, FontWeight};
+
+/// The single checkbox used across every filter panel, the pivot filter
+/// popover, the pivot layout options, and the per-field format dialog. One
+/// size, one style — so the same affordance never ships at three sizes again
+/// (it previously shipped at 12 / 14 / 16 px in four hand-rolled copies).
+/// Accent-filled with a knockout check when on; an outlined empty box when off.
+pub(crate) fn checkbox(checked: bool, theme: &GridTheme) -> Div {
+    let mut b = div()
+        .w(px(14.0))
+        .h(px(14.0))
+        .flex_none()
+        .rounded(px(3.0))
+        .border_1()
+        .border_color(if checked {
+            theme.sort_indicator
+        } else {
+            theme.grid_line
+        })
+        .bg(if checked {
+            theme.sort_indicator
+        } else {
+            theme.menu_bg
+        })
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(11.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.bg);
+    if checked {
+        b = b.child("✓");
+    }
+    b
+}

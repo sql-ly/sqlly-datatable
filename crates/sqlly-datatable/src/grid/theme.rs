@@ -512,6 +512,7 @@ mod wcag {
             (t.negative_fg, t.pivot_grand_total_bg, 3.0, "negative total"),
             (t.menu_fg, t.menu_bg, 7.0, "menu labels"),
             (t.menu_fg, t.menu_hover_bg, 4.5, "hovered menu label"),
+            (t.menu_fg, t.header_bg, 4.5, "source field chip label"),
             (
                 t.menu_fg,
                 t.pivot_drop_zone_bg,
@@ -540,6 +541,7 @@ mod wcag {
                 "grand total values",
             ),
             (t.pivot_chip_fg, t.pivot_chip_bg, 4.5, "chip labels"),
+            (t.bg, t.sort_indicator, 3.0, "checkbox knockout check"),
             (t.sort_indicator, t.header_bg, 3.0, "sort glyph"),
             (t.sort_indicator, t.menu_bg, 4.5, "sidebar sort glyph"),
             (t.sort_indicator, t.bg, 3.0, "grouped-column underline"),

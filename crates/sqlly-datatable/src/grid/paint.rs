@@ -214,6 +214,12 @@ fn fill_quad(window: &mut Window, x: f32, y: f32, w: f32, h: f32, color: Hsla) {
 /// the active-filter marker), relative to the grid font size.
 pub(crate) const ICON_SCALE: f32 = 4.0 / 3.0;
 
+/// Horizontal padding between a cell's edge and its text, in pixels. Shared by
+/// the flat grid and the pivot grid so both data surfaces gutter their cells
+/// identically (the pivot's tighter 4px floors are a separate min-clamp for
+/// narrow numeric columns).
+pub(crate) const CELL_TEXT_INSET: f32 = 8.0;
+
 /// Glyph painted next to a column's sort button while a filter is active on
 /// it. An emoji, so it renders from the system color-emoji fallback rather
 /// than the grid's text color.
@@ -549,15 +555,15 @@ pub(crate) fn paint_grid(
                 if let Some(shaped) = shape_fitted(
                     &text,
                     color,
-                    Some(w - 16.0),
+                    Some(w - 2.0 * CELL_TEXT_INSET),
                     is_null && fmt.null.italic,
                     false,
                 ) {
                     let text_w = f32::from(shaped.width);
                     let tx = match fmt.alignment() {
-                        crate::config::TextAlignment::Left => x + 8.0,
+                        crate::config::TextAlignment::Left => x + CELL_TEXT_INSET,
                         crate::config::TextAlignment::Center => x + (w - text_w) * 0.5,
-                        crate::config::TextAlignment::Right => x + w - text_w - 8.0,
+                        crate::config::TextAlignment::Right => x + w - text_w - CELL_TEXT_INSET,
                     };
                     let _ = shaped.paint(
                         Point {

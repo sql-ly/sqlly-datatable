@@ -305,6 +305,10 @@ pub struct PivotState {
 
     /// Theme shared with the host grid.
     pub theme: GridTheme,
+    /// Mirrors [`crate::GridConfig::animations`]: whether the pivot's transient
+    /// surfaces (menu, filter popover, format dialog, drag ghost, accordion
+    /// bodies) fade in on appear. Set from the host grid's config at build time.
+    pub animations: bool,
     pub(crate) key_bindings: KeyBindings,
     /// Scroll offset of the data region.
     pub scroll_handle: ScrollHandle,
@@ -367,6 +371,7 @@ impl PivotState {
             hover_hit: None,
             scrollbar_drag: None,
             theme: GridTheme::default(),
+            animations: true,
             key_bindings,
             scroll_handle: ScrollHandle::new(),
             focus_handle,
@@ -376,8 +381,10 @@ impl PivotState {
             header_row_height: 26.0,
             row_header_width: 220.0,
             value_col_width: DEFAULT_PIVOT_COLUMN_WIDTH,
-            font_size: 13.0,
-            char_width: crate::grid::paint::default_char_width(13.0),
+            // Match the flat grid's cell font (grid/state.rs) so cell text
+            // doesn't change size when the user toggles Grid ↔ Pivot.
+            font_size: 14.0,
+            char_width: crate::grid::paint::default_char_width(14.0),
             resize_drag: None,
         };
         state.recompute();

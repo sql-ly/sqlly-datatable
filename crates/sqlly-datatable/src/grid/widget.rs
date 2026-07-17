@@ -351,7 +351,7 @@ fn build_pivot_parts(
     column_width: f32,
     cx: &mut App,
 ) -> PivotParts {
-    let (columns, rows, formats, key_bindings, theme) = {
+    let (columns, rows, formats, key_bindings, theme, animations) = {
         let s = grid_state.read(cx);
         (
             s.data.columns.clone(),
@@ -359,12 +359,14 @@ fn build_pivot_parts(
             s.resolved_formats.as_ref().clone(),
             s.config.key_bindings.clone(),
             s.theme.clone(),
+            s.config.animations,
         )
     };
     let focus = cx.focus_handle();
     let state = cx.new(|_| {
         let mut ps = PivotState::new(columns, rows, formats, config, key_bindings, focus);
         ps.theme = theme;
+        ps.animations = animations;
         ps.context_menu_provider = menu_provider;
         ps.save_config_handler = save_config_handler;
         ps.set_row_height(row_height);
@@ -1165,6 +1167,7 @@ fn render_context_menu_overlay(
     let s = state.read(cx);
     let menu = s.context_menu.clone()?;
     let theme = s.theme.clone();
+    let animations = s.config.animations;
     let cw = s.char_width;
     let grid_ox = f32::from(s.bounds.origin.x);
     let grid_oy = f32::from(s.bounds.origin.y);
@@ -1274,19 +1277,26 @@ fn render_context_menu_overlay(
     // Full-window transparent backdrop: catches clicks outside the menu to
     // dismiss it. Placed behind the menu within the same anchored overlay.
     let state_backdrop = state.clone();
-    let overlay = deferred(anchored().position(point(px(abs_x), px(abs_y))).child(
-        div().occlude().child(menu_body).on_mouse_down_out(
-            move |_e: &MouseDownEvent, _window, cx| {
-                state_backdrop.update(cx, |s, cx| {
-                    if s.context_menu.is_some() {
-                        s.context_menu = None;
-                        s.filter_panel = None;
-                        cx.notify();
-                    }
-                });
-            },
+    let overlay = deferred(
+        anchored().position(point(px(abs_x), px(abs_y))).child(
+            div()
+                .occlude()
+                .child(crate::grid::motion::pop_in(
+                    menu_body,
+                    "grid-context-menu",
+                    animations,
+                ))
+                .on_mouse_down_out(move |_e: &MouseDownEvent, _window, cx| {
+                    state_backdrop.update(cx, |s, cx| {
+                        if s.context_menu.is_some() {
+                            s.context_menu = None;
+                            s.filter_panel = None;
+                            cx.notify();
+                        }
+                    });
+                }),
         ),
-    ))
+    )
     .with_priority(CONTEXT_MENU_PRIORITY);
 
     Some(overlay)
@@ -1309,6 +1319,7 @@ fn render_filter_panel_overlay(
     let s = state.read(cx);
     let panel = s.filter_panel.clone()?;
     let theme = s.theme.clone();
+    let animations = s.config.animations;
     let col = panel.col;
     let current_sort = s.sort;
     let filter_active = s.filters.get(col).is_some_and(|f| f.is_active());
@@ -1330,20 +1341,9 @@ fn render_filter_panel_overlay(
     let c_hover = theme.menu_hover_bg;
     let c_muted = theme.muted_text;
 
-    let checkbox = move |checked: bool| {
-        let mut b = div()
-            .w(px(14.0))
-            .h(px(14.0))
-            .border_1()
-            .border_color(c_line)
-            .bg(c_bg)
-            .flex()
-            .items_center()
-            .justify_center();
-        if checked {
-            b = b.child(div().w(px(8.0)).h(px(8.0)).bg(c_accent));
-        }
-        b
+    let checkbox = {
+        let theme = theme.clone();
+        move |checked: bool| crate::grid::checkbox(checked, &theme)
     };
 
     // --- Sort row -----------------------------------------------------------
@@ -1543,11 +1543,15 @@ fn render_filter_panel_overlay(
     // --- (Select All) + value checklist ------------------------------------
     let st_all = state.clone();
     let select_all_row = div()
+        .id("filter-select-all")
         .h(px(24.0))
         .flex()
         .items_center()
         .gap(px(6.0))
+        .px(px(4.0))
+        .rounded(px(4.0))
         .cursor_pointer()
+        .hover(move |style| style.bg(c_hover))
         .child(checkbox(panel.all_checked()))
         .child("(Select All)")
         .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
@@ -1564,11 +1568,15 @@ fn render_filter_panel_overlay(
         let st_val = state.clone();
         value_rows.push(
             div()
+                .id(("filter-value", idx))
                 .h(px(22.0))
                 .flex()
                 .items_center()
                 .gap(px(6.0))
+                .px(px(4.0))
+                .rounded(px(4.0))
                 .cursor_pointer()
+                .hover(move |style| style.bg(c_hover))
                 .child(checkbox(row.checked))
                 .child(div().text_color(c_fg).child(row.label.clone()))
                 .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
@@ -1679,16 +1687,23 @@ fn render_filter_panel_overlay(
         anchored()
             .anchor(Corner::BottomLeft)
             .position(point(px(abs_x), px(abs_y)))
-            .child(div().occlude().child(panel_body).on_mouse_down_out(
-                move |_e: &MouseDownEvent, _window, cx| {
-                    st_backdrop.update(cx, |s, cx| {
-                        if s.filter_panel.is_some() {
-                            s.filter_panel = None;
-                            cx.notify();
-                        }
-                    });
-                },
-            )),
+            .child(
+                div()
+                    .occlude()
+                    .child(crate::grid::motion::pop_in(
+                        panel_body,
+                        "grid-filter-panel",
+                        animations,
+                    ))
+                    .on_mouse_down_out(move |_e: &MouseDownEvent, _window, cx| {
+                        st_backdrop.update(cx, |s, cx| {
+                            if s.filter_panel.is_some() {
+                                s.filter_panel = None;
+                                cx.notify();
+                            }
+                        });
+                    }),
+            ),
     )
     .with_priority(CONTEXT_MENU_PRIORITY);
 
@@ -1707,6 +1722,7 @@ fn render_busy_overlay(
     let s = state.read(cx);
     let busy = s.busy.clone()?;
     let theme = s.theme.clone();
+    let animations = s.config.animations;
     let track = theme.grid_line;
     let accent = theme.sort_indicator;
 
@@ -1771,7 +1787,12 @@ fn render_busy_overlay(
         .bg(theme.overlay_scrim)
         .child(card);
 
-    Some(overlay)
+    Some(crate::grid::motion::fade_in(
+        overlay,
+        "grid-busy-overlay",
+        crate::grid::motion::SCRIM_ENTER_MS,
+        animations,
+    ))
 }
 
 /// What a menu row dispatches when clicked. Captured per-row so the click
