@@ -220,10 +220,45 @@ pub(crate) const ICON_SCALE: f32 = 4.0 / 3.0;
 /// narrow numeric columns).
 pub(crate) const CELL_TEXT_INSET: f32 = 8.0;
 
-/// Glyph painted next to a column's sort button while a filter is active on
-/// it. An emoji, so it renders from the system color-emoji fallback rather
-/// than the grid's text color.
-const FILTER_ICON: &str = "🔽";
+/// Paint a small filled triangle caret pointing right (collapsed) or down
+/// (expanded) inside a `size`-square box at `(x, y)`. Vector paint rather
+/// than a font glyph, so it renders identically on every platform — the web
+/// build's embedded fonts have no ▶ / ▼ coverage.
+pub(crate) fn paint_caret(window: &mut Window, x: f32, y: f32, size: f32, down: bool, color: Hsla) {
+    let mut b = gpui::PathBuilder::fill();
+    let inset = size * 0.22;
+    if down {
+        b.move_to(point(px(x + inset), px(y + size * 0.34)));
+        b.line_to(point(px(x + size - inset), px(y + size * 0.34)));
+        b.line_to(point(px(x + size * 0.5), px(y + size - inset)));
+    } else {
+        b.move_to(point(px(x + size * 0.34), px(y + inset)));
+        b.line_to(point(px(x + size * 0.34), px(y + size - inset)));
+        b.line_to(point(px(x + size - inset), px(y + size * 0.5)));
+    }
+    b.close();
+    if let Ok(path) = b.build() {
+        window.paint_path(path, color);
+    }
+}
+
+/// Paint a small filter funnel inside a `size`-square box at `(x, y)`.
+/// Replaces the old "🔽" emoji marker, which the web build cannot render
+/// (no color-emoji font is embedded).
+pub(crate) fn paint_funnel(window: &mut Window, x: f32, y: f32, size: f32, color: Hsla) {
+    let mut b = gpui::PathBuilder::fill();
+    let pt = |fx: f32, fy: f32| point(px(x + fx * size), px(y + fy * size));
+    b.move_to(pt(0.02, 0.10));
+    b.line_to(pt(0.98, 0.10));
+    b.line_to(pt(0.62, 0.55));
+    b.line_to(pt(0.62, 0.92));
+    b.line_to(pt(0.38, 0.92));
+    b.line_to(pt(0.38, 0.55));
+    b.close();
+    if let Ok(path) = b.build() {
+        window.paint_path(path, color);
+    }
+}
 
 pub(crate) fn paint_scrollbars(
     data: &PaintData,
@@ -401,7 +436,14 @@ pub(crate) fn paint_grid(
                             italic: bool,
                             bold: bool| {
         if let Some(shaped) = shape_fitted(text, color, max_w, italic, bold) {
-            let _ = shaped.paint(Point { x: px(x), y: px(y) }, line_height, win, cx);
+            let _ = shaped.paint(
+                Point { x: px(x), y: px(y) },
+                line_height,
+                gpui::TextAlign::Left,
+                None,
+                win,
+                cx,
+            );
         }
     };
     let paint_txt = |win: &mut Window,
@@ -438,7 +480,14 @@ pub(crate) fn paint_grid(
                 strikethrough: None,
             };
             let shaped = text_system.shape_line(text.to_owned().into(), icon_fs, &[run], None);
-            let _ = shaped.paint(Point { x: px(x), y: px(y) }, icon_line_height, win, cx);
+            let _ = shaped.paint(
+                Point { x: px(x), y: px(y) },
+                icon_line_height,
+                gpui::TextAlign::Left,
+                None,
+                win,
+                cx,
+            );
         };
 
     fill_quad(window, ox, oy, sw, sh, theme.bg);
@@ -478,7 +527,10 @@ pub(crate) fn paint_grid(
 
     // Row backgrounds and horizontal grid lines stop at the last column's
     // right edge; the area past the columns stays blank.
-    let cols_w = (content_w - sx).clamp(0.0, sw - rhw);
+    // `.max(0.0)` on the upper bound: on the web the first frame can paint
+    // with zero-sized bounds, where `sw - rhw` goes negative and an inverted
+    // `clamp` range panics.
+    let cols_w = (content_w - sx).clamp(0.0, (sw - rhw).max(0.0));
     let cells_clip = clip(ox + rhw, oy + data_y, sw - rhw - rsv_w, sh - data_y - rsv_h);
     window.with_content_mask(cells_clip, |window| {
         for dr in first_row..last_row {
@@ -571,6 +623,8 @@ pub(crate) fn paint_grid(
                             y: px(ty),
                         },
                         line_height,
+                        gpui::TextAlign::Left,
+                        None,
                         window,
                         cx,
                     );
@@ -676,6 +730,8 @@ pub(crate) fn paint_grid(
                         y: px(label_y),
                     },
                     line_height,
+                    gpui::TextAlign::Left,
+                    None,
                     window,
                     cx,
                 );
@@ -737,14 +793,12 @@ pub(crate) fn paint_grid(
                 );
             }
             if data.filters_active[ci] {
-                paint_icon(
+                paint_funnel(
                     window,
-                    cx,
-                    FILTER_ICON,
                     btn_x - fs * ICON_SCALE - 4.0,
                     oy + (hdr_h - fs * ICON_SCALE) * 0.5,
+                    fs * ICON_SCALE,
                     theme.sort_indicator,
-                    false,
                 );
             }
             fill_quad(window, x + w, oy, 1.0, hdr_h, theme.grid_line);
@@ -777,6 +831,8 @@ pub(crate) fn paint_grid(
                     y: px(ty),
                 },
                 line_height,
+                gpui::TextAlign::Left,
+                None,
                 window,
                 cx,
             );
@@ -873,6 +929,8 @@ pub(crate) fn paint_status_bar(
             y: px(oy + (sh - fs) * 0.5),
         },
         line_height,
+        gpui::TextAlign::Left,
+        None,
         window,
         cx,
     );

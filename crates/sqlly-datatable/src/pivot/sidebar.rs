@@ -13,10 +13,11 @@ use crate::pivot::config::PivotZone;
 use crate::pivot::state::PivotState;
 
 use gpui::{
-    anchored, deferred, div, point, px, App, AppContext as _, Context, Corner, Entity, FontWeight,
+    anchored, deferred, div, point, px, Anchor, App, AppContext as _, Context, Entity, FontWeight,
     InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement,
     Render, SharedString, StatefulInteractiveElement, Styled, Window,
 };
+use gpui_component::{Icon, IconName};
 
 /// Draw priority for the filter popover overlay (matches the grid's menus).
 const POPOVER_PRIORITY: usize = 1_000_000;
@@ -241,7 +242,11 @@ impl PivotSidebar {
                 div()
                     .text_size(px(12.0))
                     .text_color(theme.muted_text)
-                    .child(if expanded { "▼" } else { "▶" }),
+                    .child(Icon::new(if expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })),
             );
         if !first {
             header = header.border_t_1().border_color(theme.grid_line);
@@ -313,7 +318,9 @@ impl PivotSidebar {
             available -= CHIP_GAP + measure_text(window, marker, MARKER_FONT_SIZE);
         }
         if removable {
-            available -= CHIP_GAP + measure_text(window, "✕", CHIP_FONT_SIZE);
+            // The remove affordance is a square lucide icon sized to the chip
+            // font (icons inherit the cascaded text size).
+            available -= CHIP_GAP + CHIP_FONT_SIZE;
         }
         let chopped = measure_text(window, &label, CHIP_FONT_SIZE) > available + 0.5;
 
@@ -384,7 +391,7 @@ impl PivotSidebar {
                     .flex_none()
                     .text_color(theme.muted_text)
                     .cursor_pointer()
-                    .child("✕")
+                    .child(Icon::new(IconName::Close))
                     .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
                         cx.stop_propagation();
                         state_remove.update(cx, |s, cx| {
@@ -600,10 +607,14 @@ impl PivotSidebar {
         let ghost_fg = theme.pivot_chip_fg;
         let ghost_border = theme.grid_line;
 
-        let arrow = if menu_open { "▲" } else { "▼" };
-        let available = label_budget
-            - (CHIP_GAP + measure_text(window, arrow, CHIP_FONT_SIZE))
-            - (CHIP_GAP + measure_text(window, "✕", CHIP_FONT_SIZE));
+        // Aggregation-picker chevron and remove button are square lucide
+        // icons sized to the chip font.
+        let arrow = Icon::new(if menu_open {
+            IconName::ChevronUp
+        } else {
+            IconName::ChevronDown
+        });
+        let available = label_budget - (CHIP_GAP + CHIP_FONT_SIZE) - (CHIP_GAP + CHIP_FONT_SIZE);
         let chopped = measure_text(window, &caption, CHIP_FONT_SIZE) > available + 0.5;
 
         let mut chip = div()
@@ -662,7 +673,7 @@ impl PivotSidebar {
                     .flex_none()
                     .text_color(theme.muted_text)
                     .cursor_pointer()
-                    .child("✕")
+                    .child(Icon::new(IconName::Close))
                     .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
                         cx.stop_propagation();
                         state_remove.update(cx, |s, cx| {
@@ -965,7 +976,7 @@ impl PivotSidebar {
         let state_backdrop = state.clone();
         let overlay = deferred(
             anchored()
-                .anchor(Corner::TopLeft)
+                .anchor(Anchor::TopLeft)
                 .position(point(popover.anchor.x, popover.anchor.y))
                 .child(
                     div()
@@ -1230,7 +1241,7 @@ impl PivotSidebar {
         let state_backdrop = state.clone();
         let overlay = deferred(
             anchored()
-                .anchor(Corner::TopLeft)
+                .anchor(Anchor::TopLeft)
                 .position(point(dialog.anchor.x, dialog.anchor.y))
                 .child(
                     div()

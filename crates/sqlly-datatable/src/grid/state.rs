@@ -1051,11 +1051,11 @@ impl GridState {
         let background = cx.background_executor().clone();
         cx.spawn(async move |cx| {
             // Paint the overlay before starting the heavy work.
-            let _ = cx.update(|app| {
+            cx.update(|app| {
                 let _ = weak.update(app, |_s, c| c.notify());
             });
             let result = background.spawn(async move { work() }).await;
-            let _ = cx.update(|app| {
+            cx.update(|app| {
                 let _ = weak.update(app, |s, c| {
                     s.busy = None;
                     on_done(result, s, c);
@@ -2826,7 +2826,7 @@ mod tests {
     }
 
     /// `GridState` requires a real GPUI `FocusHandle` from
-    /// `gpui::Application`, but `gpui::Application::new()` panics on any
+    /// `gpui::Application`, but `gpui_platform::headless()` panics on any
     /// thread other than `main`. Since Rust's test runner executes on a
     /// worker pool, the GPUI-backed assertions cannot run alongside pure
     /// tests. We mark this test `#[ignore]` so `cargo test` stays green; run
@@ -2836,7 +2836,7 @@ mod tests {
     #[test]
     #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
     fn grid_state_behavior_under_application() {
-        gpui::Application::new().run(|cx| {
+        gpui_platform::headless().run(|cx| {
             let focus = cx.focus_handle();
 
             // format_current_status_handles_initial_state
@@ -2981,7 +2981,7 @@ mod tests {
     fn context_menu_request_construction() {
         use crate::grid::context_menu::ContextMenuTarget;
 
-        gpui::Application::new().run(|cx| {
+        gpui_platform::headless().run(|cx| {
             let focus = cx.focus_handle();
 
             // 3 rows, 2 columns. Sort descending so display_indices != source.
@@ -3088,7 +3088,7 @@ mod tests {
     #[test]
     #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
     fn effective_selection_for_context_target() {
-        gpui::Application::new().run(|cx| {
+        gpui_platform::headless().run(|cx| {
             let focus = cx.focus_handle();
             let mut state = GridState::new(
                 GridData::new(
@@ -3158,7 +3158,7 @@ mod tests {
     #[test]
     #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
     fn context_menu_target_from_hit_maps_correctly() {
-        gpui::Application::new().run(|cx| {
+        gpui_platform::headless().run(|cx| {
             let focus = cx.focus_handle();
             let state = GridState::new(
                 GridData::new(
@@ -3269,7 +3269,7 @@ mod tests {
             }
         }
 
-        gpui::Application::new().run(|cx| {
+        gpui_platform::headless().run(|cx| {
             let focus = cx.focus_handle();
             let mut state = GridState::new(
                 GridData::new(
@@ -3463,7 +3463,7 @@ mod tests {
     #[test]
     #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
     fn filter_panel_open_apply_clear_state_flow() {
-        gpui::Application::new().run(|cx| {
+        gpui_platform::headless().run(|cx| {
             let focus = cx.focus_handle();
             let mut state = GridState::new(
                 GridData::new(

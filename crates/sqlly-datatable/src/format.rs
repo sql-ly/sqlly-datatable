@@ -11,7 +11,13 @@ use crate::config::{
 };
 use crate::data::{CellValue, ColumnKind};
 
+// `std::time::SystemTime::now()` is unimplemented on wasm32-unknown-unknown
+// (it panics), so the web build reads the clock through `web-time`, which has
+// an identical API backed by the JS `Date`.
+#[cfg(not(target_family = "wasm"))]
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(target_family = "wasm")]
+use web_time::{SystemTime, UNIX_EPOCH};
 
 /// Format any cell into the user-visible text plus a "is negative" flag that
 /// lets paint code color it red without re-parsing the text.

@@ -48,16 +48,19 @@
 //!     CellValue, Column, ColumnKind, GridConfig, GridData, SqllyDataTable,
 //! };
 //!
-//! let data = GridData::new(
-//!     vec![Column { name: "id".into(), kind: ColumnKind::Integer, width: 80.0 }],
-//!     vec![vec![CellValue::Integer(1)], vec![CellValue::Integer(2)]],
-//! ).expect("rectangular data");
-//! let app = gpui::Application::new();
-//! app.run(|cx: &mut App| {
+//! // Inside your `application().run(...)` closure (see the sample app for a
+//! // full bootstrap using `gpui_platform::application()`):
+//! fn setup(cx: &mut App) {
+//!     sqlly_datatable::init(cx);
+//!
+//!     let data = GridData::new(
+//!         vec![Column { name: "id".into(), kind: ColumnKind::Integer, width: 80.0 }],
+//!         vec![vec![CellValue::Integer(1)], vec![CellValue::Integer(2)]],
+//!     ).expect("rectangular data");
 //!     let _view = SqllyDataTable::builder(data)
 //!         .config(GridConfig::default())
 //!         .build(cx);
-//! });
+//! }
 //! ```
 //!
 //! See `crates/sqlly-datatable-sample` for a runnable demo.
@@ -75,6 +78,24 @@ pub mod filter;
 pub mod format;
 pub mod grid;
 pub mod pivot;
+
+// Re-exported so hosts can call `gpui_component` APIs (theme switching,
+// `Root`, other widgets) against the exact version this crate links,
+// guaranteeing type identity for globals like `gpui_component::Theme`.
+pub use gpui_component;
+// Re-exported so hosts can install the lucide icon SVGs this crate's chrome
+// renders (chevrons, close buttons, panel toggles, checkmarks):
+//
+// ```no_run
+// gpui_platform::application().with_assets(sqlly_datatable::gpui_component_assets::Assets)
+// # ;
+// ```
+//
+// Without an asset source providing `icons/*.svg`, those icons render empty
+// (with an error logged per icon). On the web, `Assets::new(endpoint)`
+// fetches them from `{endpoint}/assets/icons/` instead of embedding; the
+// endpoint must be an absolute URL (see the sample's `web::run`).
+pub use gpui_component_assets;
 
 pub use config::{
     BooleanFormat, ColumnOverride, DateFormat, GridConfig, KeyBinding, KeyBindings, NullFormat,
@@ -97,5 +118,26 @@ pub use pivot::{
     PivotContextMenuRequest, PivotFormatDialog, PivotGrid, PivotMenuItem, PivotMenuTarget,
     PivotPathComponent, PivotResult, PivotSaveConfigHandler, PivotSidebar, PivotSortKey,
     PivotState, PivotZone, DEFAULT_PIVOT_COLUMN_WIDTH, DEFAULT_PIVOT_ROW_HEIGHT,
-    DEFAULT_PIVOT_SIDEBAR_WIDTH, MIN_PIVOT_COLUMN_WIDTH, MIN_PIVOT_ROW_HEIGHT,
+    DEFAULT_PIVOT_SIDEBAR_WIDTH, MIN_PIVOT_COLUMN_WIDTH, MIN_PIVOT_ROW_HEADER_WIDTH,
+    MIN_PIVOT_ROW_HEIGHT,
 };
+
+/// Initialize the toolkit state this crate's widgets depend on. Call once at
+/// application startup, before opening any window that hosts a
+/// [`SqllyDataTable`]:
+///
+/// ```no_run
+/// fn setup(cx: &mut gpui::App) {
+///     sqlly_datatable::init(cx);
+///     // ... open windows ...
+/// }
+/// ```
+///
+/// This currently forwards to [`gpui_component::init`], which installs the
+/// global [`gpui_component::Theme`] used by the embedded `gpui-component`
+/// widgets (for example the pivot sidebar's resizable divider). Skipping it
+/// panics on first render of those widgets. Hosts that already call
+/// `gpui_component::init` themselves do not need to call this again.
+pub fn init(cx: &mut gpui::App) {
+    gpui_component::init(cx);
+}

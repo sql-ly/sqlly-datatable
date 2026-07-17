@@ -25,13 +25,14 @@ use crate::pivot::widget::PivotGrid;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    anchored, canvas, deferred, div, point, pulsating_between, px, relative, Animation,
-    AnimationExt, App, AppContext, Context, Corner, Div, Entity, FocusHandle, Focusable,
+    anchored, canvas, deferred, div, point, pulsating_between, px, relative, Anchor, Animation,
+    AnimationExt, App, AppContext, Context, Div, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, Render, ScrollWheelEvent, StatefulInteractiveElement, Styled,
     Window,
 };
-use gpui_ui_kit::pane_divider::{CollapseDirection, PaneDivider, PaneDividerTheme};
+use gpui_component::resizable::{h_resizable, resizable_panel, ResizableState};
+use gpui_component::{Icon, IconName};
 use std::sync::Arc;
 
 /// Draw order for the context-menu overlay. Deliberately far above any
@@ -64,12 +65,6 @@ pub enum PivotSidebarPosition {
     Right,
 }
 
-#[derive(Clone, Copy)]
-struct PivotSidebarDrag {
-    start_x: f32,
-    start_width: f32,
-}
-
 /// The entities backing the pivot tab. Created when pivoting is enabled.
 pub(crate) struct PivotParts {
     pub(crate) state: Entity<PivotState>,
@@ -92,7 +87,21 @@ pub struct SqllyDataTable {
     pivot_sidebar_position: PivotSidebarPosition,
     pivot_sidebar_collapsed: bool,
     pivot_sidebar_width: f32,
-    pivot_sidebar_drag: Option<PivotSidebarDrag>,
+    /// Split state owned by `gpui-component`'s resizable panel group. Created
+    /// lazily on the first pivot render; dropped (and thus re-seeded from
+    /// `pivot_sidebar_width`) when the sidebar switches sides, because panel
+    /// sizes in the group state are positional.
+    pivot_sidebar_resize: Option<Entity<ResizableState>>,
+    /// Set when `set_pivot_sidebar_width` is called so the next render pushes
+    /// the programmatic width into the resizable group state (which is
+    /// otherwise authoritative once the user has dragged the divider).
+    pivot_sidebar_width_dirty: bool,
+    /// Human-readable description of the column filters applied by the most
+    /// recent pivot drill-through (e.g. `region = East, txn_type = Sale`).
+    /// While set, the Grid tab shows a banner naming the filter with a
+    /// one-click clear; cleared by [`SqllyDataTable::clear_drill_filter`] or
+    /// replaced by the next drill.
+    drill_filter: Option<String>,
     /// When `true`, the grid swaps between the built-in light/dark
     /// [`GridTheme`] palettes to follow the OS window appearance. Disabled
     /// automatically when the caller supplies an explicit theme override.
@@ -116,7 +125,9 @@ impl SqllyDataTable {
             pivot_sidebar_position: PivotSidebarPosition::Left,
             pivot_sidebar_collapsed: false,
             pivot_sidebar_width: DEFAULT_PIVOT_SIDEBAR_WIDTH,
-            pivot_sidebar_drag: None,
+            pivot_sidebar_resize: None,
+            pivot_sidebar_width_dirty: false,
+            drill_filter: None,
             follow_system_appearance: true,
             appearance_subscription: None,
         }
@@ -194,8 +205,12 @@ impl SqllyDataTable {
 
     /// Move the pivot control panel to the left or right of the pivot grid.
     pub fn set_pivot_sidebar_position(&mut self, position: PivotSidebarPosition) {
+        if self.pivot_sidebar_position != position {
+            // Panel sizes in the resizable group state are positional, so a
+            // side switch must re-seed the group from `pivot_sidebar_width`.
+            self.pivot_sidebar_resize = None;
+        }
         self.pivot_sidebar_position = position;
-        self.pivot_sidebar_drag = None;
     }
 
     /// Whether the pivot control panel is collapsed into its divider.
@@ -207,7 +222,6 @@ impl SqllyDataTable {
     /// Collapse or expand the pivot control panel.
     pub fn set_pivot_sidebar_collapsed(&mut self, collapsed: bool) {
         self.pivot_sidebar_collapsed = collapsed;
-        self.pivot_sidebar_drag = None;
     }
 
     /// Current width of the expanded pivot control panel, in pixels.
@@ -219,6 +233,31 @@ impl SqllyDataTable {
     /// Resize the pivot control panel, clamped to its supported range.
     pub fn set_pivot_sidebar_width(&mut self, width: f32) {
         self.pivot_sidebar_width = width.clamp(MIN_PIVOT_SIDEBAR_WIDTH, MAX_PIVOT_SIDEBAR_WIDTH);
+        self.pivot_sidebar_width_dirty = true;
+    }
+
+    /// Human-readable description of the column filters applied by the most
+    /// recent pivot drill-through, while they are still marked as such. The
+    /// Grid tab shows this in a banner with a one-click clear.
+    #[must_use]
+    pub fn drill_filter(&self) -> Option<&str> {
+        self.drill_filter.as_deref()
+    }
+
+    /// Clear the filters applied by a pivot drill-through: every column
+    /// filter is reset and the Grid tab's drill banner is dismissed.
+    pub fn clear_drill_filter(&mut self, cx: &mut Context<Self>) {
+        if self.drill_filter.take().is_none() {
+            return;
+        }
+        self.state.update(cx, |g, cx| {
+            for filter in &mut g.filters {
+                *filter = ColumnFilter::default();
+            }
+            g.recompute();
+            cx.notify();
+        });
+        cx.notify();
     }
 
     /// Lock or unlock the pivot tab while keeping it visible. `status` is
@@ -587,7 +626,9 @@ impl SqllyDataTableBuilder {
             pivot_sidebar_position,
             pivot_sidebar_collapsed,
             pivot_sidebar_width,
-            pivot_sidebar_drag: None,
+            pivot_sidebar_resize: None,
+            pivot_sidebar_width_dirty: false,
+            drill_filter: None,
             follow_system_appearance,
             appearance_subscription: None,
         }
@@ -668,6 +709,7 @@ impl Render for SqllyDataTable {
         if let Some(parts) = &self.pivot {
             let drill = parts.state.update(cx, |s, _cx| s.take_pending_drill_down());
             if let Some(filter_sets) = drill {
+                let mut applied = false;
                 self.state.update(cx, |g, cx| {
                     // Filters are unsupported in windowed-row mode; the
                     // drill-through is skipped rather than presenting a
@@ -676,21 +718,26 @@ impl Render for SqllyDataTable {
                         for filter in &mut g.filters {
                             *filter = ColumnFilter::default();
                         }
-                        for (field, values) in filter_sets {
-                            if let Some(slot) = g.filters.get_mut(field) {
+                        for (field, values) in &filter_sets {
+                            if let Some(slot) = g.filters.get_mut(*field) {
                                 *slot = ColumnFilter {
                                     predicate: FilterPredicate::None,
-                                    values: Some(values),
+                                    values: Some(values.clone()),
                                 };
                             }
                         }
                         g.recompute();
+                        applied = true;
                     }
                     cx.notify();
                 });
+                if applied {
+                    self.drill_filter =
+                        Some(drill_filter_label(&self.state.read(cx).data, &filter_sets));
+                }
                 self.active_tab = GridTab::Grid;
                 let focus = self.state.read(cx).focus_handle.clone();
-                window.focus(&focus);
+                window.focus(&focus, cx);
                 cx.notify();
             }
         }
@@ -738,12 +785,12 @@ impl Render for SqllyDataTable {
                             match this_tab {
                                 GridTab::Grid => {
                                     let focus = this.state.read(cx).focus_handle.clone();
-                                    window.focus(&focus);
+                                    window.focus(&focus, cx);
                                 }
                                 GridTab::Pivot => {
                                     if let Some(p) = &this.pivot {
                                         let focus = p.state.read(cx).focus_handle.clone();
-                                        window.focus(&focus);
+                                        window.focus(&focus, cx);
                                     }
                                 }
                             }
@@ -781,106 +828,292 @@ impl Render for SqllyDataTable {
             ));
 
         let content: gpui::AnyElement = match self.active_tab {
-            GridTab::Grid => grid_view.into_any_element(),
+            GridTab::Grid => {
+                // While a pivot drill-through's filters are active, a banner
+                // names them and offers a one-click clear — otherwise the
+                // filtered grid is indistinguishable from the full dataset.
+                if let Some(label) = self.drill_filter.clone() {
+                    let table_clear = cx.entity().clone();
+                    let hover_bg = theme.menu_hover_bg;
+                    let banner = div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.0))
+                        .px(px(10.0))
+                        .py(px(4.0))
+                        .bg(theme.filter_active_bg)
+                        .border_b_1()
+                        .border_color(theme.grid_line)
+                        .text_size(px(12.0))
+                        .text_color(theme.header_fg)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .child(format!("Filtered from pivot: {label}")),
+                        )
+                        .child(
+                            div()
+                                .id("clear-drill-filter")
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(px(4.0))
+                                .px(px(6.0))
+                                .py(px(2.0))
+                                .rounded(px(4.0))
+                                .cursor_pointer()
+                                .hover(move |style| style.bg(hover_bg))
+                                .child(Icon::new(IconName::CircleX))
+                                .child("Clear filter")
+                                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                                    table_clear.update(cx, |table, cx| {
+                                        table.clear_drill_filter(cx);
+                                    });
+                                }),
+                        );
+                    div()
+                        .flex()
+                        .flex_col()
+                        .size_full()
+                        .child(banner)
+                        .child(div().flex_1().min_h_0().child(grid_view))
+                        .into_any_element()
+                } else {
+                    grid_view.into_any_element()
+                }
+            }
             GridTab::Pivot => {
                 let position = self.pivot_sidebar_position;
                 let collapsed = self.pivot_sidebar_collapsed;
-                let panel = div()
-                    .w(px(self.pivot_sidebar_width))
-                    .h_full()
-                    .flex_none()
-                    .child(parts.sidebar.clone());
-                let pivot_grid = div().flex_1().min_w_0().child(parts.grid.clone());
-                let direction = match position {
-                    PivotSidebarPosition::Left => CollapseDirection::Left,
-                    PivotSidebarPosition::Right => CollapseDirection::Right,
-                };
-                let divider_theme = PaneDividerTheme {
-                    background: theme.header_bg.into(),
-                    background_hover: theme.menu_hover_bg.into(),
-                    background_collapsed: theme.menu_bg.into(),
-                    foreground: theme.muted_text.into(),
-                    foreground_hover: theme.header_fg.into(),
-                    border: theme.grid_line.into(),
-                };
-                let table_toggle = cx.entity().clone();
-                let table_drag = cx.entity().clone();
-                let divider = PaneDivider::vertical("pivot-sidebar-divider", direction)
-                    .label("Pivot")
-                    .collapsed(collapsed)
-                    .theme(divider_theme)
-                    .on_toggle(move |collapsed, _window, cx| {
-                        table_toggle.update(cx, |table, cx| {
-                            table.set_pivot_sidebar_collapsed(collapsed);
-                            cx.notify();
+
+                if collapsed {
+                    // Collapsed: a slim labelled rail where the sidebar was;
+                    // clicking it expands the sidebar again.
+                    let rail = pivot_collapsed_rail(&theme, position, cx.entity().clone());
+                    let pivot_grid = div().flex_1().min_w_0().child(parts.grid.clone());
+                    let pivot_view = div().flex().flex_row().size_full();
+                    let pivot_view = match position {
+                        PivotSidebarPosition::Left => pivot_view.child(rail).child(pivot_grid),
+                        PivotSidebarPosition::Right => pivot_view.child(pivot_grid).child(rail),
+                    };
+                    pivot_view.into_any_element()
+                } else {
+                    // Expanded: a `gpui-component` resizable split. The group
+                    // state owns the live panel sizes; drag-to-resize is
+                    // handled entirely by the library's resize handle.
+                    let resize_state = match self.pivot_sidebar_resize.clone() {
+                        Some(state) => state,
+                        None => {
+                            let state = cx.new(|_| ResizableState::default());
+                            self.pivot_sidebar_resize = Some(state.clone());
+                            state
+                        }
+                    };
+                    let sidebar_ix = match position {
+                        PivotSidebarPosition::Left => 0,
+                        PivotSidebarPosition::Right => 1,
+                    };
+                    // Push a programmatic `set_pivot_sidebar_width` into the
+                    // group state (a no-op on the very first render, where the
+                    // panel seeds itself from `.size()` below).
+                    if self.pivot_sidebar_width_dirty {
+                        self.pivot_sidebar_width_dirty = false;
+                        let width = px(self.pivot_sidebar_width);
+                        resize_state.update(cx, |state, cx| {
+                            state.resize_panel(sidebar_ix, width, window, cx);
                         });
-                    })
-                    .on_drag_start(move |start_x, _window, cx| {
-                        table_drag.update(cx, |table, cx| {
-                            table.pivot_sidebar_drag = Some(PivotSidebarDrag {
-                                start_x,
-                                start_width: table.pivot_sidebar_width,
+                    }
+
+                    let toggle_strip = pivot_toggle_strip(&theme, position, cx.entity().clone());
+                    let sidebar_body = div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .child(parts.sidebar.clone());
+                    let sidebar_content = div().flex().flex_row().size_full();
+                    let sidebar_content = match position {
+                        PivotSidebarPosition::Left => {
+                            sidebar_content.child(sidebar_body).child(toggle_strip)
+                        }
+                        PivotSidebarPosition::Right => {
+                            sidebar_content.child(toggle_strip).child(sidebar_body)
+                        }
+                    };
+                    let sidebar_panel = resizable_panel()
+                        .size(px(self.pivot_sidebar_width))
+                        .size_range(px(MIN_PIVOT_SIDEBAR_WIDTH)..px(MAX_PIVOT_SIDEBAR_WIDTH))
+                        .child(sidebar_content);
+                    let grid_panel = resizable_panel()
+                        .child(div().size_full().min_w_0().child(parts.grid.clone()));
+
+                    let table_resize = cx.entity().clone();
+                    let group = h_resizable("pivot-sidebar-split")
+                        .with_state(&resize_state)
+                        .on_resize(move |state, _window, cx| {
+                            let Some(width) = state.read(cx).sizes().get(sidebar_ix).copied()
+                            else {
+                                return;
+                            };
+                            table_resize.update(cx, |table, cx| {
+                                // Direct field write: `set_pivot_sidebar_width`
+                                // would mark the width dirty and push it right
+                                // back into the group state next render.
+                                table.pivot_sidebar_width = f32::from(width)
+                                    .clamp(MIN_PIVOT_SIDEBAR_WIDTH, MAX_PIVOT_SIDEBAR_WIDTH);
+                                cx.notify();
                             });
-                            cx.notify();
                         });
-                    });
-
-                let mut pivot_view = div().flex().flex_row().size_full();
-                pivot_view = match position {
-                    PivotSidebarPosition::Left => pivot_view
-                        .children((!collapsed).then_some(panel))
-                        .child(divider)
-                        .child(pivot_grid),
-                    PivotSidebarPosition::Right => pivot_view
-                        .child(pivot_grid)
-                        .child(divider)
-                        .children((!collapsed).then_some(panel)),
-                };
-
-                pivot_view.into_any_element()
+                    let group = match position {
+                        PivotSidebarPosition::Left => group.child(sidebar_panel).child(grid_panel),
+                        PivotSidebarPosition::Right => group.child(grid_panel).child(sidebar_panel),
+                    };
+                    group.into_any_element()
+                }
             }
         };
 
-        let mut root = div()
+        div()
             .flex()
             .flex_col()
             .size_full()
             .child(tab_bar)
-            .child(div().flex_1().min_h_0().child(content));
-
-        if let Some(drag) = self.pivot_sidebar_drag {
-            let position = self.pivot_sidebar_position;
-            let table_move = cx.entity().clone();
-            let table_up = cx.entity().clone();
-            let table_up_out = cx.entity().clone();
-            root = root
-                .on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
-                    let current_x: f32 = event.position.x.into();
-                    let delta = match position {
-                        PivotSidebarPosition::Left => current_x - drag.start_x,
-                        PivotSidebarPosition::Right => drag.start_x - current_x,
-                    };
-                    table_move.update(cx, |table, cx| {
-                        table.set_pivot_sidebar_width(drag.start_width + delta);
-                        cx.notify();
-                    });
-                })
-                .on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
-                    table_up.update(cx, |table, cx| {
-                        table.pivot_sidebar_drag = None;
-                        cx.notify();
-                    });
-                })
-                .on_mouse_up_out(MouseButton::Left, move |_event, _window, cx| {
-                    table_up_out.update(cx, |table, cx| {
-                        table.pivot_sidebar_drag = None;
-                        cx.notify();
-                    });
-                });
-        }
-
-        root
+            .child(div().flex_1().min_h_0().child(content))
     }
+}
+
+/// Human-readable summary of a drill-through's per-column value filters,
+/// e.g. `region = East, location = Boston, txn_type = Sale`. Multi-value
+/// sets list up to three values; longer sets are elided with a count.
+fn drill_filter_label(
+    data: &crate::data::GridData,
+    filter_sets: &[(usize, std::collections::HashSet<String>)],
+) -> String {
+    let mut parts = Vec::with_capacity(filter_sets.len());
+    for (field, values) in filter_sets {
+        let name = data.columns.get(*field).map_or("?", |c| c.name.as_str());
+        let mut sorted: Vec<&str> = values.iter().map(String::as_str).collect();
+        sorted.sort_unstable();
+        let shown = match sorted.len() {
+            0 => continue,
+            1..=3 => sorted.join(" | "),
+            n => format!("{} | … ({n} values)", sorted[..2].join(" | ")),
+        };
+        parts.push(format!("{name} = {shown}"));
+    }
+    parts.join(", ")
+}
+
+/// The slim labelled rail shown in place of the pivot sidebar while it is
+/// collapsed. Ports the old `gpui-ui-kit` pane-divider collapsed strip:
+/// expand arrows above and below a vertically stacked label; any click
+/// expands the sidebar.
+fn pivot_collapsed_rail(
+    theme: &GridTheme,
+    position: PivotSidebarPosition,
+    table: Entity<SqllyDataTable>,
+) -> impl IntoElement {
+    // Lucide panel-open icons pointing toward where the sidebar reappears.
+    let icon_name = match position {
+        PivotSidebarPosition::Left => IconName::PanelLeftOpen,
+        PivotSidebarPosition::Right => IconName::PanelRightOpen,
+    };
+    let label_chars = "Pivot".chars().map({
+        let fg = theme.muted_text;
+        move |c| {
+            div()
+                .text_color(fg)
+                .text_size(px(11.0))
+                .child(c.to_string())
+        }
+    });
+    let hover_bg = theme.menu_hover_bg;
+    let arrow_glyph = move |fg: gpui::Hsla| {
+        div()
+            .text_color(fg)
+            .text_size(px(13.0))
+            .child(Icon::new(icon_name.clone()))
+    };
+
+    div()
+        .id("pivot-sidebar-rail")
+        .w(px(24.0))
+        .h_full()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(4.0))
+        .bg(theme.menu_bg)
+        .border_x_1()
+        .border_color(theme.grid_line)
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover_bg))
+        .child(arrow_glyph(theme.muted_text))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(2.0))
+                .py_2()
+                .children(label_chars),
+        )
+        .child(arrow_glyph(theme.muted_text))
+        .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+            table.update(cx, |table, cx| {
+                table.set_pivot_sidebar_collapsed(false);
+                cx.notify();
+            });
+        })
+}
+
+/// The slim collapse strip on the pivot sidebar's inner edge while expanded.
+/// Clicking it collapses the sidebar into [`pivot_collapsed_rail`]. Sits
+/// beside the resizable group's drag handle, replacing the old pane-divider
+/// double-click-to-collapse affordance with a single click.
+fn pivot_toggle_strip(
+    theme: &GridTheme,
+    position: PivotSidebarPosition,
+    table: Entity<SqllyDataTable>,
+) -> impl IntoElement {
+    // Lucide panel-close icon pointing toward where the sidebar collapses.
+    let icon_name = match position {
+        PivotSidebarPosition::Left => IconName::PanelLeftClose,
+        PivotSidebarPosition::Right => IconName::PanelRightClose,
+    };
+    let hover_bg = theme.menu_hover_bg;
+
+    div()
+        .id("pivot-sidebar-toggle")
+        .w(px(16.0))
+        .h_full()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .bg(theme.header_bg)
+        .border_x_1()
+        .border_color(theme.grid_line)
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover_bg))
+        .child(
+            div()
+                .text_color(theme.muted_text)
+                .text_size(px(13.0))
+                .child(Icon::new(icon_name)),
+        )
+        .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+            table.update(cx, |table, cx| {
+                table.set_pivot_sidebar_collapsed(true);
+                cx.notify();
+            });
+        })
 }
 
 impl SqllyDataTable {
@@ -936,18 +1169,20 @@ impl SqllyDataTable {
             let state_edge = self.state.clone();
             cx.spawn(async move |_weak, cx| {
                 loop {
-                    gpui::Timer::after(std::time::Duration::from_millis(EDGE_SCROLL_TICK_MS)).await;
-                    let res = cx.update(|cx| state_edge.update(cx, |s, _cx| s.apply_edge_scroll()));
-                    if let Ok(true) = res {
-                        let _ = state_edge.update(cx, |_s, cx| cx.notify());
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(EDGE_SCROLL_TICK_MS))
+                        .await;
+                    let scrolled =
+                        cx.update(|cx| state_edge.update(cx, |s, _cx| s.apply_edge_scroll()));
+                    if scrolled {
+                        state_edge.update(cx, |_s, cx| cx.notify());
                     }
-                    let dragging_res = cx.update(|cx| state_edge.read(cx).is_dragging);
-                    if !matches!(dragging_res, Ok(true)) {
+                    let dragging = cx.update(|cx| state_edge.read(cx).is_dragging);
+                    if !dragging {
                         break;
                     }
                 }
-                let _ =
-                    cx.update(|cx| state_edge.update(cx, |s, _cx| s.edge_scroll_active = false));
+                cx.update(|cx| state_edge.update(cx, |s, _cx| s.edge_scroll_active = false));
             })
             .detach();
         }
@@ -1006,7 +1241,7 @@ impl SqllyDataTable {
             .on_mouse_down(
                 MouseButton::Left,
                 move |event: &MouseDownEvent, window, cx| {
-                    window.focus(&focus_left);
+                    window.focus(&focus_left, cx);
                     state_mouse.update(cx, |s, cx| {
                         // Ignore grid input while a background task is running;
                         // the busy overlay is shown and occludes interaction.
@@ -1035,7 +1270,7 @@ impl SqllyDataTable {
             .on_mouse_down(
                 MouseButton::Right,
                 move |event: &MouseDownEvent, window, cx| {
-                    window.focus(&focus_right);
+                    window.focus(&focus_right, cx);
                     state_right.update(cx, |s, cx| {
                         if s.busy.is_some() {
                             return;
@@ -1685,7 +1920,7 @@ fn render_filter_panel_overlay(
     let st_backdrop = state.clone();
     let overlay = deferred(
         anchored()
-            .anchor(Corner::BottomLeft)
+            .anchor(Anchor::BottomLeft)
             .position(point(px(abs_x), px(abs_y)))
             .child(
                 div()

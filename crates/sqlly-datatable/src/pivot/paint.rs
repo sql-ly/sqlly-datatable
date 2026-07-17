@@ -9,7 +9,7 @@
 use crate::config::{ResolvedColumnFormat, TextAlignment};
 use crate::data::CellValue;
 use crate::format::format_cell;
-use crate::grid::paint::{CELL_TEXT_INSET, ICON_SCALE};
+use crate::grid::paint::{paint_caret, CELL_TEXT_INSET, ICON_SCALE};
 use crate::grid::selection::SortDirection;
 use crate::grid::state::SCROLLBAR_SIZE;
 use crate::grid::theme::GridTheme;
@@ -209,7 +209,10 @@ pub(crate) fn paint_pivot_grid(
     // Hand cursor over the clickable header surfaces (sort targets and
     // expand/collapse chevrons). Must happen during paint — GPUI panics if
     // the cursor style is set from an event handler.
-    if matches!(data.hover_hit, Some(PivotHitResult::ColBorder { .. })) {
+    if matches!(
+        data.hover_hit,
+        Some(PivotHitResult::ColBorder { .. } | PivotHitResult::RowHeaderBorder)
+    ) {
         window.set_window_cursor_style(CursorStyle::ResizeLeftRight);
     } else if matches!(data.hover_hit, Some(PivotHitResult::RowBorder { .. })) {
         window.set_window_cursor_style(CursorStyle::ResizeUpDown);
@@ -288,7 +291,14 @@ pub(crate) fn paint_pivot_grid(
             }
             _ => shaped,
         };
-        let _ = shaped.paint(Point { x: px(x), y: px(y) }, line_height, win, cx);
+        let _ = shaped.paint(
+            Point { x: px(x), y: px(y) },
+            line_height,
+            gpui::TextAlign::Left,
+            None,
+            win,
+            cx,
+        );
     };
     let paint_txt = |win: &mut Window,
                      cx: &mut App,
@@ -318,7 +328,14 @@ pub(crate) fn paint_pivot_grid(
                 strikethrough: None,
             };
             let shaped = text_system.shape_line(text.to_owned().into(), icon_fs, &[run], None);
-            let _ = shaped.paint(Point { x: px(x), y: px(y) }, icon_line_height, win, cx);
+            let _ = shaped.paint(
+                Point { x: px(x), y: px(y) },
+                icon_line_height,
+                gpui::TextAlign::Left,
+                None,
+                win,
+                cx,
+            );
         };
 
     fill_quad(window, ox, oy, sw, sh, theme.bg);
@@ -468,7 +485,9 @@ pub(crate) fn paint_pivot_grid(
                 }
                 fill_quad(window, x + col_w - 1.0, y, 1.0, row_h, theme.grid_line);
             }
-            let line_w = (content_w - sx).clamp(0.0, sw - rhw);
+            // Guarded upper bound: zero-sized first-frame bounds (web) make
+            // `sw - rhw` negative, and an inverted `clamp` range panics.
+            let line_w = (content_w - sx).clamp(0.0, (sw - rhw).max(0.0));
             fill_quad(
                 window,
                 ox + rhw,
@@ -549,16 +568,7 @@ pub(crate) fn paint_pivot_grid(
                 let indent = ox + vr.depth as f32 * ROW_INDENT + 4.0;
                 let mut label_x = indent;
                 if let VisibleRowKind::GroupHeader { expanded } = vr.kind {
-                    let chev = if expanded { "▼" } else { "▶" };
-                    paint_txt(
-                        window,
-                        cx,
-                        chev,
-                        indent + 2.0,
-                        ty,
-                        theme.pivot_total_fg,
-                        None,
-                    );
+                    paint_caret(window, indent + 2.0, ty, fs, expanded, theme.pivot_total_fg);
                     label_x = indent + CHEVRON_SIZE + 4.0;
                 }
                 let mut color = match vr.kind {
@@ -834,15 +844,13 @@ pub(crate) fn paint_pivot_grid(
                 let mut label_x = span_x + 6.0;
                 if node_ref.depth == depth {
                     if !node_ref.is_leaf() {
-                        let chev = if collapsed_here { "▶" } else { "▼" };
-                        paint_txt(
+                        paint_caret(
                             window,
-                            cx,
-                            chev,
                             span_x + 4.0,
                             ly + (hdr_row_h - fs) * 0.5,
+                            fs,
+                            !collapsed_here,
                             theme.pivot_total_fg,
-                            None,
                         );
                         label_x = span_x + 4.0 + CHEVRON_SIZE;
                     }
@@ -989,7 +997,7 @@ pub(crate) fn paint_pivot_grid(
                 }
             }
         } else {
-            let names = data.result.row_field_names.join(" ▸ ");
+            let names = data.result.row_field_names.join(" › ");
             paint_txt(
                 window,
                 cx,

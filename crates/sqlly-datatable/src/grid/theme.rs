@@ -122,6 +122,24 @@ impl GridThemePair {
         }
     }
 
+    /// A family derived from `gpui-component`'s built-in light and dark
+    /// palettes via [`GridTheme::from_component_colors`], so the grid matches
+    /// hosts styled with `gpui-component` defaults while keeping automatic
+    /// light/dark following. Hosts running a *custom* component theme should
+    /// instead derive from their own palettes, or from the active theme with
+    /// [`GridTheme::from_component_theme`].
+    ///
+    /// Unlike [`GridThemePair::neutral`] and [`GridThemePair::signature`],
+    /// the component palettes carry no WCAG contrast guarantee from this
+    /// crate.
+    #[must_use]
+    pub fn component() -> Self {
+        Self {
+            light: GridTheme::from_component_colors(&gpui_component::ThemeColor::light(), false),
+            dark: GridTheme::from_component_colors(&gpui_component::ThemeColor::dark(), true),
+        }
+    }
+
     /// Pick the variant that matches the OS window appearance. `Dark` and
     /// `VibrantDark` resolve to `self.dark`; everything else to `self.light`.
     #[must_use]
@@ -134,6 +152,72 @@ impl GridThemePair {
 }
 
 impl GridTheme {
+    /// Derive a `GridTheme` from the active [`gpui_component::Theme`], so the
+    /// grid picks up the exact surfaces, borders, and accents of a host app
+    /// built on `gpui-component`. Reads the theme resolved for the current
+    /// light/dark mode; hosts that switch modes at runtime should re-derive
+    /// and re-apply on change (e.g. from the same place they call
+    /// [`gpui_component::Theme::change`]).
+    ///
+    /// The mapping leans on the component theme's dedicated `table_*` role
+    /// colors for the grid chrome and its `popover`/`list` roles for menus,
+    /// so the result matches what `gpui-component`'s own `Table` would look
+    /// like in the host theme.
+    ///
+    /// ```no_run
+    /// use gpui_component::ActiveTheme as _;
+    /// # fn derive(cx: &mut gpui::App) -> sqlly_datatable::GridTheme {
+    /// sqlly_datatable::GridTheme::from_component_theme(cx.theme())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn from_component_theme(theme: &gpui_component::Theme) -> Self {
+        Self::from_component_colors(&theme.colors, theme.is_dark())
+    }
+
+    /// The [`GridTheme::from_component_theme`] mapping applied to an explicit
+    /// [`gpui_component::ThemeColor`] set. Useful for building a
+    /// [`GridThemePair`] from a component theme's light and dark palettes
+    /// (see [`GridThemePair::component`]).
+    #[must_use]
+    pub fn from_component_colors(colors: &gpui_component::ThemeColor, is_dark: bool) -> Self {
+        Self {
+            bg: colors.table,
+            header_bg: colors.table_head,
+            filter_bg: colors.table_head,
+            filter_active_bg: colors.accent,
+            row_header_bg: colors.table_head,
+            selection_bg: colors.selection,
+            alt_row_bg: colors.table_even,
+            grid_line: colors.table_row_border,
+            header_fg: colors.table_head_foreground,
+            text_fg: colors.foreground,
+            negative_fg: colors.danger,
+            sort_indicator: colors.primary,
+            filter_cursor: colors.caret,
+            menu_bg: colors.popover,
+            menu_hover_bg: colors.list_hover,
+            menu_fg: colors.popover_foreground,
+            muted_text: colors.muted_foreground,
+            null_fg: colors.muted_foreground,
+            null_bg: colors.muted,
+            pivot_group_bg: colors.accent,
+            pivot_subtotal_bg: colors.secondary,
+            pivot_grand_total_bg: colors.selection,
+            pivot_total_fg: colors.foreground,
+            pivot_drop_zone_bg: colors.muted,
+            pivot_drop_zone_active_bg: colors.drop_target,
+            pivot_chip_bg: colors.secondary,
+            pivot_chip_fg: colors.secondary_foreground,
+            scrollbar_thumb: colors.scrollbar_thumb,
+            overlay_scrim: if is_dark {
+                hsla(0.0, 0.0, 0.0, 0.45)
+            } else {
+                hsla(0.0, 0.0, 0.0, 0.35)
+            },
+        }
+    }
+
     /// Neutral light: pure-white canvas, gray ramp at zero chroma, azure
     /// accent reserved for selection, sort, and filter state.
     #[must_use]
@@ -416,6 +500,37 @@ mod tests {
             sig.for_appearance(WindowAppearance::VibrantLight).bg,
             GridTheme::signature_light().bg
         );
+    }
+
+    /// The `gpui-component` bridge must map the toolkit's role colors onto
+    /// the grid's fields (not fall back to a shipped palette), keep the
+    /// light and dark derivations distinct, and expose them as a pair.
+    #[test]
+    fn component_bridge_maps_toolkit_roles_per_mode() {
+        let light_colors = gpui_component::ThemeColor::light();
+        let dark_colors = gpui_component::ThemeColor::dark();
+
+        let light = GridTheme::from_component_colors(&light_colors, false);
+        let dark = GridTheme::from_component_colors(&dark_colors, true);
+
+        // Spot-check the role mapping against the source palette.
+        assert_eq!(light.bg, light_colors.table);
+        assert_eq!(light.header_bg, light_colors.table_head);
+        assert_eq!(light.selection_bg, light_colors.selection);
+        assert_eq!(light.menu_bg, light_colors.popover);
+        assert_eq!(light.negative_fg, light_colors.danger);
+        assert_eq!(dark.bg, dark_colors.table);
+
+        // Light and dark derivations must actually differ.
+        assert_ne!(light.bg, dark.bg);
+        assert_ne!(light.text_fg, dark.text_fg);
+        // The dark scrim is heavier than the light one.
+        assert!(dark.overlay_scrim.a > light.overlay_scrim.a);
+
+        // The ready-made pair is exactly those two derivations.
+        let pair = GridThemePair::component();
+        assert_eq!(pair.light, light);
+        assert_eq!(pair.dark, dark);
     }
 }
 

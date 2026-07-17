@@ -14,10 +14,25 @@ documentation = "https://docs.rs/sqlly-datatable"
 workspace = true
 
 [dependencies]
-gpui = { version = "0.2" }
-gpui-ui-kit = "0.5.10"
-smol = "2.0"
+gpui = { workspace = true }
+gpui-component = { workspace = true }
+gpui-component-assets = { workspace = true }
 regex = "1"
 
+# `smol` pulls in `async-io`/`rustix`/`errno`, none of which build for
+# `wasm32-unknown-unknown`. It is currently unused in this crate, so gate it
+# off the wasm target to keep the web build compiling.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+smol = "2.0"
+
+# `std::time::SystemTime::now()` panics on wasm32-unknown-unknown; `web-time`
+# provides the same API backed by the JS clock (already in the dependency
+# graph via gpui's web backend).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = "1"
+
 [dev-dependencies]
-gpui = { version = "0.2", features = ["test-support"] }
+gpui = { workspace = true, features = ["test-support"] }
+# Headless platform bootstrap for the `#[ignore]`d main-thread tests
+# (`gpui::Application::new()` no longer exists on zed `main`).
+gpui_platform = { workspace = true }
