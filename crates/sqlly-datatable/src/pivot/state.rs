@@ -130,6 +130,8 @@ pub enum PivotHitResult {
         /// Visible column index whose right edge was hit.
         col: usize,
     },
+    /// The right edge of the row-label area (drag to resize its width).
+    RowHeaderBorder,
     /// The expand/collapse chevron on a row group header.
     RowChevron {
         /// Visible row index.
@@ -218,6 +220,8 @@ pub const DEFAULT_PIVOT_COLUMN_WIDTH: f32 = 140.0;
 pub const MIN_PIVOT_ROW_HEIGHT: f32 = 18.0;
 /// Smallest supported pivot value-column width.
 pub const MIN_PIVOT_COLUMN_WIDTH: f32 = 40.0;
+/// Smallest supported width of the pivot row-label area.
+pub const MIN_PIVOT_ROW_HEADER_WIDTH: f32 = 60.0;
 /// Default width of the pivot controls sidebar, in logical pixels.
 pub const DEFAULT_PIVOT_SIDEBAR_WIDTH: f32 = 260.0;
 
@@ -230,6 +234,10 @@ enum PivotResizeDrag {
     },
     Column {
         boundary: usize,
+        start_x: f32,
+        start_width: f32,
+    },
+    RowHeader {
         start_x: f32,
         start_width: f32,
     },
@@ -1123,6 +1131,7 @@ impl PivotState {
             PivotHitResult::None
             | PivotHitResult::RowBorder { .. }
             | PivotHitResult::ColBorder { .. }
+            | PivotHitResult::RowHeaderBorder
             | PivotHitResult::VScrollbar
             | PivotHitResult::HScrollbar => None,
         };
@@ -1270,6 +1279,25 @@ impl PivotState {
         }
     }
 
+    /// Current width of the row-label area, in logical pixels. In the flat
+    /// (tabular) row layout this area is divided evenly among the row-field
+    /// sub-columns.
+    #[must_use]
+    pub fn row_header_area_width(&self) -> f32 {
+        self.row_header_width
+    }
+
+    /// Set the width of the row-label area (drag its right edge in the UI).
+    ///
+    /// Non-finite values are ignored and finite values are clamped to the
+    /// minimum supported width.
+    pub fn set_row_header_width(&mut self, width: f32) {
+        if width.is_finite() {
+            self.row_header_width = width.max(MIN_PIVOT_ROW_HEADER_WIDTH);
+            self.clamp_scroll_to_bounds();
+        }
+    }
+
     /// Number of stacked header rows: one caption row plus one row per
     /// column-field level (minimum one).
     #[must_use]
@@ -1355,6 +1383,13 @@ impl PivotState {
         }
         let sx = f32::from(self.scroll_handle.offset().x);
         let sy = f32::from(self.scroll_handle.offset().y);
+
+        // The row-label area's right edge, draggable along its full height
+        // (header and body). Checked before the header/body branches so it
+        // wins over Corner / ColHeader / RowHeader at the boundary.
+        if (x - self.row_header_width).abs() <= RESIZE_HIT_SLOP {
+            return PivotHitResult::RowHeaderBorder;
+        }
 
         if y < hdr_h {
             if x < self.row_header_width {
@@ -1498,6 +1533,12 @@ impl PivotState {
                     start_width: self.value_col_width,
                 });
             }
+            PivotHitResult::RowHeaderBorder => {
+                self.resize_drag = Some(PivotResizeDrag::RowHeader {
+                    start_x: f32::from(pos.x),
+                    start_width: self.row_header_width,
+                });
+            }
             PivotHitResult::RowChevron { row } => {
                 if let Some(vr) = self.visible_rows.get(row).copied() {
                     self.toggle_row_group(vr.key);
@@ -1582,6 +1623,14 @@ impl PivotState {
                         let delta = (f32::from(pos.x) - start_x) / boundary as f32;
                         self.set_column_width(start_width + delta);
                         self.hover_hit = Some(PivotHitResult::ColBorder { col: boundary - 1 });
+                    }
+                    PivotResizeDrag::RowHeader {
+                        start_x,
+                        start_width,
+                    } => {
+                        let delta = f32::from(pos.x) - start_x;
+                        self.set_row_header_width(start_width + delta);
+                        self.hover_hit = Some(PivotHitResult::RowHeaderBorder);
                     }
                 }
                 return;

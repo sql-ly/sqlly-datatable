@@ -6,7 +6,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "3.1.3"
+version = "4.0.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.96.0"
@@ -24,6 +24,22 @@ expect_used = "warn"
 # `pedantic` is intentionally NOT enabled as a workspace-level lint. Surface
 # nitpicks via `cargo clippy --workspace --all-targets -- -W clippy::pedantic`
 # when cleaning up an area, but don't block the build on it.
+
+# `gpui-component` tracks `gpui` from Zed's git `main` (there is no compatible
+# crates.io release), so the whole workspace depends on the git versions
+# directly. `gpui_platform` carries the OS windowing backends on current `main`
+# and is only needed by binaries (the sample app), not the library crate.
+[workspace.dependencies]
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+# Lucide icon SVGs for `gpui_component::Icon` (embedded natively; fetched
+# relative to the site root on wasm).
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
+
+[patch.crates-io]
+# `psm` (via `stacker`) needs a wasm-compatible build; upstream master has it.
+psm = { git = "https://github.com/rust-lang/stacker", branch = "master" }
 
 [profile.dev]
 opt-level = 1

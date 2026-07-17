@@ -30,6 +30,7 @@ pub use widget::{GridTab, PivotSidebarPosition, SqllyDataTable, SqllyDataTableBu
 pub use state::SCROLLBAR_SIZE;
 
 use gpui::{div, prelude::*, px, Div, FontWeight};
+use gpui_component::{Icon, IconName};
 
 /// The single checkbox used across every filter panel, the pivot filter
 /// popover, the pivot layout options, and the per-field format dialog. One
@@ -60,7 +61,11 @@ pub(crate) fn checkbox(checked: bool, theme: &GridTheme) -> Div {
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme.bg);
     if checked {
-        b = b.child("✓");
+        // Lucide check, sized by the cascaded 11px text size and colored by
+        // the knockout `text_color` above (SVG icons render everywhere the
+        // same — no reliance on font glyph coverage, which the web build's
+        // embedded fonts lack for "✓").
+        b = b.child(Icon::new(IconName::Check));
     }
     b
 }

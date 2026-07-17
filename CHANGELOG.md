@@ -5,6 +5,88 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0] - 2026-07-17
+
+### Changed
+- **Breaking:** migrated the UI toolkit dependency from `gpui-ui-kit` to
+  [`gpui-component`](https://github.com/longbridge/gpui-component), and moved
+  `gpui` from the crates.io `0.2` release to Zed's git `main` (which
+  `gpui-component` tracks). Both are now consumed as git dependencies; the
+  minimum Rust version is 1.96.
+- **Breaking:** hosts must call `sqlly_datatable::init(cx)` once at startup
+  (or call `gpui_component::init` themselves). It installs the global
+  `gpui_component::Theme` read by the embedded toolkit widgets.
+- **Breaking:** binaries now bootstrap via `gpui_platform::application()`
+  (Zed's `main` removed `gpui::Application::new()`); see the sample app.
+- The pivot sidebar split is now a `gpui-component` resizable panel group.
+  Drag-to-resize is handled by the library's resize handle (the old
+  hand-rolled drag tracking is gone); the sidebar collapses via a dedicated
+  click strip on its inner edge (previously double-click on the divider), and
+  the collapsed state keeps the labelled expand rail. `set_pivot_sidebar_*`
+  APIs are unchanged.
+
+### Added
+- `gpui-component` theme bridge: `GridTheme::from_component_theme` /
+  `GridTheme::from_component_colors` derive a `GridTheme` from a
+  `gpui_component::Theme`, and `GridThemePair::component()` is a ready-made
+  light/dark family built from the toolkit's default palettes. The sample
+  app's switcher gained a third "Component" choice demonstrating it.
+- `pub use gpui_component;` re-export, so hosts can target the exact toolkit
+  version this crate links against.
+- **WebAssembly build of the sample app.** `./build-wasm.sh` compiles the
+  sample to `wasm32-unknown-unknown` (nightly; gpui's web backend requires
+  it), runs `wasm-bindgen`, and packages a self-contained runnable site
+  (index.html + JS glue + wasm) into `dist/sqlly-datatable-web-v<version>.zip`.
+  CI builds and uploads the zip as a `web-app` artifact. The sample crate is
+  now a library (`init_and_open`) with two entry points: the native binary
+  and a `wasm-bindgen` `web::run` export using gpui's `run_embedded`.
+- New sample dataset: six months (2026-01-01 → 2026-06-30) of the general
+  ledger of a fictitious US burger chain — 60,000 records across 3 regions ×
+  10 locations, 500 staff, cost centers, menu/supply items, and payment
+  methods. Sales rows carry receipt number
+  (`{region:4}{location:4}{yyyyMMdd}{seq:08}`, sequential per location per
+  day), tax / sub-total / coupon / total, and a customer id; purchase rows
+  carry vendor / invoice / purchase order; payroll rows only an amount.
+  After the ledger, six literal marker columns (`extra`, `columns`, `to`,
+  `show`, `horizontal`, `virturalizion` — header repeated as every value)
+  precede 100 randomized columns cycling datetime / text / decimal /
+  integer / boolean, exercising horizontal virtualization at 124 columns.
+- **Pivot row-label resize.** The right edge of the pivot's row-label area
+  drags to resize it (new `PivotHitResult::RowHeaderBorder`,
+  `PivotState::set_row_header_width` / `row_header_area_width`,
+  `MIN_PIVOT_ROW_HEADER_WIDTH`).
+- **Drill-through banner.** When a pivot drill-through filters the flat
+  grid, the Grid tab shows a banner naming the applied per-column filters
+  with a one-click "Clear filter" (`SqllyDataTable::drill_filter` /
+  `clear_drill_filter`).
+- **Lucide icons.** All element-based chrome glyphs (sidebar accordion
+  carets, chip remove buttons, the aggregation picker chevron, checkbox
+  checkmarks, and the sidebar collapse rail/strip) now render
+  `gpui-component`'s lucide SVG icons instead of font glyphs, and the
+  canvas-painted pivot group carets and the header filter marker are drawn
+  as vector paths. Rationale: the web build's embedded fonts have no
+  coverage for ▶ ▼ ✕ ✓ 🔽, which rendered as boxes. Hosts must provide the
+  icon SVGs via `Application::with_assets` — re-exported as
+  `sqlly_datatable::gpui_component_assets` (embedded natively; fetched from
+  `icons/` relative to the site root on the web, which `build-wasm.sh` now
+  bundles into the zip).
+
+### Changed (sample app)
+- The sample now defaults to the **Component** theme family (the
+  `gpui-component` bridge palette); Neutral and Signature remain in the
+  switcher.
+
+### Fixed
+- Two web-only panics: the grid/pivot painters clamped with an inverted
+  range when the first frame has zero-sized bounds, and date formatting
+  called `std::time::SystemTime::now()`, which is unimplemented on
+  `wasm32-unknown-unknown` (now reads the clock via `web-time` there).
+- Web icons: the wasm asset fetcher requests `{endpoint}/assets/icons/*.svg`
+  and rejects relative endpoints (reqwest requires absolute URLs on wasm),
+  so the pivot sidebar's icons never loaded. `build-wasm.sh` now bundles the
+  SVGs under `assets/icons/` and the sample derives an absolute endpoint
+  from the page's base URI at runtime.
+
 ## [3.1.3] - 2026-07-17
 
 ### Added

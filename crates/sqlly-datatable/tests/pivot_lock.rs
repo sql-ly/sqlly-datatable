@@ -341,6 +341,168 @@ fn pivot_dimensions_are_configurable_readable_and_resizable(cx: &mut TestAppCont
             state.handle_mouse_move(point(px(10.0), px(f32::from(row_edge.y) + 8.0)), true);
             state.handle_mouse_up();
             assert_eq!(state.row_height(), 40.0);
+
+            // The row-label area's right edge drags to resize its width.
+            let start_width = state.row_header_area_width();
+            let label_edge = point(px(start_width), px(state.header_height() + 10.0));
+            assert_eq!(state.hit_test(label_edge), PivotHitResult::RowHeaderBorder);
+            state.handle_mouse_down(label_edge, false);
+            state.handle_mouse_move(point(px(start_width + 40.0), px(10.0)), true);
+            state.handle_mouse_up();
+            assert_eq!(state.row_header_area_width(), start_width + 40.0);
+
+            // Clamped to the supported minimum.
+            state.set_row_header_width(1.0);
+            assert_eq!(
+                state.row_header_area_width(),
+                sqlly_datatable::MIN_PIVOT_ROW_HEADER_WIDTH
+            );
         });
+    });
+}
+
+#[gpui::test]
+fn pivot_tab_draws_in_every_sidebar_state(cx: &mut TestAppContext) {
+    // The pivot split is a `gpui-component` resizable panel group whose
+    // resize handle reads the toolkit's global theme — installed by
+    // `sqlly_datatable::init`. This drives a real draw of the pivot tab in
+    // each sidebar state (expanded left/right, collapsed) to catch a missing
+    // init or a broken split layout at render time, which the state-only
+    // tests above never exercise.
+    use gpui::{Modifiers, MouseButton};
+
+    cx.update(sqlly_datatable::init);
+
+    let (view, cx) = cx.add_window_view(|_window, cx| {
+        let data = GridData::new(
+            vec![
+                Column::new("region", ColumnKind::Text, 100.0),
+                Column::new("n", ColumnKind::Integer, 80.0),
+            ],
+            vec![
+                vec![CellValue::Text("East".into()), CellValue::Integer(1)],
+                vec![CellValue::Text("West".into()), CellValue::Integer(2)],
+            ],
+        )
+        .expect("rectangular pivot data");
+        let config = PivotConfig {
+            row_fields: vec![0],
+            value_field: Some(1),
+            ..PivotConfig::default()
+        };
+        SqllyDataTable::builder(data).pivot(config).build(cx)
+    });
+
+    let draw = |cx: &mut gpui::VisualTestContext| {
+        cx.simulate_mouse_move(
+            point(px(300.0), px(300.0)),
+            Option::<MouseButton>::None,
+            Modifiers::none(),
+        );
+        cx.run_until_parked();
+    };
+
+    view.update(cx, |table, cx| {
+        table.set_active_tab(GridTab::Pivot, cx);
+    });
+    draw(cx); // expanded, sidebar left
+
+    view.update(cx, |table, cx| {
+        table.set_pivot_sidebar_collapsed(true);
+        cx.notify();
+    });
+    draw(cx); // collapsed rail
+
+    view.update(cx, |table, cx| {
+        table.set_pivot_sidebar_collapsed(false);
+        table.set_pivot_sidebar_position(PivotSidebarPosition::Right);
+        table.set_pivot_sidebar_width(240.0);
+        cx.notify();
+    });
+    draw(cx); // expanded, sidebar right, programmatic width
+
+    view.update(cx, |table, _cx| {
+        assert!(!table.pivot_sidebar_collapsed());
+        assert_eq!(table.pivot_sidebar_position(), PivotSidebarPosition::Right);
+        assert_eq!(table.pivot_sidebar_width(), 240.0);
+    });
+}
+
+#[gpui::test]
+fn drill_through_shows_and_clears_grid_filter_banner(cx: &mut TestAppContext) {
+    // A pivot drill-through silently replaces the flat grid's column
+    // filters; the Grid tab must name the applied filter (banner state) and
+    // clear it in one step.
+    use gpui::{Modifiers, MouseButton};
+
+    cx.update(sqlly_datatable::init);
+
+    let (view, cx) = cx.add_window_view(|_window, cx| {
+        let data = GridData::new(
+            vec![
+                Column::new("region", ColumnKind::Text, 100.0),
+                Column::new("n", ColumnKind::Integer, 80.0),
+            ],
+            vec![
+                vec![CellValue::Text("East".into()), CellValue::Integer(1)],
+                vec![CellValue::Text("West".into()), CellValue::Integer(2)],
+            ],
+        )
+        .expect("rectangular pivot data");
+        let config = PivotConfig {
+            row_fields: vec![0],
+            value_field: Some(1),
+            ..PivotConfig::default()
+        };
+        SqllyDataTable::builder(data).pivot(config).build(cx)
+    });
+
+    let draw = |cx: &mut gpui::VisualTestContext| {
+        cx.simulate_mouse_move(
+            point(px(300.0), px(300.0)),
+            Option::<MouseButton>::None,
+            Modifiers::none(),
+        );
+        cx.run_until_parked();
+    };
+
+    view.update(cx, |table, cx| {
+        assert_eq!(table.drill_filter(), None);
+        let pivot = table.pivot_state().expect("pivot enabled").clone();
+        pivot.update(cx, |state, _cx| {
+            // Drill on the first visible value cell ("East" row).
+            state.request_drill_down(0, 0);
+        });
+        cx.notify();
+    });
+    draw(cx); // render pass applies the queued drill
+
+    view.update(cx, |table, cx| {
+        assert_eq!(table.active_tab(), GridTab::Grid, "drill lands on Grid tab");
+        let label = table.drill_filter().expect("drill banner state set");
+        assert!(
+            label.contains("region") && label.contains("East"),
+            "label names the filtered column and value: {label}"
+        );
+        let filtered: Vec<_> = table
+            .state
+            .read(cx)
+            .filters
+            .iter()
+            .filter(|f| f.values.is_some())
+            .collect();
+        assert_eq!(filtered.len(), 1, "exactly the drill filter is active");
+
+        table.clear_drill_filter(cx);
+        assert_eq!(table.drill_filter(), None);
+        assert!(
+            table
+                .state
+                .read(cx)
+                .filters
+                .iter()
+                .all(|f| f.values.is_none()),
+            "clearing the banner resets every column filter"
+        );
     });
 }

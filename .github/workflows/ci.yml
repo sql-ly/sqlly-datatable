@@ -2,14 +2,18 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master, main]
     tags: ["v*.*.*"]
   pull_request:
-    branches: [main]
+    branches: [master, main]
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
+  # `gpui` and `gpui-component` are git dependencies (zed's and longbridge's
+  # repos). Fetching them through the system git CLI is faster and more
+  # reliable for repositories this large than cargo's builtin fetch.
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
   build:
@@ -17,40 +21,64 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Caches ~/.cargo/git (the zed / gpui-component clones — the expensive
+      # part of a cold build) alongside the registry and target dir.
       - uses: Swatinem/rust-cache@v2
 
+      # `--locked` everywhere: the git dependencies track moving branches
+      # (zed `main`), so an unlocked resolve could silently jump to a newer
+      # rev mid-pipeline and break the build. CI must test exactly the revs
+      # committed in Cargo.lock; bumping them is an explicit `cargo update`
+      # in a PR.
       - name: Check formatting
         run: cargo fmt --check
       - name: Compile all targets
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Documentation
-        run: cargo doc --no-deps
+        run: cargo doc --locked --no-deps
       - name: Unit tests
-        run: cargo test --lib
+        run: cargo test --locked --lib
       - name: Integration tests
-        run: cargo test --test text_box_gpui
+        run: cargo test --locked --test text_box_gpui
 
-      # Package the crate and upload as a build artifact for auditing.
-      - name: Package
-        run: cargo package
-      - name: Upload crate artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: crate-package
-          path: target/package/*.crate
-          retention-days: 7
+  # The former `cargo package` artifact and crates.io publish job are gone:
+  # a crate with git dependencies cannot be packaged or published to
+  # crates.io. Until `gpui` and `gpui-component` ship compatible registry
+  # releases, distribution is via the git repository itself (tags still run
+  # the build job above to validate a tagged release).
 
-  publish:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+  # Build the sample app as a WebAssembly web app and upload the runnable
+  # site (index.html + JS glue + wasm) as a zip artifact. The wasm32 target
+  # is host-independent, so this runs on the cheaper Linux runners.
+  build-wasm:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The web build needs nightly: gpui's web backend enables
+      # `parking_lot/nightly` and `wasm_thread` (unstable
+      # `stdarch_wasm_atomic_wait`). See build-wasm.sh.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+      # build-wasm.sh invokes `cargo +nightly`; the stable toolchain is still
+      # used for the wasm-bindgen-cli install.
       - uses: dtolnay/rust-toolchain@stable
-      # --no-verify skips the verification rebuild. The build job already
-      # compiled, ran clippy, and passed all tests. This job only packages
-      # (fast, no compilation) and uploads to crates.io.
-      - name: Publish to crates.io
-        run: cargo publish --no-verify --token ${{ secrets.CRATE_API_KEY }}
+      - uses: Swatinem/rust-cache@v2
+      # rust-cache does not cover ~/.cargo/bin; cache the wasm-bindgen CLI
+      # (which build-wasm.sh otherwise cargo-installs from source) keyed on
+      # the wasm-bindgen version pinned in Cargo.lock.
+      - name: Cache wasm-bindgen-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-bindgen*
+          key: wasm-bindgen-cli-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Build web app
+        run: ./build-wasm.sh
+      - name: Upload web app zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-app
+          path: dist/*.zip
+          retention-days: 14

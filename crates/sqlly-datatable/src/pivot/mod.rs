@@ -30,6 +30,6 @@ pub use state::{
     PivotFilterPopover, PivotFormatDialog, PivotHitResult, PivotSaveConfigHandler, PivotSortKey,
     PivotState, VisibleCol, VisibleColKind, VisibleRow, VisibleRowKind, DEFAULT_PIVOT_COLUMN_WIDTH,
     DEFAULT_PIVOT_ROW_HEIGHT, DEFAULT_PIVOT_SIDEBAR_WIDTH, MIN_PIVOT_COLUMN_WIDTH,
-    MIN_PIVOT_ROW_HEIGHT,
+    MIN_PIVOT_ROW_HEADER_WIDTH, MIN_PIVOT_ROW_HEIGHT,
 };
 pub use widget::PivotGrid;
