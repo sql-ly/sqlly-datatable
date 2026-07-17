@@ -546,16 +546,28 @@ pub(crate) fn paint_grid(
                 // Shape once, then align by the true laid-out width so
                 // right/center columns holding double-width glyphs (CJK, emoji)
                 // land correctly rather than drifting by the monospace estimate.
-                if let Some(shaped) =
-                    shape_fitted(&text, color, Some(w - 16.0), is_null && fmt.null.italic, false)
-                {
+                if let Some(shaped) = shape_fitted(
+                    &text,
+                    color,
+                    Some(w - 16.0),
+                    is_null && fmt.null.italic,
+                    false,
+                ) {
                     let text_w = f32::from(shaped.width);
                     let tx = match fmt.alignment() {
                         crate::config::TextAlignment::Left => x + 8.0,
                         crate::config::TextAlignment::Center => x + (w - text_w) * 0.5,
                         crate::config::TextAlignment::Right => x + w - text_w - 8.0,
                     };
-                    let _ = shaped.paint(Point { x: px(tx), y: px(ty) }, line_height, window, cx);
+                    let _ = shaped.paint(
+                        Point {
+                            x: px(tx),
+                            y: px(ty),
+                        },
+                        line_height,
+                        window,
+                        cx,
+                    );
                 }
                 fill_quad(window, x + w, y, 1.0, row_h, theme.grid_line);
                 col_x += w;
@@ -643,7 +655,8 @@ pub(crate) fn paint_grid(
             // Shape once, then right-align by the true laid-out width when it
             // fits (double-width glyphs included); otherwise fall back to the
             // left edge and let it ellipsize there.
-            if let Some(shaped) = shape_fitted(&col.name, theme.header_fg, Some(label_max), false, true)
+            if let Some(shaped) =
+                shape_fitted(&col.name, theme.header_fg, Some(label_max), false, true)
             {
                 let tw = f32::from(shaped.width);
                 let label_x = if right_aligned && tw <= label_max - 8.0 {
@@ -651,7 +664,15 @@ pub(crate) fn paint_grid(
                 } else {
                     x + 8.0
                 };
-                let _ = shaped.paint(Point { x: px(label_x), y: px(label_y) }, line_height, window, cx);
+                let _ = shaped.paint(
+                    Point {
+                        x: px(label_x),
+                        y: px(label_y),
+                    },
+                    line_height,
+                    window,
+                    cx,
+                );
             }
             let btn_w = 20.0;
             let btn_x = x + w - btn_w;
@@ -735,12 +756,24 @@ pub(crate) fn paint_grid(
         let ty = oy + hdr_h + (sh - hdr_h - fs).max(0.0) * 0.35;
         // Shape once, then center by the true laid-out width so a localized
         // hint (CJK, RTL) sits centered rather than off by the estimate.
-        if let Some(shaped) =
-            shape_fitted(&data.empty_text, theme.muted_text, Some(sw - rhw - 16.0), false, false)
-        {
+        if let Some(shaped) = shape_fitted(
+            &data.empty_text,
+            theme.muted_text,
+            Some(sw - rhw - 16.0),
+            false,
+            false,
+        ) {
             let tw = f32::from(shaped.width);
             let tx = (ox + rhw + ((sw - rhw) - tw) * 0.5).max(ox + rhw + 8.0);
-            let _ = shaped.paint(Point { x: px(tx), y: px(ty) }, line_height, window, cx);
+            let _ = shaped.paint(
+                Point {
+                    x: px(tx),
+                    y: px(ty),
+                },
+                line_height,
+                window,
+                cx,
+            );
         }
     }
 

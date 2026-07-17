@@ -40,7 +40,8 @@ fn selected_col(sel: Selection) -> usize {
 
 #[gpui::test]
 fn keyboard_navigation_scrolls_active_cell_into_view(cx: &mut TestAppContext) {
-    let (view, cx) = cx.add_window_view(|_window, cx| SqllyDataTable::builder(tall_wide_data()).build(cx));
+    let (view, cx) =
+        cx.add_window_view(|_window, cx| SqllyDataTable::builder(tall_wide_data()).build(cx));
     cx.run_until_parked();
 
     view.update(cx, |table, cx| {
@@ -95,7 +96,8 @@ fn keyboard_navigation_scrolls_active_cell_into_view(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn shift_navigation_extends_range_to_row_and_column_extremes(cx: &mut TestAppContext) {
-    let (view, cx) = cx.add_window_view(|_window, cx| SqllyDataTable::builder(tall_wide_data()).build(cx));
+    let (view, cx) =
+        cx.add_window_view(|_window, cx| SqllyDataTable::builder(tall_wide_data()).build(cx));
     cx.run_until_parked();
 
     view.update(cx, |table, cx| {

@@ -946,6 +946,9 @@ impl PivotSidebar {
                     .flex_col()
                     .max_h(px(200.0))
                     .overflow_y_scroll()
+                    // Own the wheel in the popover's value list so it doesn't
+                    // also scroll the sidebar behind it (see the field list).
+                    .occlude()
                     .children(value_rows)
                     .children(truncated.then(|| {
                         div()
@@ -1402,6 +1405,14 @@ impl Render for PivotSidebar {
                     .gap(px(4.0))
                     .max_h(px(220.0))
                     .overflow_y_scroll()
+                    // Own the wheel within the list's own area. Without this
+                    // the outer `#pivot-sidebar` scroll container (also under
+                    // the cursor) receives the same wheel event — GPUI's
+                    // overflow-scroll handler never stops propagation — so the
+                    // whole control panel scrolled along with the list. As a
+                    // `BlockMouse` hitbox the list truncates the scroll
+                    // hit-test, leaving the sidebar out of it.
+                    .occlude()
                     .children(field_chips),
             );
 

@@ -488,12 +488,27 @@ mod tests {
                     negative_parentheses: parens,
                     ..NumberFormat::default()
                 };
-                let signed = |s: &str| s.starts_with('-') || (s.starts_with('(') && s.ends_with(')'));
+                let signed =
+                    |s: &str| s.starts_with('-') || (s.starts_with('(') && s.ends_with(')'));
                 for dec in [format_number(-1_493.17, &fmt), format_number(-0.01, &fmt)] {
-                    assert!(signed(&dec), "decimal negative lacks sign channel: {dec:?} (red={red}, parens={parens})");
+                    assert!(
+                        signed(&dec),
+                        "decimal negative lacks sign channel: {dec:?} (red={red}, parens={parens})"
+                    );
                 }
-                let int = format_integer(-42, &NumberFormat { decimals: 0, show_negative_red: red, negative_parentheses: parens, ..NumberFormat::default() });
-                assert!(signed(&int), "integer negative lacks sign channel: {int:?} (red={red}, parens={parens})");
+                let int = format_integer(
+                    -42,
+                    &NumberFormat {
+                        decimals: 0,
+                        show_negative_red: red,
+                        negative_parentheses: parens,
+                        ..NumberFormat::default()
+                    },
+                );
+                assert!(
+                    signed(&int),
+                    "integer negative lacks sign channel: {int:?} (red={red}, parens={parens})"
+                );
             }
         }
     }
