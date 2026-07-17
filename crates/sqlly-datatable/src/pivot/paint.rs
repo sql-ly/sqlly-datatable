@@ -40,6 +40,11 @@ pub(crate) struct PivotPaintData {
     pub(crate) selection: Option<(usize, usize, usize, usize)>,
     pub(crate) hover_hit: Option<PivotHitResult>,
     pub(crate) sort: Option<(PivotSortKey, SortDirection)>,
+    /// Flat/tabular row layout: each row field paints in its own row-header
+    /// column instead of a single nested/indented column.
+    pub(crate) flat_rows: bool,
+    /// Number of row fields — the row-header column count when `flat_rows`.
+    pub(crate) row_field_count: usize,
     pub(crate) show_row_subtotals: bool,
     pub(crate) scroll_offset: Point<Pixels>,
     pub(crate) row_height: f32,
@@ -77,6 +82,8 @@ impl PivotPaintData {
             selection: s.selection,
             hover_hit: s.hover_hit,
             sort: s.sort,
+            flat_rows: s.config.flat_rows,
+            row_field_count: s.config.row_fields.len(),
             show_row_subtotals: s.config.show_row_subtotals,
             scroll_offset: s.scroll_handle.offset(),
             row_height: s.row_height,
@@ -111,6 +118,24 @@ impl PivotPaintData {
             d -= 1;
         }
         Some(id)
+    }
+
+    /// Row-node ids along a flat (tabular) leaf row's grouping path, root →
+    /// leaf (one per row field, outermost first). Each id indexes
+    /// `result.row_nodes` for that field's label and sort key. Empty for the
+    /// grand-total row (`key == TOTAL_KEY`), handled separately.
+    fn flat_row_node_ids(&self, row: &VisibleRow) -> Vec<usize> {
+        if row.key == TOTAL_KEY {
+            return Vec::new();
+        }
+        let mut ids = Vec::new();
+        let mut cur = Some(row.key);
+        while let Some(id) = cur {
+            ids.push(id);
+            cur = self.result.row_nodes.get(id).and_then(|n| n.parent);
+        }
+        ids.reverse();
+        ids
     }
 
     fn row_label(&self, row: &VisibleRow) -> String {
@@ -466,50 +491,104 @@ pub(crate) fn paint_pivot_grid(
                 VisibleRowKind::Leaf => theme.row_header_bg,
             };
             fill_quad(window, ox, y, rhw, row_h, bg);
-            let indent = ox + vr.depth as f32 * ROW_INDENT + 4.0;
-            let mut label_x = indent;
-            if let VisibleRowKind::GroupHeader { expanded } = vr.kind {
-                let chev = if expanded { "▼" } else { "▶" };
-                paint_txt(
-                    window,
-                    cx,
-                    chev,
-                    indent + 2.0,
-                    y + (row_h - fs) * 0.5,
-                    theme.pivot_total_fg,
-                    None,
-                );
-                label_x = indent + CHEVRON_SIZE + 4.0;
-            }
-            let mut color = match vr.kind {
-                VisibleRowKind::Leaf => theme.text_fg,
-                _ => theme.pivot_total_fg,
-            };
-            let label = data.row_label(vr);
-            let mut lx = label_x;
-            if !matches!(vr.kind, VisibleRowKind::GrandTotal) {
-                if let Some(&(align, red)) = data.row_label_fmts.get(vr.depth) {
-                    lx = aligned_x(align, label_x, ox + rhw - 6.0, text_w_approx(&label, cw));
-                    let neg = data
-                        .result
-                        .row_nodes
-                        .get(vr.key)
-                        .is_some_and(|n| cell_is_negative(&n.sort_key));
-                    if red && neg {
-                        color = theme.negative_fg;
+            let ty = y + (row_h - fs) * 0.5;
+            if data.flat_rows && data.row_field_count >= 1 {
+                // Tabular layout: one row-header sub-column per row field.
+                let n = data.row_field_count;
+                let sub_w = rhw / n as f32;
+                if matches!(vr.kind, VisibleRowKind::GrandTotal) {
+                    paint_txt_weighted(
+                        window,
+                        cx,
+                        "Grand Total",
+                        ox + 4.0,
+                        ty,
+                        theme.pivot_total_fg,
+                        Some(rhw - 8.0),
+                        true,
+                    );
+                } else {
+                    let ids = data.flat_row_node_ids(vr);
+                    for i in 0..n {
+                        let cx0 = ox + i as f32 * sub_w;
+                        let node = ids.get(i).and_then(|&id| data.result.row_nodes.get(id));
+                        let label = node.map(|n| n.label.as_str()).unwrap_or("");
+                        let (align, red) = data
+                            .row_label_fmts
+                            .get(i)
+                            .copied()
+                            .unwrap_or((TextAlignment::Left, false));
+                        let lx = aligned_x(
+                            align,
+                            cx0 + 4.0,
+                            cx0 + sub_w - 6.0,
+                            text_w_approx(label, cw),
+                        );
+                        let color = if red && node.is_some_and(|n| cell_is_negative(&n.sort_key)) {
+                            theme.negative_fg
+                        } else {
+                            theme.text_fg
+                        };
+                        paint_txt(
+                            window,
+                            cx,
+                            label,
+                            lx,
+                            ty,
+                            color,
+                            Some(cx0 + sub_w - lx - 6.0),
+                        );
+                        if i + 1 < n {
+                            fill_quad(window, cx0 + sub_w - 1.0, y, 1.0, row_h, theme.grid_line);
+                        }
                     }
                 }
+            } else {
+                let indent = ox + vr.depth as f32 * ROW_INDENT + 4.0;
+                let mut label_x = indent;
+                if let VisibleRowKind::GroupHeader { expanded } = vr.kind {
+                    let chev = if expanded { "▼" } else { "▶" };
+                    paint_txt(
+                        window,
+                        cx,
+                        chev,
+                        indent + 2.0,
+                        ty,
+                        theme.pivot_total_fg,
+                        None,
+                    );
+                    label_x = indent + CHEVRON_SIZE + 4.0;
+                }
+                let mut color = match vr.kind {
+                    VisibleRowKind::Leaf => theme.text_fg,
+                    _ => theme.pivot_total_fg,
+                };
+                let label = data.row_label(vr);
+                let mut lx = label_x;
+                if !matches!(vr.kind, VisibleRowKind::GrandTotal) {
+                    if let Some(&(align, red)) = data.row_label_fmts.get(vr.depth) {
+                        lx = aligned_x(align, label_x, ox + rhw - 6.0, text_w_approx(&label, cw));
+                        let neg = data
+                            .result
+                            .row_nodes
+                            .get(vr.key)
+                            .is_some_and(|n| cell_is_negative(&n.sort_key));
+                        if red && neg {
+                            color = theme.negative_fg;
+                        }
+                    }
+                }
+                paint_txt_weighted(
+                    window,
+                    cx,
+                    &label,
+                    lx,
+                    ty,
+                    color,
+                    Some(ox + rhw - lx - 6.0),
+                    matches!(vr.kind, VisibleRowKind::GrandTotal),
+                );
             }
-            paint_txt_weighted(
-                window,
-                cx,
-                &label,
-                lx,
-                y + (row_h - fs) * 0.5,
-                color,
-                Some(ox + rhw - lx - 6.0),
-                matches!(vr.kind, VisibleRowKind::GrandTotal),
-            );
             fill_quad(window, ox, y + row_h - 1.0, rhw, 1.0, theme.grid_line);
         }
     });
@@ -863,20 +942,62 @@ pub(crate) fn paint_pivot_grid(
         Some(rhw - 16.0),
     );
     if !data.result.row_field_names.is_empty() {
-        let names = data.result.row_field_names.join(" ▸ ");
         let ny = oy + hdr_h - hdr_row_h + (hdr_row_h - fs) * 0.5;
         // Clicking the corner cycles the row-label sort; give it the same
         // affordance as a sortable column header (reserved glyph slot,
         // hover hint, bold accent direction glyph).
-        paint_txt(
-            window,
-            cx,
-            &names,
-            ox + 8.0,
-            ny,
-            theme.muted_text,
-            Some(rhw - 16.0 - cw * ICON_SCALE - 6.0),
-        );
+        if data.flat_rows && data.row_field_count >= 1 {
+            // One field-name header per row-header sub-column, matching the
+            // tabular row labels below.
+            let n = data.row_field_count;
+            let sub_w = rhw / n as f32;
+            let hdr_top = oy + hdr_h - hdr_row_h;
+            for i in 0..n {
+                let cx0 = ox + i as f32 * sub_w;
+                let name = data
+                    .result
+                    .row_field_names
+                    .get(i)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                // Only the last sub-column reserves the sort-glyph slot.
+                let max_w = if i + 1 == n {
+                    sub_w - 8.0 - cw * ICON_SCALE - 6.0
+                } else {
+                    sub_w - 12.0
+                };
+                paint_txt(
+                    window,
+                    cx,
+                    name,
+                    cx0 + 8.0,
+                    ny,
+                    theme.muted_text,
+                    Some(max_w.max(0.0)),
+                );
+                if i + 1 < n {
+                    fill_quad(
+                        window,
+                        cx0 + sub_w - 1.0,
+                        hdr_top,
+                        1.0,
+                        hdr_row_h,
+                        theme.grid_line,
+                    );
+                }
+            }
+        } else {
+            let names = data.result.row_field_names.join(" ▸ ");
+            paint_txt(
+                window,
+                cx,
+                &names,
+                ox + 8.0,
+                ny,
+                theme.muted_text,
+                Some(rhw - 16.0 - cw * ICON_SCALE - 6.0),
+            );
+        }
         let sorted = match data.sort {
             Some((PivotSortKey::RowLabel, dir)) => Some(dir),
             _ => None,

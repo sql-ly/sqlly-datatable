@@ -5,6 +5,20 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.2] - 2026-07-17
+
+### Added
+- Pivot **flat (tabular) row layout**. With multiple row fields, the
+  nested/indented hierarchy can be switched to a flat table: one row per
+  innermost combination, each row field in its own row-header column, with no
+  group-header rows, indentation, or per-level subtotals. Off by default —
+  toggle "Flat rows (no hierarchy)" in the sidebar's Layout section, or set
+  `PivotConfig::flat_rows`.
+
+### Changed
+- **Breaking (niche):** `PivotConfig` gains a `flat_rows: bool` field, which
+  breaks full struct-literal construction; use `..PivotConfig::default()`.
+
 ## [3.1.1] - 2026-07-17
 
 ### Fixed

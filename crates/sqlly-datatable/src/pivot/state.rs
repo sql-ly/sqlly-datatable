@@ -1977,6 +1977,33 @@ pub(crate) fn flatten_rows(
         }
         return out;
     }
+    if config.flat_rows {
+        // Flat/tabular layout: one row per innermost leaf combination, in the
+        // current sort order (`row_leaves` walks the already-resorted tree),
+        // with no group-header rows, indentation, or subtotals. Each field's
+        // value is painted in its own row-header column (see `paint.rs`).
+        // Zebra alternates across the whole flat list rather than resetting
+        // per group.
+        let mut zebra = false;
+        for leaf in result.row_leaves() {
+            out.push(VisibleRow {
+                key: leaf,
+                depth: result.row_nodes[leaf].depth,
+                kind: VisibleRowKind::Leaf,
+                zebra,
+            });
+            zebra = !zebra;
+        }
+        if config.show_row_grand_total && !out.is_empty() {
+            out.push(VisibleRow {
+                key: TOTAL_KEY,
+                depth: 0,
+                kind: VisibleRowKind::GrandTotal,
+                zebra: false,
+            });
+        }
+        return out;
+    }
     fn walk(
         result: &PivotResult,
         collapsed: &HashSet<Vec<String>>,
@@ -2212,6 +2239,41 @@ mod tests {
         let result = fixture_result(&cfg);
         let rows = flatten_rows(&result, &HashSet::new(), &cfg);
         assert!(rows.iter().all(|r| r.kind != VisibleRowKind::GrandTotal));
+    }
+
+    #[test]
+    fn flatten_rows_flat_lists_leaf_combinations_without_hierarchy() {
+        let mut cfg = two_level_config();
+        cfg.flat_rows = true;
+        let result = fixture_result(&cfg);
+        let rows = flatten_rows(&result, &HashSet::new(), &cfg);
+        // 4 distinct (region, product) leaves + grand total; no group headers.
+        assert_eq!(rows.len(), 5);
+        assert!(rows[..4].iter().all(|r| r.kind == VisibleRowKind::Leaf));
+        assert!(rows
+            .iter()
+            .all(|r| !matches!(r.kind, VisibleRowKind::GroupHeader { .. })));
+        assert_eq!(rows[4].kind, VisibleRowKind::GrandTotal);
+        // Each leaf carries the full path (both row fields) for its tabular
+        // row-header columns, in depth-first (sorted) order.
+        let paths: Vec<Vec<String>> = rows[..4]
+            .iter()
+            .map(|r| node_path(&result.row_nodes, r.key))
+            .collect();
+        assert!(paths.iter().all(|p| p.len() == 2));
+        assert_eq!(paths[0], vec!["Asia".to_owned(), "Gadget".to_owned()]);
+        assert_eq!(paths[3], vec!["Europe".to_owned(), "Widget".to_owned()]);
+    }
+
+    #[test]
+    fn flatten_rows_flat_respects_grand_total_toggle() {
+        let mut cfg = two_level_config();
+        cfg.flat_rows = true;
+        cfg.show_row_grand_total = false;
+        let result = fixture_result(&cfg);
+        let rows = flatten_rows(&result, &HashSet::new(), &cfg);
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().all(|r| r.kind == VisibleRowKind::Leaf));
     }
 
     #[test]

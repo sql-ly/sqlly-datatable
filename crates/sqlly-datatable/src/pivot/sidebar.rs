@@ -1294,6 +1294,19 @@ impl Render for PivotSidebar {
                 div()
                     .text_color(theme.muted_text)
                     .text_size(px(12.0))
+                    .child("Layout"),
+            )
+            .child(Self::option_row(
+                &self.state,
+                "Flat rows (no hierarchy)",
+                config.flat_rows,
+                |s| s.config.flat_rows = !s.config.flat_rows,
+                cx,
+            ))
+            .child(
+                div()
+                    .text_color(theme.muted_text)
+                    .text_size(px(12.0))
                     .child("Totals"),
             )
             .child(Self::option_row(

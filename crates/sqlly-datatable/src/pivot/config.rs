@@ -41,7 +41,14 @@ pub struct PivotConfig {
     /// Columns available as source-row filters (the Filters zone). The
     /// actual predicate state lives on the pivot state, not the config.
     pub filter_fields: Vec<usize>,
-    /// Show subtotal values on expanded row group headers.
+    /// Lay multiple row fields out flat (tabular) instead of nested: one row
+    /// per innermost combination, each row field in its own row-header
+    /// column, with no group-header rows, indentation, or per-level
+    /// subtotals. Off by default (the nested/hierarchical layout). Has no
+    /// visible effect with zero or one row field.
+    pub flat_rows: bool,
+    /// Show subtotal values on expanded row group headers. Ignored while
+    /// [`Self::flat_rows`] is on (flat layout has no group headers).
     pub show_row_subtotals: bool,
     /// Append a "Total" column after each expanded column group.
     pub show_column_subtotals: bool,
@@ -71,6 +78,7 @@ impl Default for PivotConfig {
             value_field: None,
             aggregation: AggregationFn::default(),
             filter_fields: vec![],
+            flat_rows: false,
             show_row_subtotals: true,
             show_column_subtotals: false,
             show_row_grand_total: true,
