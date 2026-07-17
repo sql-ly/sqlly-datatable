@@ -48,12 +48,31 @@ pub enum ReplacementTiming {
     AfterFormat,
 }
 
+/// Formatting for numeric (integer / decimal) columns.
+///
+/// **Negatives and color-blind safety.** `show_negative_red` is a *decorative*
+/// channel — a red fill that a red/green-color-blind reader cannot rely on.
+/// The accessible channel is always the sign glyph in the formatted text: a
+/// leading `-`, or wrapping `( … )` when `negative_parentheses` is set. That
+/// glyph is emitted independently of `show_negative_red`, so a negative value
+/// is never distinguished by color alone (WCAG 1.4.1). For financial columns,
+/// prefer `negative_parentheses` — parentheses wrap the whole number and read
+/// far faster than a thin minus when scanning a dense column; the default
+/// keeps the leading minus because it is the correct general-purpose sign for
+/// non-monetary integers (IDs, counts, deltas).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NumberFormat {
+    /// Digits after the decimal point.
     pub decimals: usize,
+    /// Paint negative values in the theme's `negative_fg`. Decorative only —
+    /// never the sole cue (see the type-level note on color-blind safety).
     pub show_negative_red: bool,
+    /// Render negatives as `(123)` instead of `-123`. The stronger,
+    /// accounting-standard sign channel for money columns.
     pub negative_parentheses: bool,
+    /// Group the integer part with thousands separators (`1,234,567`).
     pub thousands_separator: bool,
+    /// Horizontal alignment of the value within its cell.
     pub alignment: TextAlignment,
 }
 

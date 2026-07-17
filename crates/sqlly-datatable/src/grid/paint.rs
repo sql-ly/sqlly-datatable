@@ -75,7 +75,7 @@ pub(crate) struct PaintData {
     pub(crate) sort: Option<(usize, SortDirection)>,
     pub(crate) theme: GridTheme,
     pub(crate) columns: Vec<Column>,
-    pub(crate) resolved_formats: Vec<ResolvedColumnFormat>,
+    pub(crate) resolved_formats: Arc<Vec<ResolvedColumnFormat>>,
     pub(crate) rows: Arc<Vec<Vec<crate::data::CellValue>>>,
     pub(crate) filters_active: Vec<bool>,
     pub(crate) scroll_offset: Point<Pixels>,
@@ -88,6 +88,10 @@ pub(crate) struct PaintData {
     pub(crate) hover_hit: Option<HitResult>,
     /// Hint painted centered in the data area when there are zero rows.
     pub(crate) empty_text: String,
+    /// Whether the grid currently holds keyboard focus. Drives the
+    /// focus-visible ring (WCAG 2.4.7). Set by the widget in the canvas
+    /// prepaint, where a `Window` is available to query the focus handle.
+    pub(crate) focused: bool,
 }
 
 impl PaintData {
@@ -101,7 +105,7 @@ impl PaintData {
             sort: s.sort,
             theme: s.theme.clone(),
             columns: s.data.columns.clone(),
-            resolved_formats: s.resolved_formats.clone(),
+            resolved_formats: Arc::clone(&s.resolved_formats),
             rows: Arc::clone(&s.data_rows),
             filters_active: s.filters.iter().map(|f| f.is_active()).collect(),
             scroll_offset: s.scroll_handle.offset(),
@@ -113,6 +117,9 @@ impl PaintData {
             drag_rect: s.drag_screen_rect(),
             hover_hit: s.hover_hit,
             empty_text: s.config.empty_text.clone(),
+            // Overridden by the widget's canvas prepaint, which has the
+            // `Window` needed to query focus; `from_state` alone cannot.
+            focused: false,
         }
     }
 
@@ -333,15 +340,19 @@ pub(crate) fn paint_grid(
         f.weight = gpui::FontWeight::BOLD;
         f
     };
-    let paint_txt_styled = |win: &mut Window,
-                            cx: &mut App,
-                            text: &str,
-                            x: f32,
-                            y: f32,
-                            color: Hsla,
-                            max_w: Option<f32>,
-                            italic: bool,
-                            bold: bool| {
+    // Shape a line and fit it to `max_w` (truncating on a char boundary when
+    // it overflows), returning the final `ShapedLine` — or `None` when the box
+    // is too narrow to paint anything. Callers read `shaped.width` for the
+    // *true* laid-out width (double-width CJK/emoji included) and position by
+    // it, so right/center alignment lands correctly rather than relying on a
+    // monospace char-count estimate. Shaping happens exactly once per visible
+    // cell here, so measuring costs nothing extra over painting.
+    let shape_fitted = |text: &str,
+                        color: Hsla,
+                        max_w: Option<f32>,
+                        italic: bool,
+                        bold: bool|
+     -> Option<gpui::ShapedLine> {
         let face = if italic {
             &italic_font
         } else if bold {
@@ -359,21 +370,33 @@ pub(crate) fn paint_grid(
         };
         let shaped =
             text_system.shape_line(text.to_owned().into(), font_size, &[mk_run(text)], None);
-        let shaped = match max_w {
-            Some(mw) if mw <= 0.0 => return,
+        match max_w {
+            Some(mw) if mw <= 0.0 => None,
             Some(mw) if f32::from(shaped.width) > mw => {
                 let byte_idx = shaped.index_for_x(px(mw)).unwrap_or(0);
                 let truncated = &text[..floor_char_boundary(text, byte_idx)];
-                text_system.shape_line(
+                Some(text_system.shape_line(
                     truncated.to_owned().into(),
                     font_size,
                     &[mk_run(truncated)],
                     None,
-                )
+                ))
             }
-            _ => shaped,
-        };
-        let _ = shaped.paint(Point { x: px(x), y: px(y) }, line_height, win, cx);
+            _ => Some(shaped),
+        }
+    };
+    let paint_txt_styled = |win: &mut Window,
+                            cx: &mut App,
+                            text: &str,
+                            x: f32,
+                            y: f32,
+                            color: Hsla,
+                            max_w: Option<f32>,
+                            italic: bool,
+                            bold: bool| {
+        if let Some(shaped) = shape_fitted(text, color, max_w, italic, bold) {
+            let _ = shaped.paint(Point { x: px(x), y: px(y) }, line_height, win, cx);
+        }
     };
     let paint_txt = |win: &mut Window,
                      cx: &mut App,
@@ -519,24 +542,21 @@ pub(crate) fn paint_grid(
                 } else {
                     theme.text_fg
                 };
-                let text_w = text_w_approx(&text, cw);
-                let tx = match fmt.alignment() {
-                    crate::config::TextAlignment::Left => x + 8.0,
-                    crate::config::TextAlignment::Center => x + (w - text_w) * 0.5,
-                    crate::config::TextAlignment::Right => x + w - text_w - 8.0,
-                };
                 let ty = y + (row_h - fs) * 0.5;
-                paint_txt_styled(
-                    window,
-                    cx,
-                    &text,
-                    tx,
-                    ty,
-                    color,
-                    Some(w - 16.0),
-                    is_null && fmt.null.italic,
-                    false,
-                );
+                // Shape once, then align by the true laid-out width so
+                // right/center columns holding double-width glyphs (CJK, emoji)
+                // land correctly rather than drifting by the monospace estimate.
+                if let Some(shaped) =
+                    shape_fitted(&text, color, Some(w - 16.0), is_null && fmt.null.italic, false)
+                {
+                    let text_w = f32::from(shaped.width);
+                    let tx = match fmt.alignment() {
+                        crate::config::TextAlignment::Left => x + 8.0,
+                        crate::config::TextAlignment::Center => x + (w - text_w) * 0.5,
+                        crate::config::TextAlignment::Right => x + w - text_w - 8.0,
+                    };
+                    let _ = shaped.paint(Point { x: px(tx), y: px(ty) }, line_height, window, cx);
+                }
                 fill_quad(window, x + w, y, 1.0, row_h, theme.grid_line);
                 col_x += w;
             }
@@ -566,11 +586,18 @@ pub(crate) fn paint_grid(
                 theme.row_header_bg
             };
             fill_quad(window, ox, y, rhw, row_h, rh_bg);
+            // Row numbers right-align against the frozen separator, the way
+            // Excel and Numbers rail them — reads as a deliberate gutter, not
+            // stray digits. Clamped to a 4px left inset so a 6-digit number
+            // (100k+ rows) can't spill out the left of the gutter.
+            let num = data.row_number(dr).to_string();
+            let num_w = text_w_approx(&num, cw);
+            let num_x = (ox + rhw - num_w - 6.0).max(ox + 4.0);
             paint_txt(
                 window,
                 cx,
-                &data.row_number(dr).to_string(),
-                ox + 6.0,
+                &num,
+                num_x,
                 y + (row_h - fs) * 0.5,
                 theme.header_fg,
                 None,
@@ -596,15 +623,36 @@ pub(crate) fn paint_grid(
             if data.grouped_column == Some(ci) {
                 fill_quad(window, x, oy + hdr_h - 3.0, w, 3.0, theme.sort_indicator);
             }
-            paint_txt_bold(
-                window,
-                cx,
-                &col.name,
-                x + 8.0,
-                oy + (hdr_h - fs) * 0.5,
-                theme.header_fg,
-                Some(w - 28.0),
+            // Column headers echo their column's data alignment, so a numeric
+            // column's label sits over its right-aligned values instead of
+            // floating hard-left across the gap. The right gutter is always
+            // reserved for the hover/sort button (28px), widening to clear the
+            // 🔽 active-filter marker (→ 46px, its glyph starts ~42.7px in from
+            // the column's right edge) when this column is filtered, so neither
+            // a right-aligned label nor a truncated left-aligned one collides
+            // with the glyphs. A right-aligned label only shifts right when it
+            // genuinely fits; otherwise it falls back to the left edge and
+            // ellipsizes there.
+            let right_reserve = if data.filters_active[ci] { 46.0 } else { 28.0 };
+            let label_max = w - right_reserve;
+            let label_y = oy + (hdr_h - fs) * 0.5;
+            let right_aligned = matches!(
+                data.resolved_formats[ci].alignment(),
+                crate::config::TextAlignment::Right
             );
+            // Shape once, then right-align by the true laid-out width when it
+            // fits (double-width glyphs included); otherwise fall back to the
+            // left edge and let it ellipsize there.
+            if let Some(shaped) = shape_fitted(&col.name, theme.header_fg, Some(label_max), false, true)
+            {
+                let tw = f32::from(shaped.width);
+                let label_x = if right_aligned && tw <= label_max - 8.0 {
+                    x + w - right_reserve - tw
+                } else {
+                    x + 8.0
+                };
+                let _ = shaped.paint(Point { x: px(label_x), y: px(label_y) }, line_height, window, cx);
+            }
             let btn_w = 20.0;
             let btn_x = x + w - btn_w;
             let btn_y = oy + 4.0;
@@ -684,18 +732,16 @@ pub(crate) fn paint_grid(
     // Empty result set: a quiet centered hint instead of a bare void. The
     // text is host-configurable (and localizable) via `GridConfig::empty_text`.
     if data.display_row_count() == 0 && !data.empty_text.is_empty() {
-        let tw = text_w_approx(&data.empty_text, cw);
-        let tx = ox + rhw + ((sw - rhw) - tw) * 0.5;
         let ty = oy + hdr_h + (sh - hdr_h - fs).max(0.0) * 0.35;
-        paint_txt(
-            window,
-            cx,
-            &data.empty_text,
-            tx.max(ox + rhw + 8.0),
-            ty,
-            theme.muted_text,
-            Some(sw - rhw - 16.0),
-        );
+        // Shape once, then center by the true laid-out width so a localized
+        // hint (CJK, RTL) sits centered rather than off by the estimate.
+        if let Some(shaped) =
+            shape_fitted(&data.empty_text, theme.muted_text, Some(sw - rhw - 16.0), false, false)
+        {
+            let tw = f32::from(shaped.width);
+            let tx = (ox + rhw + ((sw - rhw) - tw) * 0.5).max(ox + rhw + 8.0);
+            let _ = shaped.paint(Point { x: px(tx), y: px(ty) }, line_height, window, cx);
+        }
     }
 
     if let Some((start, current)) = data.drag_rect {
@@ -727,6 +773,19 @@ pub(crate) fn paint_grid(
     }
 
     paint_scrollbars(data, window, ox, oy, sw, sh, theme);
+
+    // Focus-visible ring (WCAG 2.4.7): a 1px accent frame around the grid
+    // signals that it holds keyboard focus, so a keyboard user always knows
+    // where input goes even before a cell is selected. Painted last so it sits
+    // above cells, grid lines, and scrollbars; themable via `sort_indicator`
+    // (the accent role already used for sort/selection affordances).
+    if data.focused {
+        let ring = theme.sort_indicator;
+        fill_quad(window, ox, oy, sw, 1.0, ring);
+        fill_quad(window, ox, oy + sh - 1.0, sw, 1.0, ring);
+        fill_quad(window, ox, oy, 1.0, sh, ring);
+        fill_quad(window, ox + sw - 1.0, oy, 1.0, sh, ring);
+    }
 
     // The context menu is no longer painted here. It is rendered as a
     // `deferred` + `anchored` overlay in `widget.rs` so that it paints — and

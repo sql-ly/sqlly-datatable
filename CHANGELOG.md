@@ -5,7 +5,57 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.1.0] - 2026-07-17
+
+### Added
+- Full keyboard navigation for the flat grid: **Home**/**End** jump to the
+  first/last column of the active row, **PageUp**/**PageDown** move by one
+  viewport of rows, each with **Shift** to extend the selection. Every
+  keyboard move now scrolls the active cell into view, so arrowing (or
+  paging) past the fold no longer strands the selection off-screen.
+- Focus-visible ring: a 1px accent frame (themable via
+  `GridTheme::sort_indicator`) is painted around the grid while it holds
+  keyboard focus, so a keyboard user can always see where input goes
+  (WCAG 2.4.7).
+- `tests/keyboard_nav.rs`: exercises the public `handle_key` path and
+  asserts the active cell is scrolled into view on arrow / PageUp/Down /
+  Home / End, plus Shift-extend to the row extremes.
+- Color-blind-safety invariant test: a negative number always carries a
+  non-color sign channel in its text (leading `-` or `( … )`) regardless of
+  the decorative `show_negative_red` flag (WCAG 1.4.1).
+
+### Fixed
+- Zebra striping was effectively invisible in all four shipped palettes
+  (~1.06 contrast against the base row). The alternating band is deepened to
+  a genuinely perceptible ~1.16 so a row can be tracked across a wide
+  horizontal scroll; body text stays ≥ 12.8:1 on the band. The WCAG test's
+  zebra floor is raised (1.02 → 1.12) to lock the band in.
+- Row numbers right-align against the frozen gutter (the Excel / Numbers
+  convention) instead of floating flush-left.
+- Column headers echo their column's data alignment — a numeric column's
+  label now sits right-aligned over its right-aligned values — while
+  reserving the hover/sort button gutter (and the filter funnel when the
+  column is filtered).
+- Right- and center-aligned cells, headers, and the empty-state hint are
+  positioned by the text's true shaped width, so double-width glyphs (CJK,
+  emoji) align correctly instead of drifting by the monospace estimate.
+- Appearance-following reconciles the resolved theme against the window
+  appearance on every render, self-healing a stale first-frame appearance
+  read that could otherwise strand the grid in the light variant.
+
+### Changed
+- **Breaking (niche):** `GridState::resolved_formats` is now
+  `Arc<Vec<ResolvedColumnFormat>>` (was `Vec<ResolvedColumnFormat>`) so the
+  once-per-frame paint snapshot clones a pointer instead of deep-copying
+  every column's format. Indexing (`state.resolved_formats[i]`), `.len()`,
+  and `.iter()` are unchanged via `Deref`; only code that reassigned the
+  field or iterated `&state.resolved_formats` directly needs adjusting
+  (`Arc::new(…)` / `.iter()`).
+- Documented the negative-number accessibility contract on `NumberFormat`:
+  `show_negative_red` is decorative, and the sign glyph (leading minus, or
+  parentheses via `negative_parentheses`) is the color-blind-safe channel.
+
+## [3.0.2] - 2026-07-16
 
 ### Changed
 - The active-filter indicator is the 🔽 emoji in both views (the grid's

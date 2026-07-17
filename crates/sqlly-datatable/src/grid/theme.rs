@@ -145,7 +145,7 @@ impl GridTheme {
             filter_active_bg: hsla(0.5778, 1.0, 0.8778, 1.0),        // oklch(0.90 0.06 250)
             row_header_bg: hsla(0.0, 0.0, 0.9215, 1.0),              // oklch(0.94 0 0)
             selection_bg: hsla(0.5786, 1.0, 0.8972, 1.0),            // oklch(0.915 0.05 250)
-            alt_row_bg: hsla(0.0, 0.0, 0.9632, 1.0),                 // oklch(0.972 0 0)
+            alt_row_bg: hsla(0.0, 0.0, 0.9306, 1.0),                 // oklch(0.947 0 0)
             grid_line: hsla(0.0, 0.0, 0.8634, 1.0),                  // oklch(0.895 0 0)
             header_fg: hsla(0.0, 0.0, 0.1599, 1.0),                  // oklch(0.28 0 0)
             text_fg: hsla(0.0, 0.0, 0.0476, 1.0),                    // oklch(0.155 0 0)
@@ -182,7 +182,7 @@ impl GridTheme {
             filter_active_bg: hsla(0.583, 0.4915, 0.2685, 1.0), // oklch(0.38 0.07 250)
             row_header_bg: hsla(0.0, 0.0, 0.1268, 1.0), // oklch(0.245 0 0)
             selection_bg: hsla(0.5823, 0.5446, 0.2618, 1.0), // oklch(0.375 0.075 250)
-            alt_row_bg: hsla(0.0, 0.0, 0.1085, 1.0), // oklch(0.225 0 0)
+            alt_row_bg: hsla(0.0, 0.0, 0.1362, 1.0), // oklch(0.255 0 0)
             grid_line: hsla(0.0, 0.0, 0.2089, 1.0), // oklch(0.33 0 0)
             header_fg: hsla(0.0, 0.0, 0.806, 1.0),  // oklch(0.85 0 0)
             text_fg: hsla(0.0, 0.0, 0.9085, 1.0),   // oklch(0.93 0 0)
@@ -220,7 +220,7 @@ impl GridTheme {
             filter_active_bg: hsla(0.4978, 0.5936, 0.7861, 1.0),     // oklch(0.89 0.065 195)
             row_header_bg: hsla(0.4956, 0.2469, 0.8956, 1.0),        // oklch(0.93 0.014 195)
             selection_bg: hsla(0.497, 0.5728, 0.8399, 1.0),          // oklch(0.915 0.048 195)
-            alt_row_bg: hsla(0.4952, 0.2997, 0.9568, 1.0),           // oklch(0.972 0.007 195)
+            alt_row_bg: hsla(0.4953, 0.1854, 0.9207, 1.0),           // oklch(0.945 0.008 195)
             grid_line: hsla(0.4957, 0.1778, 0.8359, 1.0),            // oklch(0.885 0.016 195)
             header_fg: hsla(0.5, 0.6775, 0.1233, 1.0),               // oklch(0.30 0.045 195)
             text_fg: hsla(0.4982, 0.397, 0.0491, 1.0),               // oklch(0.17 0.015 195)
@@ -257,7 +257,7 @@ impl GridTheme {
             filter_active_bg: hsla(0.5016, 1.0, 0.1547, 1.0), // oklch(0.375 0.085 195)
             row_header_bg: hsla(0.4976, 0.2111, 0.1053, 1.0), // oklch(0.235 0.016 195)
             selection_bg: hsla(0.5016, 1.0, 0.1547, 1.0), // oklch(0.375 0.085 195)
-            alt_row_bg: hsla(0.4975, 0.207, 0.0917, 1.0), // oklch(0.218 0.014 195)
+            alt_row_bg: hsla(0.4974, 0.1857, 0.1210, 1.0), // oklch(0.252 0.016 195)
             grid_line: hsla(0.4975, 0.1743, 0.1906, 1.0), // oklch(0.33 0.022 195)
             header_fg: hsla(0.4959, 0.1709, 0.7876, 1.0), // oklch(0.85 0.02 195)
             text_fg: hsla(0.4953, 0.1483, 0.9013, 1.0), // oklch(0.93 0.008 195)
@@ -552,7 +552,10 @@ mod wcag {
     fn distinctness(t: &GridTheme) -> Vec<(Hsla, Hsla, f32, &'static str)> {
         vec![
             (t.selection_bg, t.bg, 1.1, "selection visible on bg"),
-            (t.alt_row_bg, t.bg, 1.02, "zebra visible"),
+            // Zebra must carry row-tracking across a wide horizontal scroll,
+            // not just technically differ from the base row: hold a genuinely
+            // perceptible band (the shipped palettes sit at ~1.16).
+            (t.alt_row_bg, t.bg, 1.12, "zebra perceptible"),
             (t.menu_hover_bg, t.menu_bg, 1.1, "menu hover visible"),
             (
                 t.pivot_drop_zone_active_bg,

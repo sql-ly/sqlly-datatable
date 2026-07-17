@@ -220,7 +220,11 @@ pub struct GridState {
     /// Cached resolved-format list, kept in sync with `data.columns` and
     /// `config`. Paint, copy, and filter read this directly instead of
     /// recomputing per cell.
-    pub resolved_formats: Vec<ResolvedColumnFormat>,
+    /// Resolved per-column formats. Held behind an `Arc` so the once-per-frame
+    /// paint snapshot ([`crate::grid::paint::PaintData`]) clones a pointer
+    /// rather than deep-copying every column's format (each carries several
+    /// owned strings). Indexing and iteration are unchanged via `Deref`.
+    pub resolved_formats: Arc<Vec<ResolvedColumnFormat>>,
     /// Arc-wrapped row data so `PaintData::from_state` can clone cheaply
     /// (O(1)) instead of deep-cloning every cell every frame. Rows are
     /// immutable after `GridState::new`, so the Arc never needs rebuilding.
@@ -669,7 +673,7 @@ fn fmt_number_operand(kind: ColumnKind, v: f64) -> String {
 impl GridState {
     #[must_use]
     pub fn new(data: GridData, config: GridConfig, focus_handle: FocusHandle) -> Self {
-        let resolved_formats = config.resolve_all(&data.columns);
+        let resolved_formats = Arc::new(config.resolve_all(&data.columns));
         let col_count = data.columns.len();
         let display_indices = Arc::new((0..data.rows.len()).collect::<Vec<_>>());
         let display_rows = Arc::new(
@@ -1063,7 +1067,7 @@ impl GridState {
     }
 
     fn rebuild_resolved_formats(&mut self) {
-        self.resolved_formats = self.config.resolve_all(&self.data.columns);
+        self.resolved_formats = Arc::new(self.config.resolve_all(&self.data.columns));
     }
 
     pub fn recompute(&mut self) {
@@ -2359,21 +2363,40 @@ impl GridState {
             return;
         }
         let shift = keystroke.modifiers.shift;
-        match keystroke.key.as_str() {
-            "up" if shift => self.extend_selection(0, -1),
-            "down" if shift => self.extend_selection(0, 1),
-            "left" if shift => self.extend_selection(-1, 0),
-            "right" if shift => self.extend_selection(1, 0),
-            "up" => self.move_selection(0, -1),
-            "down" => self.move_selection(0, 1),
-            "left" => self.move_selection(-1, 0),
-            "right" => self.move_selection(1, 0),
-            "escape" => {
-                self.selection = Selection::None;
-                self.range_anchor = None;
-                self.range_active = None;
+        if keystroke.key.as_str() == "escape" {
+            self.selection = Selection::None;
+            self.range_anchor = None;
+            self.range_active = None;
+            return;
+        }
+        // Full spreadsheet navigation set. Home/End jump to the first/last
+        // column of the active row; PageUp/PageDown move by one viewport of
+        // rows (clamped inside `move_selection`/`extend_selection`). Every
+        // move is followed by `reveal_active_cell` so the active cell is
+        // scrolled into view rather than lost off-screen.
+        let ncols = self.data.columns.len() as i32;
+        let page = {
+            let vh: f32 = self.bounds.size.height.into();
+            (((vh - self.header_height) / self.row_height) as i32 - 1).max(1)
+        };
+        let step = match keystroke.key.as_str() {
+            "up" => Some((0, -1)),
+            "down" => Some((0, 1)),
+            "left" => Some((-1, 0)),
+            "right" => Some((1, 0)),
+            "home" => Some((-ncols, 0)),
+            "end" => Some((ncols, 0)),
+            "pageup" => Some((0, -page)),
+            "pagedown" => Some((0, page)),
+            _ => None,
+        };
+        if let Some((dx, dy)) = step {
+            if shift {
+                self.extend_selection(dx, dy);
+            } else {
+                self.move_selection(dx, dy);
             }
-            _ => {}
+            self.reveal_active_cell();
         }
     }
 
@@ -2509,6 +2532,69 @@ impl GridState {
                 anchor.1.max(nc),
             )
         };
+    }
+
+    /// Scroll the minimum amount needed to bring the given display row and/or
+    /// column fully inside the data viewport. `None` on an axis leaves that
+    /// axis untouched. Used after keyboard navigation so the active cell never
+    /// slips off-screen — the spreadsheet convention a keyboard user expects.
+    pub(crate) fn ensure_visible(&mut self, row: Option<usize>, col: Option<usize>) {
+        let (rw, rh) = self.scrollbar_reserved();
+        let vw: f32 = self.bounds.size.width.into();
+        let vh: f32 = self.bounds.size.height.into();
+        let view_w = (vw - self.row_header_width - rw).max(0.0);
+        let view_h = (vh - self.header_height - rh).max(0.0);
+        let (max_x, max_y) = self.max_scroll();
+        let offset = self.scroll_handle.offset();
+        let (ox, oy) = (f32::from(offset.x), f32::from(offset.y));
+        let mut sx = ox;
+        let mut sy = oy;
+
+        if let Some(col) = col {
+            let left: f32 = self.data.columns[..col.min(self.data.columns.len())]
+                .iter()
+                .map(|c| c.width)
+                .sum();
+            let width = self.data.columns.get(col).map_or(0.0, |c| c.width);
+            if left < sx {
+                sx = left;
+            } else if left + width > sx + view_w {
+                sx = left + width - view_w;
+            }
+        }
+        if let Some(row) = row {
+            let top = row as f32 * self.row_height;
+            if top < sy {
+                sy = top;
+            } else if top + self.row_height > sy + view_h {
+                sy = top + self.row_height - view_h;
+            }
+        }
+        sx = sx.clamp(0.0, max_x);
+        sy = sy.clamp(0.0, max_y);
+        if sx != ox || sy != oy {
+            self.scroll_handle.set_offset(Point {
+                x: px(sx),
+                y: px(sy),
+            });
+        }
+    }
+
+    /// Reveal whichever cell the keyboard is currently driving: the moving
+    /// corner of a range extension (`range_active`) when present, else the
+    /// point/row/column of the current selection.
+    fn reveal_active_cell(&mut self) {
+        let (row, col) = if let Some((r, c)) = self.range_active {
+            (Some(r), Some(c))
+        } else {
+            match self.selection {
+                Selection::Cell(r, c) => (Some(r), Some(c)),
+                Selection::Row(r) => (Some(r), None),
+                Selection::Column(c) => (None, Some(c)),
+                _ => return,
+            }
+        };
+        self.ensure_visible(row, col);
     }
 
     pub(crate) fn hit_test(&self, pos: Point<Pixels>) -> HitResult {

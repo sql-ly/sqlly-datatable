@@ -472,6 +472,32 @@ mod tests {
         assert_eq!(format_integer(-42, &fmt), "(42)");
     }
 
+    /// Color-blind safety invariant: a negative value must always carry a
+    /// non-color sign channel in its text (leading `-` or `( … )`), whether or
+    /// not the decorative red fill is enabled. A red/green-color-blind reader
+    /// relies entirely on this glyph, so it can never be gated behind
+    /// `show_negative_red`. Guards WCAG 1.4.1 (use of color) for every
+    /// negative-styling combination, across integer and decimal paths.
+    #[test]
+    fn negatives_always_carry_a_non_color_sign_channel() {
+        for red in [false, true] {
+            for parens in [false, true] {
+                let fmt = NumberFormat {
+                    decimals: 2,
+                    show_negative_red: red,
+                    negative_parentheses: parens,
+                    ..NumberFormat::default()
+                };
+                let signed = |s: &str| s.starts_with('-') || (s.starts_with('(') && s.ends_with(')'));
+                for dec in [format_number(-1_493.17, &fmt), format_number(-0.01, &fmt)] {
+                    assert!(signed(&dec), "decimal negative lacks sign channel: {dec:?} (red={red}, parens={parens})");
+                }
+                let int = format_integer(-42, &NumberFormat { decimals: 0, show_negative_red: red, negative_parentheses: parens, ..NumberFormat::default() });
+                assert!(signed(&int), "integer negative lacks sign channel: {int:?} (red={red}, parens={parens})");
+            }
+        }
+    }
+
     #[test]
     fn format_number_negative_zero_path_does_not_panic() {
         let fmt = NumberFormat::default();

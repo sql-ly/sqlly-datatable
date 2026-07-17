@@ -356,7 +356,7 @@ fn build_pivot_parts(
         (
             s.data.columns.clone(),
             Arc::clone(&s.data_rows),
-            s.resolved_formats.clone(),
+            s.resolved_formats.as_ref().clone(),
             s.config.key_bindings.clone(),
             s.theme.clone(),
         )
@@ -600,24 +600,40 @@ impl Focusable for SqllyDataTable {
 
 impl Render for SqllyDataTable {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        // Follow the OS light/dark appearance: set the initial theme from the
-        // current window appearance and register a one-time observer that
-        // swaps the grid theme whenever the system appearance changes. Skipped
-        // when the caller supplied an explicit theme override.
-        if self.follow_system_appearance && self.appearance_subscription.is_none() {
+        // Follow the OS light/dark appearance. An observer swaps the theme
+        // whenever the system appearance changes, but we also reconcile the
+        // resolved theme against `window.appearance()` on every render: the
+        // appearance read on the very first frame can be stale (reported
+        // before the window has settled onto the OS appearance), which would
+        // otherwise strand the grid in the light variant on a dark-mode OS
+        // until the next appearance *change* event. Re-resolving each render
+        // self-heals that — it clones + compares one theme and only writes
+        // (and notifies) when the variant actually differs, so a steady state
+        // is a cheap no-op. Skipped entirely when the caller supplied an
+        // explicit theme override.
+        if self.follow_system_appearance {
             let appearance = window.appearance();
-            self.state.update(cx, |s, _cx| {
-                s.theme = s.theme_family.for_appearance(appearance);
-            });
-            let state_appearance = self.state.clone();
-            self.appearance_subscription =
-                Some(window.observe_window_appearance(move |window, cx| {
-                    let appearance = window.appearance();
-                    state_appearance.update(cx, |s, cx| {
-                        s.theme = s.theme_family.for_appearance(appearance);
-                        cx.notify();
-                    });
-                }));
+            let resolved = self.state.read(cx).theme_family.for_appearance(appearance);
+            if self.state.read(cx).theme != resolved {
+                self.state.update(cx, |s, cx| {
+                    s.theme = resolved;
+                    cx.notify();
+                });
+            }
+            if self.appearance_subscription.is_none() {
+                let state_appearance = self.state.clone();
+                self.appearance_subscription =
+                    Some(window.observe_window_appearance(move |window, cx| {
+                        let appearance = window.appearance();
+                        state_appearance.update(cx, |s, cx| {
+                            let resolved = s.theme_family.for_appearance(appearance);
+                            if s.theme != resolved {
+                                s.theme = resolved;
+                                cx.notify();
+                            }
+                        });
+                    }));
+            }
         }
 
         // Keep the pivot's theme in lockstep with the grid theme (which may
@@ -960,7 +976,9 @@ impl SqllyDataTable {
                             }
                         });
                         let s = state_canvas.read(cx);
-                        PaintData::from_state(s)
+                        let mut data = PaintData::from_state(s);
+                        data.focused = s.focus_handle.is_focused(window);
+                        data
                     },
                     move |bounds, data, window, cx| {
                         paint_grid(&data, window, cx, bounds);
