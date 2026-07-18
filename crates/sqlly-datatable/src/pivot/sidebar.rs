@@ -13,7 +13,7 @@ use crate::pivot::config::PivotZone;
 use crate::pivot::state::PivotState;
 
 use gpui::{
-    anchored, deferred, div, point, px, App, AppContext as _, Context, Corner, Entity, FontWeight,
+    anchored, deferred, div, point, px, App, AppContext as _, Context, Anchor, Entity, FontWeight,
     InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement,
     Render, SharedString, StatefulInteractiveElement, Styled, Window,
 };
@@ -976,7 +976,7 @@ impl PivotSidebar {
         let state_backdrop = state.clone();
         let overlay = deferred(
             anchored()
-                .anchor(Corner::TopLeft)
+                .anchor(Anchor::TopLeft)
                 .position(point(popover.anchor.x, popover.anchor.y))
                 .child(
                     div()
@@ -1241,7 +1241,7 @@ impl PivotSidebar {
         let state_backdrop = state.clone();
         let overlay = deferred(
             anchored()
-                .anchor(Corner::TopLeft)
+                .anchor(Anchor::TopLeft)
                 .position(point(dialog.anchor.x, dialog.anchor.y))
                 .child(
                     div()

@@ -16,7 +16,8 @@ use crate::grid::state::{state_inner, GridDisplayRow, GridState, RowGroup, SCROL
 use crate::grid::theme::GridTheme;
 
 use gpui::{
-    point, px, size, App, Bounds, ContentMask, CursorStyle, Hsla, PaintQuad, Pixels, Point, Window,
+    point, px, size, App, Bounds, ContentMask, CursorStyle, Hsla, PaintQuad, Pixels, Point,
+    TextAlign, Window,
 };
 use std::sync::Arc;
 
@@ -436,7 +437,9 @@ pub(crate) fn paint_grid(
                             italic: bool,
                             bold: bool| {
         if let Some(shaped) = shape_fitted(text, color, max_w, italic, bold) {
-            let _ = shaped.paint(Point { x: px(x), y: px(y) }, line_height, win, cx);
+            let _ = shaped.paint(Point { x: px(x), y: px(y) }, line_height, TextAlign::Left,
+                        None,
+                        win, cx);
         }
     };
     let paint_txt = |win: &mut Window,
@@ -473,7 +476,9 @@ pub(crate) fn paint_grid(
                 strikethrough: None,
             };
             let shaped = text_system.shape_line(text.to_owned().into(), icon_fs, &[run], None);
-            let _ = shaped.paint(Point { x: px(x), y: px(y) }, icon_line_height, win, cx);
+            let _ = shaped.paint(Point { x: px(x), y: px(y) }, icon_line_height, TextAlign::Left,
+                        None,
+                        win, cx);
         };
 
     fill_quad(window, ox, oy, sw, sh, theme.bg);
@@ -609,6 +614,8 @@ pub(crate) fn paint_grid(
                             y: px(ty),
                         },
                         line_height,
+                        TextAlign::Left,
+                        None,
                         window,
                         cx,
                     );
@@ -714,7 +721,9 @@ pub(crate) fn paint_grid(
                         y: px(label_y),
                     },
                     line_height,
-                    window,
+                    TextAlign::Left,
+                        None,
+                        window,
                     cx,
                 );
             }
@@ -813,7 +822,9 @@ pub(crate) fn paint_grid(
                     y: px(ty),
                 },
                 line_height,
-                window,
+                TextAlign::Left,
+                        None,
+                        window,
                 cx,
             );
         }
@@ -909,7 +920,9 @@ pub(crate) fn paint_status_bar(
             y: px(oy + (sh - fs) * 0.5),
         },
         line_height,
-        window,
+        TextAlign::Left,
+                        None,
+                        window,
         cx,
     );
 }

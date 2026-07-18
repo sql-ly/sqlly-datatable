@@ -20,7 +20,8 @@ use crate::pivot::state::{
 };
 
 use gpui::{
-    point, px, size, App, Bounds, ContentMask, CursorStyle, Hsla, PaintQuad, Pixels, Point, Window,
+    point, px, size, App, Bounds, ContentMask, CursorStyle, Hsla, PaintQuad, Pixels, Point,
+    TextAlign, Window,
 };
 use std::sync::Arc;
 
@@ -291,7 +292,9 @@ pub(crate) fn paint_pivot_grid(
             }
             _ => shaped,
         };
-        let _ = shaped.paint(Point { x: px(x), y: px(y) }, line_height, win, cx);
+        let _ = shaped.paint(Point { x: px(x), y: px(y) }, line_height, TextAlign::Left,
+                        None,
+                        win, cx);
     };
     let paint_txt = |win: &mut Window,
                      cx: &mut App,
@@ -321,7 +324,9 @@ pub(crate) fn paint_pivot_grid(
                 strikethrough: None,
             };
             let shaped = text_system.shape_line(text.to_owned().into(), icon_fs, &[run], None);
-            let _ = shaped.paint(Point { x: px(x), y: px(y) }, icon_line_height, win, cx);
+            let _ = shaped.paint(Point { x: px(x), y: px(y) }, icon_line_height, TextAlign::Left,
+                        None,
+                        win, cx);
         };
 
     fill_quad(window, ox, oy, sw, sh, theme.bg);

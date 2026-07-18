@@ -26,7 +26,7 @@ use crate::pivot::widget::PivotGrid;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     anchored, canvas, deferred, div, point, pulsating_between, px, relative, Animation,
-    AnimationExt, App, AppContext, Context, Corner, Div, Entity, FocusHandle, Focusable,
+    AnimationExt, App, AppContext, Context, Anchor, Div, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, Render, ScrollWheelEvent, StatefulInteractiveElement, Styled,
     Window,
@@ -737,7 +737,7 @@ impl Render for SqllyDataTable {
                 }
                 self.active_tab = GridTab::Grid;
                 let focus = self.state.read(cx).focus_handle.clone();
-                window.focus(&focus);
+                window.focus(&focus, cx);
                 cx.notify();
             }
         }
@@ -785,12 +785,12 @@ impl Render for SqllyDataTable {
                             match this_tab {
                                 GridTab::Grid => {
                                     let focus = this.state.read(cx).focus_handle.clone();
-                                    window.focus(&focus);
+                                    window.focus(&focus, cx);
                                 }
                                 GridTab::Pivot => {
                                     if let Some(p) = &this.pivot {
                                         let focus = p.state.read(cx).focus_handle.clone();
-                                        window.focus(&focus);
+                                        window.focus(&focus, cx);
                                     }
                                 }
                             }
@@ -1171,14 +1171,12 @@ impl SqllyDataTable {
                         .timer(std::time::Duration::from_millis(EDGE_SCROLL_TICK_MS))
                         .await;
                     let scrolled = cx
-                        .update(|cx| state_edge.update(cx, |s, _cx| s.apply_edge_scroll()))
-                        .unwrap_or(false);
+                        .update(|cx| state_edge.update(cx, |s, _cx| s.apply_edge_scroll()));
                     if scrolled {
                         let _ = state_edge.update(cx, |_s, cx| cx.notify());
                     }
                     let dragging = cx
-                        .update(|cx| state_edge.read(cx).is_dragging)
-                        .unwrap_or(false);
+                        .update(|cx| state_edge.read(cx).is_dragging);
                     if !dragging {
                         break;
                     }
@@ -1243,7 +1241,7 @@ impl SqllyDataTable {
             .on_mouse_down(
                 MouseButton::Left,
                 move |event: &MouseDownEvent, window, cx| {
-                    window.focus(&focus_left);
+                    window.focus(&focus_left, cx);
                     state_mouse.update(cx, |s, cx| {
                         // Ignore grid input while a background task is running;
                         // the busy overlay is shown and occludes interaction.
@@ -1272,7 +1270,7 @@ impl SqllyDataTable {
             .on_mouse_down(
                 MouseButton::Right,
                 move |event: &MouseDownEvent, window, cx| {
-                    window.focus(&focus_right);
+                    window.focus(&focus_right, cx);
                     state_right.update(cx, |s, cx| {
                         if s.busy.is_some() {
                             return;
@@ -1922,7 +1920,7 @@ fn render_filter_panel_overlay(
     let st_backdrop = state.clone();
     let overlay = deferred(
         anchored()
-            .anchor(Corner::BottomLeft)
+            .anchor(Anchor::BottomLeft)
             .position(point(px(abs_x), px(abs_y)))
             .child(
                 div()
