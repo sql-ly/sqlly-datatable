@@ -6,7 +6,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "4.0.1"
+version = "4.1.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.96.0"
@@ -25,21 +25,20 @@ expect_used = "warn"
 # nitpicks via `cargo clippy --workspace --all-targets -- -W clippy::pedantic`
 # when cleaning up an area, but don't block the build on it.
 
-# `gpui-component` tracks `gpui` from Zed's git `main` (there is no compatible
-# crates.io release), so the whole workspace depends on the git versions
-# directly. `gpui_platform` carries the OS windowing backends on current `main`
-# and is only needed by binaries (the sample app), not the library crate.
+# Registry releases: `gpui` 0.2 and `gpui-component` 0.5 now ship compatible
+# crates.io versions (the 4.0.x git pins resolved to gpui 0.2.2 /
+# gpui-component 0.5.x, i.e. the same lines), which restores `cargo package`
+# / `cargo publish` — crates.io rejects git dependencies. The registry `gpui`
+# bundles the OS windowing backends directly (`gpui::Application`), so the
+# zed-main-only `gpui_platform` shim is gone; it has no registry release. The
+# sample's experimental web (wasm) build went with it — gpui's web backend
+# exists only on zed's git `main`. Reinstate from git history if/when a gpui
+# release ships the web backend.
 [workspace.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component" }
-# Lucide icon SVGs for `gpui_component::Icon` (embedded natively; fetched
-# relative to the site root on wasm).
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
-
-[patch.crates-io]
-# `psm` (via `stacker`) needs a wasm-compatible build; upstream master has it.
-psm = { git = "https://github.com/rust-lang/stacker", branch = "master" }
+gpui = "0.2"
+gpui-component = "0.5"
+# Lucide icon SVGs for `gpui_component::Icon`, embedded in the binary.
+gpui-component-assets = "0.5"
 
 [profile.dev]
 opt-level = 1

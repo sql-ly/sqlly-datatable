@@ -1,11 +1,9 @@
-//! The sqlly-datatable sample application, structured as a library so the
-//! same app runs on two entry points:
+//! The sqlly-datatable sample application, structured as a library entered
+//! through [`init_and_open`]: the `sqlly-datatable-sample` binary
+//! (`src/main.rs`) calls it inside `gpui::Application::new().run(...)`.
 //!
-//! - **Native** — the `sqlly-datatable-sample` binary (`src/main.rs`) calls
-//!   [`init_and_open`] inside `gpui_platform::application().run(...)`.
-//! - **Web** — `build-wasm.sh` compiles this crate to `wasm32-unknown-unknown`
-//!   (the `cdylib` target below) and the browser calls the exported
-//!   [`web::run`] via `wasm-bindgen`.
+//! (The 4.0.x experimental web/wasm entry point is gone with the move back
+//! to registry `gpui` — the web backend exists only on zed's git `main`.)
 
 use gpui::{
     div, prelude::*, px, size, App, Bounds, ClipboardItem, Context, Entity, Window, WindowBounds,
@@ -66,7 +64,7 @@ pub fn init_and_open(cx: &mut App) {
     }) {
         Ok(window) => {
             let _ = window.update(cx, |_view, window, cx| {
-                window.focus(&focus, cx);
+                window.focus(&focus);
                 window.on_window_should_close(cx, |_window, cx| {
                     cx.quit();
                     true
@@ -77,39 +75,6 @@ pub fn init_and_open(cx: &mut App) {
             eprintln!("failed to open window: {err}");
             cx.quit();
         }
-    }
-}
-
-/// Browser entry point. `wasm-bindgen` exports [`web::run`]; the generated JS
-/// glue (see `build-wasm.sh`) calls it after instantiating the module.
-#[cfg(target_family = "wasm")]
-pub mod web {
-    use wasm_bindgen::prelude::*;
-
-    #[wasm_bindgen]
-    pub fn run() {
-        // Panic hook + console logging.
-        gpui_platform::web_init();
-
-        // Lucide icon SVGs for the grid's chrome: the wasm asset source
-        // fetches `{endpoint}/assets/icons/*.svg` (bundled next to the site
-        // by `build-wasm.sh`). The endpoint must be an ABSOLUTE URL —
-        // reqwest's wasm client rejects relative ones ("builder error") —
-        // so derive the page's own base URI at runtime; this keeps the app
-        // working from any host or subpath.
-        let base = web_sys::window()
-            .and_then(|w| w.document())
-            .and_then(|d| d.base_uri().ok().flatten())
-            .unwrap_or_default();
-        let base = base.trim_end_matches("index.html").trim_end_matches('/');
-
-        let app = gpui_platform::single_threaded_web()
-            .with_assets(gpui_component_assets::Assets::new(base.to_owned()));
-        // The browser owns the run loop: `run` would return immediately and
-        // drop the app state. `run_embedded` hands back a handle that keeps
-        // it alive; leak it — the app lives for the lifetime of the page.
-        let handle = app.run_embedded(crate::init_and_open);
-        std::mem::forget(handle);
     }
 }
 

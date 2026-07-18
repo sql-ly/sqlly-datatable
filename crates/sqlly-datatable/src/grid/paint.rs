@@ -436,14 +436,7 @@ pub(crate) fn paint_grid(
                             italic: bool,
                             bold: bool| {
         if let Some(shaped) = shape_fitted(text, color, max_w, italic, bold) {
-            let _ = shaped.paint(
-                Point { x: px(x), y: px(y) },
-                line_height,
-                gpui::TextAlign::Left,
-                None,
-                win,
-                cx,
-            );
+            let _ = shaped.paint(Point { x: px(x), y: px(y) }, line_height, win, cx);
         }
     };
     let paint_txt = |win: &mut Window,
@@ -480,14 +473,7 @@ pub(crate) fn paint_grid(
                 strikethrough: None,
             };
             let shaped = text_system.shape_line(text.to_owned().into(), icon_fs, &[run], None);
-            let _ = shaped.paint(
-                Point { x: px(x), y: px(y) },
-                icon_line_height,
-                gpui::TextAlign::Left,
-                None,
-                win,
-                cx,
-            );
+            let _ = shaped.paint(Point { x: px(x), y: px(y) }, icon_line_height, win, cx);
         };
 
     fill_quad(window, ox, oy, sw, sh, theme.bg);
@@ -623,8 +609,6 @@ pub(crate) fn paint_grid(
                             y: px(ty),
                         },
                         line_height,
-                        gpui::TextAlign::Left,
-                        None,
                         window,
                         cx,
                     );
@@ -730,8 +714,6 @@ pub(crate) fn paint_grid(
                         y: px(label_y),
                     },
                     line_height,
-                    gpui::TextAlign::Left,
-                    None,
                     window,
                     cx,
                 );
@@ -831,8 +813,6 @@ pub(crate) fn paint_grid(
                     y: px(ty),
                 },
                 line_height,
-                gpui::TextAlign::Left,
-                None,
                 window,
                 cx,
             );
@@ -929,8 +909,6 @@ pub(crate) fn paint_status_bar(
             y: px(oy + (sh - fs) * 0.5),
         },
         line_height,
-        gpui::TextAlign::Left,
-        None,
         window,
         cx,
     );

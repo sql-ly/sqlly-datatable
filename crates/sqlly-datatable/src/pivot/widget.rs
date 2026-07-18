@@ -88,7 +88,7 @@ impl Render for PivotGrid {
             .on_mouse_down(
                 MouseButton::Left,
                 move |event: &MouseDownEvent, window, cx| {
-                    window.focus(&focus_down, cx);
+                    window.focus(&focus_down);
                     state_down.update(cx, |s, cx| {
                         // A left-click reaching the grid means the pointer
                         // was not on the menu overlay; dismiss it.
@@ -111,7 +111,7 @@ impl Render for PivotGrid {
             .on_mouse_down(
                 MouseButton::Right,
                 move |event: &MouseDownEvent, window, cx| {
-                    window.focus(&focus_right, cx);
+                    window.focus(&focus_right);
                     state_right.update(cx, |s, cx| {
                         let rel = to_grid_relative(event.position, s.bounds.origin);
                         let hit = s.hit_test(rel);

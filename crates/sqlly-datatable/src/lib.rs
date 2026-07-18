@@ -48,8 +48,8 @@
 //!     CellValue, Column, ColumnKind, GridConfig, GridData, SqllyDataTable,
 //! };
 //!
-//! // Inside your `application().run(...)` closure (see the sample app for a
-//! // full bootstrap using `gpui_platform::application()`):
+//! // Inside your `gpui::Application::new().run(...)` closure (see the
+//! // sample app for a full bootstrap):
 //! fn setup(cx: &mut App) {
 //!     sqlly_datatable::init(cx);
 //!
@@ -87,14 +87,12 @@ pub use gpui_component;
 // renders (chevrons, close buttons, panel toggles, checkmarks):
 //
 // ```no_run
-// gpui_platform::application().with_assets(sqlly_datatable::gpui_component_assets::Assets)
+// gpui::Application::new().with_assets(sqlly_datatable::gpui_component_assets::Assets)
 // # ;
 // ```
 //
 // Without an asset source providing `icons/*.svg`, those icons render empty
-// (with an error logged per icon). On the web, `Assets::new(endpoint)`
-// fetches them from `{endpoint}/assets/icons/` instead of embedding; the
-// endpoint must be an absolute URL (see the sample's `web::run`).
+// (with an error logged per icon).
 pub use gpui_component_assets;
 
 pub use config::{

@@ -33,6 +33,3 @@ web-time = "1"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-# Headless platform bootstrap for the `#[ignore]`d main-thread tests
-# (`gpui::Application::new()` no longer exists on zed `main`).
-gpui_platform = { workspace = true }

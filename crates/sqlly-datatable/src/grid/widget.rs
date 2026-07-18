@@ -25,8 +25,8 @@ use crate::pivot::widget::PivotGrid;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    anchored, canvas, deferred, div, point, pulsating_between, px, relative, Anchor, Animation,
-    AnimationExt, App, AppContext, Context, Div, Entity, FocusHandle, Focusable,
+    anchored, canvas, deferred, div, point, pulsating_between, px, relative, Animation,
+    AnimationExt, App, AppContext, Context, Corner, Div, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, Render, ScrollWheelEvent, StatefulInteractiveElement, Styled,
     Window,
@@ -737,7 +737,7 @@ impl Render for SqllyDataTable {
                 }
                 self.active_tab = GridTab::Grid;
                 let focus = self.state.read(cx).focus_handle.clone();
-                window.focus(&focus, cx);
+                window.focus(&focus);
                 cx.notify();
             }
         }
@@ -785,12 +785,12 @@ impl Render for SqllyDataTable {
                             match this_tab {
                                 GridTab::Grid => {
                                     let focus = this.state.read(cx).focus_handle.clone();
-                                    window.focus(&focus, cx);
+                                    window.focus(&focus);
                                 }
                                 GridTab::Pivot => {
                                     if let Some(p) = &this.pivot {
                                         let focus = p.state.read(cx).focus_handle.clone();
-                                        window.focus(&focus, cx);
+                                        window.focus(&focus);
                                     }
                                 }
                             }
@@ -905,6 +905,14 @@ impl Render for SqllyDataTable {
                     // Expanded: a `gpui-component` resizable split. The group
                     // state owns the live panel sizes; drag-to-resize is
                     // handled entirely by the library's resize handle.
+                    // Apply a programmatic `set_pivot_sidebar_width` by
+                    // dropping the group state so a fresh one re-seeds from
+                    // `.size()` below (`ResizableState::resize_panel` is
+                    // private in gpui-component 0.5.1).
+                    if self.pivot_sidebar_width_dirty {
+                        self.pivot_sidebar_width_dirty = false;
+                        self.pivot_sidebar_resize = None;
+                    }
                     let resize_state = match self.pivot_sidebar_resize.clone() {
                         Some(state) => state,
                         None => {
@@ -917,16 +925,6 @@ impl Render for SqllyDataTable {
                         PivotSidebarPosition::Left => 0,
                         PivotSidebarPosition::Right => 1,
                     };
-                    // Push a programmatic `set_pivot_sidebar_width` into the
-                    // group state (a no-op on the very first render, where the
-                    // panel seeds itself from `.size()` below).
-                    if self.pivot_sidebar_width_dirty {
-                        self.pivot_sidebar_width_dirty = false;
-                        let width = px(self.pivot_sidebar_width);
-                        resize_state.update(cx, |state, cx| {
-                            state.resize_panel(sidebar_ix, width, window, cx);
-                        });
-                    }
 
                     let toggle_strip = pivot_toggle_strip(&theme, position, cx.entity().clone());
                     let sidebar_body = div()
@@ -1172,17 +1170,21 @@ impl SqllyDataTable {
                     cx.background_executor()
                         .timer(std::time::Duration::from_millis(EDGE_SCROLL_TICK_MS))
                         .await;
-                    let scrolled =
-                        cx.update(|cx| state_edge.update(cx, |s, _cx| s.apply_edge_scroll()));
+                    let scrolled = cx
+                        .update(|cx| state_edge.update(cx, |s, _cx| s.apply_edge_scroll()))
+                        .unwrap_or(false);
                     if scrolled {
-                        state_edge.update(cx, |_s, cx| cx.notify());
+                        let _ = state_edge.update(cx, |_s, cx| cx.notify());
                     }
-                    let dragging = cx.update(|cx| state_edge.read(cx).is_dragging);
+                    let dragging = cx
+                        .update(|cx| state_edge.read(cx).is_dragging)
+                        .unwrap_or(false);
                     if !dragging {
                         break;
                     }
                 }
-                cx.update(|cx| state_edge.update(cx, |s, _cx| s.edge_scroll_active = false));
+                let _ =
+                    cx.update(|cx| state_edge.update(cx, |s, _cx| s.edge_scroll_active = false));
             })
             .detach();
         }
@@ -1241,7 +1243,7 @@ impl SqllyDataTable {
             .on_mouse_down(
                 MouseButton::Left,
                 move |event: &MouseDownEvent, window, cx| {
-                    window.focus(&focus_left, cx);
+                    window.focus(&focus_left);
                     state_mouse.update(cx, |s, cx| {
                         // Ignore grid input while a background task is running;
                         // the busy overlay is shown and occludes interaction.
@@ -1270,7 +1272,7 @@ impl SqllyDataTable {
             .on_mouse_down(
                 MouseButton::Right,
                 move |event: &MouseDownEvent, window, cx| {
-                    window.focus(&focus_right, cx);
+                    window.focus(&focus_right);
                     state_right.update(cx, |s, cx| {
                         if s.busy.is_some() {
                             return;
@@ -1920,7 +1922,7 @@ fn render_filter_panel_overlay(
     let st_backdrop = state.clone();
     let overlay = deferred(
         anchored()
-            .anchor(Anchor::BottomLeft)
+            .anchor(Corner::BottomLeft)
             .position(point(px(abs_x), px(abs_y)))
             .child(
                 div()

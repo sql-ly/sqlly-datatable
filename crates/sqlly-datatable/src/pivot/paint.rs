@@ -291,14 +291,7 @@ pub(crate) fn paint_pivot_grid(
             }
             _ => shaped,
         };
-        let _ = shaped.paint(
-            Point { x: px(x), y: px(y) },
-            line_height,
-            gpui::TextAlign::Left,
-            None,
-            win,
-            cx,
-        );
+        let _ = shaped.paint(Point { x: px(x), y: px(y) }, line_height, win, cx);
     };
     let paint_txt = |win: &mut Window,
                      cx: &mut App,
@@ -328,14 +321,7 @@ pub(crate) fn paint_pivot_grid(
                 strikethrough: None,
             };
             let shaped = text_system.shape_line(text.to_owned().into(), icon_fs, &[run], None);
-            let _ = shaped.paint(
-                Point { x: px(x), y: px(y) },
-                icon_line_height,
-                gpui::TextAlign::Left,
-                None,
-                win,
-                cx,
-            );
+            let _ = shaped.paint(Point { x: px(x), y: px(y) }, icon_line_height, win, cx);
         };
 
     fill_quad(window, ox, oy, sw, sh, theme.bg);

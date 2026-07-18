@@ -5,6 +5,30 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.0] - 2026-07-17
+
+### Changed
+- **Back on crates.io.** The workspace now depends on the registry releases
+  of the UI stack — `gpui = "0.2"` (0.2.2) and `gpui-component = "0.5"` /
+  `gpui-component-assets = "0.5"` — instead of the zed/longbridge git
+  branches the 4.0.x migration pinned. crates.io rejects git dependencies,
+  which is why 4.0.x could not be published; with compatible registry
+  releases now available, `cargo package` works again and the CI publish job
+  (tag-triggered) is restored.
+- Binaries bootstrap via plain `gpui::Application::new()` again — the
+  registry `gpui` bundles the OS windowing backends, so the zed-main-only
+  `gpui_platform` shim dependency is gone.
+- Code adjusted for the small API deltas between the git pins and the
+  registry releases (gpui 0.2.2 / gpui-component 0.5.1); no behavior or
+  public-API changes intended.
+
+### Removed
+- The experimental **web (wasm) build of the sample app** introduced in
+  4.0.0 (`build-wasm.sh`, the `web::run` entry point, and the CI `web-app`
+  artifact). It required gpui's web backend, which exists only on zed's git
+  `main` — reinstate from git history when a gpui registry release ships the
+  web backend.
+
 ## [4.0.1] - 2026-07-17
 
 ### Changed

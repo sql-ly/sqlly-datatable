@@ -15,15 +15,13 @@ Given that this may or may not be total AI slop and my name is attached to it, d
 
 ## What
 
-A configurable data grid component for GPUI, built for the needs of [sqlly.app](https://sqlly.app). The library targets Rust 1.96+ and links against `gpui` from [Zed's git `main`](https://github.com/zed-industries/zed) together with [`gpui-component`](https://github.com/longbridge/gpui-component) (whose resizable panels power the pivot sidebar split, and whose theme system the grid can mirror — see Theming). Because `gpui-component` tracks Zed's git `main`, both are consumed as git dependencies:
+A configurable data grid component for GPUI, built for the needs of [sqlly.app](https://sqlly.app). The library targets Rust 1.96+ and links against the crates.io releases of [`gpui`](https://crates.io/crates/gpui) and [`gpui-component`](https://crates.io/crates/gpui-component) (whose resizable panels power the pivot sidebar split, and whose theme system the grid can mirror — see Theming). Everything comes from the registry, so consuming the crate is one line:
 
 ```toml
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui-component = { git = "https://github.com/longbridge/gpui-component" }
-sqlly-datatable = { git = "..." }
-# Binaries also need the platform backends:
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
+gpui = "0.2"
+gpui-component = "0.5"
+sqlly-datatable = "4.1"
 ```
 
 Call `sqlly_datatable::init(cx)` once at startup (it forwards to `gpui_component::init`, installing the toolkit theme the embedded widgets read). Hosts that already initialize `gpui-component` themselves can skip it.
@@ -220,23 +218,6 @@ let view = SqllyDataTable::builder(data)
 Column-name lookups are case-sensitive; if duplicate names exist, the first
 match wins. `GridData::column_index("name")` provides the same lookup outside
 the menu context.
-
-## Run the sample in the browser (WebAssembly)
-
-The sample also runs on the web via gpui's WebGPU backend:
-
-```sh
-./build-wasm.sh            # release build; --debug for unoptimized
-cd dist/web && python3 -m http.server 8080
-# open http://localhost:8080/ in a WebGPU-capable browser (Chrome/Edge 113+)
-```
-
-The script installs its own prerequisites (nightly toolchain — required by
-gpui's web backend — the wasm32 target, and a lockfile-matched
-`wasm-bindgen-cli`) and also packages the site into
-`dist/sqlly-datatable-web-v<version>.zip`; CI uploads the same zip as a
-`web-app` artifact. The web build generates 100k records instead of 500k to
-respect the browser's 32-bit wasm address space.
 
 ## Run the sample
 
