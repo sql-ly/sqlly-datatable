@@ -22,4 +22,17 @@ expect_used = "allow"
 gpui = { workspace = true }
 gpui-component = { workspace = true }
 gpui-component-assets = { workspace = true }
+# Platform facade from the zed git tree (patched gpui, see workspace
+# [patch.crates-io]): the registry gpui bundled the OS windowing backends
+# behind `Application::new()`, but the git tree splits them into per-platform
+# crates behind `gpui_platform::application()`. The x11/wayland/font-kit/
+# runtime_shaders features route to the per-OS backend crates and are no-ops
+# elsewhere. Rev-less so it unifies with the patched gpui source; pinned by
+# Cargo.lock. Fine here because this crate is `publish = false`.
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
+    "font-kit",
+    "x11",
+    "wayland",
+    "runtime_shaders",
+] }
 sqlly-datatable = { version = "4.1.0", path = "../sqlly-datatable" }

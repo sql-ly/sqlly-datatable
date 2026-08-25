@@ -639,3 +639,56 @@ fn drag_across_column_headers_selects_range(cx: &mut TestAppContext) {
         "header drag should select the column range, got {selection:?}"
     );
 }
+
+/// Dragging the LAST column's right border resizes it, exactly like every
+/// other column. Regression test: the border hit test used to skip the final
+/// column, leaving it the only one that couldn't be resized.
+#[gpui::test]
+fn drag_last_column_border_resizes_it(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|_window, cx| {
+        SqllyDataTable::builder(sample())
+            .config(GridConfig::default())
+            .build(cx)
+    });
+    cx.run_until_parked();
+
+    let (origin, header_h, row_header_w, widths) = view.read_with(cx, |v, cx| {
+        let s = v.state.read(cx);
+        (
+            s.bounds.origin,
+            s.header_height,
+            s.row_header_width,
+            s.data.columns.iter().map(|c| c.width).collect::<Vec<_>>(),
+        )
+    });
+    let last_width = *widths.last().expect("sample has columns");
+
+    // Press exactly on the last column's right border, inside the header row.
+    let border_x = f32::from(origin.x) + row_header_w + widths.iter().sum::<f32>();
+    let y = f32::from(origin.y) + header_h * 0.5;
+    cx.simulate_mouse_down(
+        point(px(border_x), px(y)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_move(
+        point(px(border_x + 60.0), px(y)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_up(
+        point(px(border_x + 60.0), px(y)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.run_until_parked();
+
+    let new_width = view.read_with(cx, |v, cx| {
+        v.state.read(cx).data.columns.last().expect("columns").width
+    });
+    assert_eq!(
+        new_width,
+        last_width + 60.0,
+        "dragging the last column's border 60px right should widen it by 60px"
+    );
+}

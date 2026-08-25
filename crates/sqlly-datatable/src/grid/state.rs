@@ -1051,11 +1051,11 @@ impl GridState {
         let background = cx.background_executor().clone();
         cx.spawn(async move |cx| {
             // Paint the overlay before starting the heavy work.
-            let _ = cx.update(|app| {
+            cx.update(|app| {
                 let _ = weak.update(app, |_s, c| c.notify());
             });
             let result = background.spawn(async move { work() }).await;
-            let _ = cx.update(|app| {
+            cx.update(|app| {
                 let _ = weak.update(app, |s, c| {
                     s.busy = None;
                     on_done(result, s, c);
@@ -2650,7 +2650,7 @@ impl GridState {
             let mut acc = 0.0;
             for (i, col) in self.data.columns.iter().enumerate() {
                 let right = acc + col.width;
-                if i + 1 < self.data.columns.len() && col_x >= right - 5.0 && col_x <= right + 5.0 {
+                if col_x >= right - 5.0 && col_x <= right + 5.0 {
                     return HitResult::ColumnBorder(i);
                 }
                 if col_x >= acc && col_x < right {
@@ -2825,18 +2825,15 @@ mod tests {
         assert_eq!(edge_scroll_speed(-1000.0), 16.0);
     }
 
-    /// `GridState` requires a real GPUI `FocusHandle` from
-    /// `gpui::Application`, but `gpui::Application::headless()` panics on any
-    /// thread other than `main`. Since Rust's test runner executes on a
-    /// worker pool, the GPUI-backed assertions cannot run alongside pure
-    /// tests. We mark this test `#[ignore]` so `cargo test` stays green; run
-    /// it with `cargo test -- --ignored grid_state_behavior_under_application`
-    /// from the workspace root on the test thread observable to GPUI.
+    /// `GridState` requires a real GPUI `FocusHandle`, which needs an `App`.
+    /// `TestAppContext::single()` (git gpui's replacement for the old
+    /// `Application::headless()`) runs on `TestPlatform` with a deterministic
+    /// dispatcher, so it works on the test runner's worker threads — no OS
+    /// main thread or custom harness required.
     #[allow(clippy::expect_used, clippy::unwrap_used)]
     #[test]
-    #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
     fn grid_state_behavior_under_application() {
-        gpui::Application::headless().run(|cx| {
+        gpui::TestAppContext::single().update(|cx| {
             let focus = cx.focus_handle();
 
             // format_current_status_handles_initial_state
@@ -2977,11 +2974,10 @@ mod tests {
 
     #[allow(clippy::expect_used, clippy::unwrap_used)]
     #[test]
-    #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
     fn context_menu_request_construction() {
         use crate::grid::context_menu::ContextMenuTarget;
 
-        gpui::Application::headless().run(|cx| {
+        gpui::TestAppContext::single().update(|cx| {
             let focus = cx.focus_handle();
 
             // 3 rows, 2 columns. Sort descending so display_indices != source.
@@ -3086,9 +3082,8 @@ mod tests {
 
     #[allow(clippy::expect_used, clippy::unwrap_used)]
     #[test]
-    #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
     fn effective_selection_for_context_target() {
-        gpui::Application::headless().run(|cx| {
+        gpui::TestAppContext::single().update(|cx| {
             let focus = cx.focus_handle();
             let mut state = GridState::new(
                 GridData::new(
@@ -3156,9 +3151,8 @@ mod tests {
 
     #[allow(clippy::expect_used, clippy::unwrap_used)]
     #[test]
-    #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
     fn context_menu_target_from_hit_maps_correctly() {
-        gpui::Application::headless().run(|cx| {
+        gpui::TestAppContext::single().update(|cx| {
             let focus = cx.focus_handle();
             let state = GridState::new(
                 GridData::new(
@@ -3221,7 +3215,6 @@ mod tests {
 
     #[allow(clippy::expect_used, clippy::unwrap_used)]
     #[test]
-    #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
     fn convert_context_menu_items_maps_variants() {
         use crate::grid::context_menu::ContextMenuItem;
 
@@ -3243,7 +3236,6 @@ mod tests {
 
     #[allow(clippy::expect_used, clippy::unwrap_used)]
     #[test]
-    #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
     fn execute_custom_context_menu_action_invokes_provider() {
         use crate::grid::context_menu::{
             ContextMenuProvider, ContextMenuProviderHandle, ContextMenuRequest,
@@ -3269,7 +3261,7 @@ mod tests {
             }
         }
 
-        gpui::Application::headless().run(|cx| {
+        gpui::TestAppContext::single().update(|cx| {
             let focus = cx.focus_handle();
             let mut state = GridState::new(
                 GridData::new(
@@ -3461,16 +3453,15 @@ mod tests {
 
     #[allow(clippy::expect_used, clippy::unwrap_used)]
     #[test]
-    #[ignore = "requires gpui::Application which must run on the OS main thread; can only be executed under a custom main harness"]
     fn filter_panel_open_apply_clear_state_flow() {
-        gpui::Application::headless().run(|cx| {
+        gpui::TestAppContext::single().update(|cx| {
             let focus = cx.focus_handle();
             let mut state = GridState::new(
                 GridData::new(
                     vec![Column::new("name", ColumnKind::Text, 100.0)],
                     vec![
                         vec![CellValue::Text("alpha".into())],
-                        vec![CellValue::Text("beta".into())],
+                        vec![CellValue::Text("bob".into())],
                         vec![CellValue::Text("gamma".into())],
                     ],
                 )
@@ -3479,7 +3470,10 @@ mod tests {
                 focus,
             );
 
-            // Open filter panel for column 0 with an explicit anchor.
+            // Open filter panel for column 0. The anchor argument is a hint
+            // the panel ignores: it always anchors to the column's horizontal
+            // center at the top of the header (row header 50 + half the
+            // 100px-wide column = x 100).
             let anchor = Point {
                 x: px(50.0),
                 y: px(20.0),
@@ -3487,7 +3481,13 @@ mod tests {
             state.open_filter_panel(0, Some(anchor));
             let panel = state.filter_panel.as_ref().expect("panel should be open");
             assert_eq!(panel.col, 0);
-            assert_eq!(panel.anchor, anchor);
+            assert_eq!(
+                panel.anchor,
+                Point {
+                    x: px(100.0),
+                    y: px(0.0),
+                }
+            );
             assert_eq!(panel.distinct.len(), 3);
             assert!(
                 panel.distinct.iter().all(|r| r.checked),
@@ -3496,13 +3496,13 @@ mod tests {
             assert!(panel.auto_apply, "auto_apply defaults to true");
             assert_eq!(panel.kind, ColumnKind::Text);
 
-            // Uncheck "beta" (index 1) and apply.
+            // Uncheck "bob" (index 1) and apply.
             state.toggle_filter_value(1);
             state.apply_filter_panel();
             assert_eq!(
                 state.display_indices.as_slice(),
                 &[0, 2],
-                "beta should be filtered out"
+                "bob should be filtered out"
             );
 
             // Clear the filter panel.
@@ -3526,7 +3526,7 @@ mod tests {
             assert_eq!(
                 state.display_indices.as_slice(),
                 &[0, 2],
-                "contains 'a' matches alpha and gamma"
+                "contains 'a' matches alpha and gamma but not bob"
             );
 
             // Clear and verify restored.

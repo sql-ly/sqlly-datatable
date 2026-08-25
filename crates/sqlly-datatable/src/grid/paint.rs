@@ -437,9 +437,14 @@ pub(crate) fn paint_grid(
                             italic: bool,
                             bold: bool| {
         if let Some(shaped) = shape_fitted(text, color, max_w, italic, bold) {
-            let _ = shaped.paint(Point { x: px(x), y: px(y) }, line_height, TextAlign::Left,
-                        None,
-                        win, cx);
+            let _ = shaped.paint(
+                Point { x: px(x), y: px(y) },
+                line_height,
+                TextAlign::Left,
+                None,
+                win,
+                cx,
+            );
         }
     };
     let paint_txt = |win: &mut Window,
@@ -476,9 +481,14 @@ pub(crate) fn paint_grid(
                 strikethrough: None,
             };
             let shaped = text_system.shape_line(text.to_owned().into(), icon_fs, &[run], None);
-            let _ = shaped.paint(Point { x: px(x), y: px(y) }, icon_line_height, TextAlign::Left,
-                        None,
-                        win, cx);
+            let _ = shaped.paint(
+                Point { x: px(x), y: px(y) },
+                icon_line_height,
+                TextAlign::Left,
+                None,
+                win,
+                cx,
+            );
         };
 
     fill_quad(window, ox, oy, sw, sh, theme.bg);
@@ -722,8 +732,8 @@ pub(crate) fn paint_grid(
                     },
                     line_height,
                     TextAlign::Left,
-                        None,
-                        window,
+                    None,
+                    window,
                     cx,
                 );
             }
@@ -823,8 +833,8 @@ pub(crate) fn paint_grid(
                 },
                 line_height,
                 TextAlign::Left,
-                        None,
-                        window,
+                None,
+                window,
                 cx,
             );
         }
@@ -921,8 +931,8 @@ pub(crate) fn paint_status_bar(
         },
         line_height,
         TextAlign::Left,
-                        None,
-                        window,
+        None,
+        window,
         cx,
     );
 }

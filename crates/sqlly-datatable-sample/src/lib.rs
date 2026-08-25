@@ -1,6 +1,6 @@
 //! The sqlly-datatable sample application, structured as a library entered
 //! through [`init_and_open`]: the `sqlly-datatable-sample` binary
-//! (`src/main.rs`) calls it inside `gpui::Application::new().run(...)`.
+//! (`src/main.rs`) calls it inside `gpui_platform::application().run(...)`.
 //!
 //! (The 4.0.x experimental web/wasm entry point is gone with the move back
 //! to registry `gpui` — the web backend exists only on zed's git `main`.)
@@ -64,7 +64,7 @@ pub fn init_and_open(cx: &mut App) {
     }) {
         Ok(window) => {
             let _ = window.update(cx, |_view, window, cx| {
-                window.focus(&focus);
+                window.focus(&focus, cx);
                 window.on_window_should_close(cx, |_window, cx| {
                     cx.quit();
                     true

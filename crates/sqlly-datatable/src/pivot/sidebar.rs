@@ -13,7 +13,7 @@ use crate::pivot::config::PivotZone;
 use crate::pivot::state::PivotState;
 
 use gpui::{
-    anchored, deferred, div, point, px, App, AppContext as _, Context, Anchor, Entity, FontWeight,
+    anchored, deferred, div, point, px, Anchor, App, AppContext as _, Context, Entity, FontWeight,
     InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement,
     Render, SharedString, StatefulInteractiveElement, Styled, Window,
 };

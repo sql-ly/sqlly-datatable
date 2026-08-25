@@ -25,8 +25,8 @@ use crate::pivot::widget::PivotGrid;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    anchored, canvas, deferred, div, point, pulsating_between, px, relative, Animation,
-    AnimationExt, App, AppContext, Context, Anchor, Div, Entity, FocusHandle, Focusable,
+    anchored, canvas, deferred, div, point, pulsating_between, px, relative, Anchor, Animation,
+    AnimationExt, App, AppContext, Context, Div, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, Render, ScrollWheelEvent, StatefulInteractiveElement, Styled,
     Window,
@@ -1170,19 +1170,17 @@ impl SqllyDataTable {
                     cx.background_executor()
                         .timer(std::time::Duration::from_millis(EDGE_SCROLL_TICK_MS))
                         .await;
-                    let scrolled = cx
-                        .update(|cx| state_edge.update(cx, |s, _cx| s.apply_edge_scroll()));
+                    let scrolled =
+                        cx.update(|cx| state_edge.update(cx, |s, _cx| s.apply_edge_scroll()));
                     if scrolled {
-                        let _ = state_edge.update(cx, |_s, cx| cx.notify());
+                        state_edge.update(cx, |_s, cx| cx.notify());
                     }
-                    let dragging = cx
-                        .update(|cx| state_edge.read(cx).is_dragging);
+                    let dragging = cx.update(|cx| state_edge.read(cx).is_dragging);
                     if !dragging {
                         break;
                     }
                 }
-                let _ =
-                    cx.update(|cx| state_edge.update(cx, |s, _cx| s.edge_scroll_active = false));
+                cx.update(|cx| state_edge.update(cx, |s, _cx| s.edge_scroll_active = false));
             })
             .detach();
         }
