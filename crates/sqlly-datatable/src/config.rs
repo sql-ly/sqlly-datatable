@@ -6,6 +6,7 @@
 //! [`ResolvedColumnFormat`]; the grid caches the resolved list on its state
 //! so this work does not repeat on every paint.
 
+use crate::conditional::ConditionalRule;
 use crate::data::ColumnKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -325,7 +326,9 @@ impl Default for KeyBindings {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+// `Eq` is deliberately absent: `conditional_rules` carries `f64` operands and
+// `f32` colors, which are only `PartialEq`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct GridConfig {
     pub key_bindings: KeyBindings,
     pub default_number: NumberFormat,
@@ -349,6 +352,11 @@ pub struct GridConfig {
     /// motion" preference: every surface then appears instantly. The data
     /// surface (cells, selection, sort) is always instant regardless.
     pub animations: bool,
+    /// Conditional-formatting rules (per-cell colors, color scales, data
+    /// bars), each targeting a column by name. Empty by default — with no
+    /// rules the feature costs a single check per paint. See
+    /// [`crate::conditional`] for semantics.
+    pub conditional_rules: Vec<ConditionalRule>,
 }
 
 impl Default for GridConfig {
@@ -365,6 +373,7 @@ impl Default for GridConfig {
             column_overrides: vec![],
             empty_text: "No rows".into(),
             animations: true,
+            conditional_rules: vec![],
         }
     }
 }
@@ -436,6 +445,13 @@ mod tests {
         // reduce-motion preference. Locking the default guards against a silent
         // flip that would ship the crate mute.
         assert!(GridConfig::default().animations);
+    }
+
+    #[test]
+    fn conditional_rules_default_empty() {
+        // Conditional formatting must be opt-in: the empty default is what
+        // lets paint skip the feature behind a single check.
+        assert!(GridConfig::default().conditional_rules.is_empty());
     }
 
     #[test]

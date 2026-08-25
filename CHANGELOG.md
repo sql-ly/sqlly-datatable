@@ -5,6 +5,40 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.0] - 2026-08-25
+
+### Added
+- **Conditional formatting** (`GridConfig::conditional_rules`, new
+  `conditional` module). Each `ConditionalRule` targets a column by name
+  (case-insensitive) and carries one of three `ConditionalKind`s:
+  - `Rule { condition, style }` — per-cell foreground/background/bold when
+    a `ConditionalCondition` matches (`IsNull`, `IsNotNull`,
+    `GreaterThan`, `LessThan`, inclusive `Between`, case-insensitive
+    `EqualsText` / `ContainsText`). The first matching rule per column
+    wins.
+  - `ColorScale { min, max }` — numeric columns paint each cell's
+    background lerped between two colors by where the value sits in the
+    column's actual min/max (all-equal columns paint the midpoint).
+  - `DataBar { color }` — numeric columns paint a proportional,
+    slightly-inset bar behind the text (all-equal columns paint full
+    bars).
+  Colors are declared as the new serde-friendly `RgbaColor`; all rule
+  types serialize with serde so hosts can persist rule sets. Rules
+  resolve once per data/config change (`ResolvedConditionals`, including
+  the per-column numeric statistics — recomputed on `append_rows` and
+  `set_row_window` paging), so paint does one cheap `evaluate` per
+  visible cell and skips the feature entirely behind a single check when
+  no rules are configured. Only typed numeric cells (`Integer` / finite
+  `Decimal`) participate in numeric conditions, scales, and bars —
+  numeric-looking text is never parsed. Backgrounds and bars layer like
+  the zebra stripe: the selection highlight replaces them, while a rule's
+  foreground/bold stays applied so emphasis survives selection.
+
+### Changed
+- `GridConfig` no longer derives `Eq` (still `PartialEq`): the new
+  conditional rules carry `f64` operands and `f32` colors.
+- The crate now depends on `serde` (derive) unconditionally.
+
 ## [4.1.2] - 2026-08-25
 
 ### Fixed

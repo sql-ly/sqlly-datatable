@@ -77,6 +77,9 @@ pub(crate) struct PaintData {
     pub(crate) theme: GridTheme,
     pub(crate) columns: Vec<Column>,
     pub(crate) resolved_formats: Arc<Vec<ResolvedColumnFormat>>,
+    /// Resolved conditional-formatting rules; empty (one cheap check) when
+    /// [`crate::config::GridConfig::conditional_rules`] is unset.
+    pub(crate) conditionals: Arc<crate::conditional::ResolvedConditionals>,
     pub(crate) rows: Arc<Vec<Vec<crate::data::CellValue>>>,
     pub(crate) filters_active: Vec<bool>,
     pub(crate) scroll_offset: Point<Pixels>,
@@ -107,6 +110,7 @@ impl PaintData {
             theme: s.theme.clone(),
             columns: s.data.columns.clone(),
             resolved_formats: Arc::clone(&s.resolved_formats),
+            conditionals: Arc::clone(&s.resolved_conditionals),
             rows: Arc::clone(&s.data_rows),
             filters_active: s.filters.iter().map(|f| f.is_active()).collect(),
             scroll_offset: s.scroll_handle.offset(),
@@ -585,16 +589,47 @@ pub(crate) fn paint_grid(
                 }
                 let cell = &data.rows[row_idx][ci];
                 let fmt = &data.resolved_formats[ci];
+                // Conditional formatting: the single `is_empty` check keeps
+                // the common no-rules case at zero per-cell cost.
+                let effect = if data.conditionals.is_empty() {
+                    None
+                } else {
+                    data.conditionals
+                        .column(ci)
+                        .and_then(|cc| cc.evaluate(cell))
+                };
                 let is_null = matches!(cell, crate::data::CellValue::None);
                 if is_null && fmt.null.background && !cell_sel {
                     fill_quad(window, x, y, w, row_h, theme.null_bg);
+                }
+                if let Some(effect) = &effect {
+                    // Conditional backgrounds and data bars layer like the
+                    // zebra stripe and null fill: the selection highlight
+                    // replaces them, so a selected cell stays unmistakably
+                    // selected. (`cell_sel` is also true for cells inside a
+                    // selected row/column.)
+                    if !cell_sel {
+                        if let Some(bg) = effect.bg {
+                            fill_quad(window, x, y, w, row_h, bg);
+                        }
+                        if let (Some(frac), Some(bar)) = (effect.bar_fraction, effect.bar_color) {
+                            // Slightly inset so the bar reads as a bar
+                            // against the row, not a full-cell fill.
+                            fill_quad(window, x + 1.0, y + 2.0, (w - 2.0) * frac, row_h - 4.0, bar);
+                        }
+                    }
                 }
                 let (text, is_neg) = if is_null {
                     (fmt.null.text.clone(), false)
                 } else {
                     crate::format::format_cell(cell, fmt)
                 };
-                let color = if is_null {
+                // A conditional foreground beats every default text color;
+                // it stays applied over a selection so rule-driven emphasis
+                // survives highlighting.
+                let color = if let Some(fg) = effect.as_ref().and_then(|e| e.fg) {
+                    fg
+                } else if is_null {
                     theme.null_fg
                 } else if is_neg && fmt.number.show_negative_red {
                     theme.negative_fg
@@ -605,12 +640,16 @@ pub(crate) fn paint_grid(
                 // Shape once, then align by the true laid-out width so
                 // right/center columns holding double-width glyphs (CJK, emoji)
                 // land correctly rather than drifting by the monospace estimate.
+                // Conditional bold rides the existing bold face. When a null
+                // placeholder is italic AND a rule asks for bold, italic wins
+                // (`shape_fitted` picks one face; a bold-italic face is not
+                // shaped today).
                 if let Some(shaped) = shape_fitted(
                     &text,
                     color,
                     Some(w - 2.0 * CELL_TEXT_INSET),
                     is_null && fmt.null.italic,
-                    false,
+                    effect.as_ref().is_some_and(|e| e.bold),
                 ) {
                     let text_w = f32::from(shaped.width);
                     let tx = match fmt.alignment() {

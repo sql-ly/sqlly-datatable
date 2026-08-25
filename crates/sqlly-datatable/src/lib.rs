@@ -14,6 +14,9 @@
 //! * Configurable column resizing, mouse-driven scrollbars, and edge-scroll
 //!   during drag selection.
 //! * Clipboard copy of any selection (with or without headers).
+//! * Conditional formatting ([`config::GridConfig::conditional_rules`]):
+//!   per-cell rule styling (colors, bold), color scales, and data bars,
+//!   declared per column by name — see the [`mod@conditional`] module.
 //! * A restrained native motion layer: transient surfaces (context menus,
 //!   filter panels, popovers, dialogs, the busy scrim, the pivot drag ghost)
 //!   fade in on appear, while the data surface stays instant. On by default;
@@ -72,6 +75,7 @@
 // `grid::` modules mature. Run clippy with
 // `#![warn(missing_docs)]` in scope when cleaning up a module.
 
+pub mod conditional;
 pub mod config;
 pub mod data;
 pub mod filter;
@@ -95,6 +99,10 @@ pub use gpui_component;
 // (with an error logged per icon).
 pub use gpui_component_assets;
 
+pub use conditional::{
+    CellEffect, ColumnConditionals, ConditionalCondition, ConditionalKind, ConditionalRule,
+    ConditionalStyle, ResolvedConditionals, RgbaColor,
+};
 pub use config::{
     BooleanFormat, ColumnOverride, DateFormat, GridConfig, KeyBinding, KeyBindings, NullFormat,
     NumberFormat, RelativeDateFormat, RelativeUnit, ReplacementRule, ReplacementTiming,

@@ -225,6 +225,12 @@ pub struct GridState {
     /// rather than deep-copying every column's format (each carries several
     /// owned strings). Indexing and iteration are unchanged via `Deref`.
     pub resolved_formats: Arc<Vec<ResolvedColumnFormat>>,
+    /// Resolved conditional-formatting rules (see [`crate::conditional`]),
+    /// kept in sync with `config.conditional_rules`, the columns, and the
+    /// resident rows (the color-scale / data-bar min/max statistics are
+    /// computed over the rows currently in memory). Arc'd for the same
+    /// cheap paint-snapshot reason as `resolved_formats`.
+    pub resolved_conditionals: Arc<crate::conditional::ResolvedConditionals>,
     /// Arc-wrapped row data so `PaintData::from_state` can clone cheaply
     /// (O(1)) instead of deep-cloning every cell every frame. Rows are
     /// immutable after `GridState::new`, so the Arc never needs rebuilding.
@@ -674,6 +680,11 @@ impl GridState {
     #[must_use]
     pub fn new(data: GridData, config: GridConfig, focus_handle: FocusHandle) -> Self {
         let resolved_formats = Arc::new(config.resolve_all(&data.columns));
+        let resolved_conditionals = Arc::new(crate::conditional::ResolvedConditionals::resolve(
+            &config.conditional_rules,
+            &data.columns,
+            &data.rows,
+        ));
         let col_count = data.columns.len();
         let display_indices = Arc::new((0..data.rows.len()).collect::<Vec<_>>());
         let display_rows = Arc::new(
@@ -703,6 +714,7 @@ impl GridState {
             config,
             window: None,
             resolved_formats,
+            resolved_conditionals,
             data_rows,
             display_indices,
             display_rows,
@@ -756,6 +768,7 @@ impl GridState {
     pub fn set_config(&mut self, config: GridConfig) {
         self.config = config;
         self.rebuild_resolved_formats();
+        self.rebuild_resolved_conditionals();
         self.recompute();
     }
 
@@ -812,6 +825,12 @@ impl GridState {
         }
         if let Some(window) = &mut self.window {
             window.total_rows += self.data.rows.len() - base;
+        }
+        // New rows can shift the color-scale / data-bar min/max, so the
+        // conditional cache follows the same invalidation as the display
+        // order. Free when no rules are configured.
+        if !self.config.conditional_rules.is_empty() {
+            self.rebuild_resolved_conditionals();
         }
         Ok(())
     }
@@ -943,6 +962,12 @@ impl GridState {
         self.data.rows = rows;
         self.window = Some(RowWindow { total_rows, offset });
         self.rebuild_display_rows();
+        // Windowed paging replaces the resident rows wholesale; the
+        // color-scale / data-bar statistics describe the resident window, so
+        // recompute them here. Free when no rules are configured.
+        if !self.config.conditional_rules.is_empty() {
+            self.rebuild_resolved_conditionals();
+        }
         Ok(())
     }
 
@@ -1068,6 +1093,14 @@ impl GridState {
 
     fn rebuild_resolved_formats(&mut self) {
         self.resolved_formats = Arc::new(self.config.resolve_all(&self.data.columns));
+    }
+
+    fn rebuild_resolved_conditionals(&mut self) {
+        self.resolved_conditionals = Arc::new(crate::conditional::ResolvedConditionals::resolve(
+            &self.config.conditional_rules,
+            &self.data.columns,
+            &self.data.rows,
+        ));
     }
 
     pub fn recompute(&mut self) {
