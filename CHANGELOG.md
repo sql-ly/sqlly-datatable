@@ -5,6 +5,36 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.2] - 2026-08-25
+
+### Fixed
+- **The last column can now be resized.** The header hit test skipped the
+  final column's right edge, so its border never offered the drag-resize
+  handle every other column had. Covered by a GPUI event-dispatch
+  regression test.
+
+### Changed
+- The repo builds and tests standalone again. The 4.1.1 git-API port only
+  compiled inside the SQLLY workspace (whose `[patch.crates-io]` supplies
+  the zed git gpui); that patch table now lives in this workspace root
+  too, pinned by `Cargo.lock` to the same revisions. The sample app boots
+  via `gpui_platform::application()` (the zed git facade), matching how
+  downstream consumers build.
+- The six unit tests formerly `#[ignore]`d ("requires the OS main
+  thread") now run: `TestAppContext::single()` replaces the removed
+  `Application::headless()` and needs no main thread. Two stale
+  assertions in the never-executed tests were corrected.
+
+## [4.1.1] - 2026-07-18
+
+### Changed
+- **Ported to the zed git gpui API** (`Corner` → `Anchor`,
+  `focus(window, cx)`, `ShapedLine::paint` with `TextAlign`, infallible
+  async `cx.update`), so consumers pinning gpui/gpui-component to the git
+  sources resolve a single compatible gpui in the graph. A crates.io
+  release stays blocked until a registry gpui ships this API — consume
+  this version by git tag.
+
 ## [4.1.0] - 2026-07-17
 
 ### Changed
