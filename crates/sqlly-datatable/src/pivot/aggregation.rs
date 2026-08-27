@@ -23,13 +23,23 @@ pub enum AggregationFn {
     Min,
     /// Largest value under [`compare_cells`]; preserves the source kind.
     Max,
+    /// First non-null value seen in source order; preserves the source kind.
+    /// Useful for carrying a representative label into an aggregated cell.
+    First,
 }
 
 impl AggregationFn {
     /// All functions, in the order pickers should present them.
     #[must_use]
-    pub fn all() -> [AggregationFn; 5] {
-        [Self::Count, Self::Sum, Self::Avg, Self::Min, Self::Max]
+    pub fn all() -> [AggregationFn; 6] {
+        [
+            Self::Count,
+            Self::Sum,
+            Self::Avg,
+            Self::Min,
+            Self::Max,
+            Self::First,
+        ]
     }
 
     /// Short label ("Count", "Sum", …).
@@ -41,6 +51,7 @@ impl AggregationFn {
             Self::Avg => "Avg",
             Self::Min => "Min",
             Self::Max => "Max",
+            Self::First => "First",
         }
     }
 
@@ -63,6 +74,8 @@ pub struct Accumulator {
     /// overflowed and had to be promoted.
     promoted: bool,
     extreme: Option<CellValue>,
+    /// First non-null value seen, for [`AggregationFn::First`].
+    first: Option<CellValue>,
 }
 
 impl Accumulator {
@@ -76,6 +89,7 @@ impl Accumulator {
             float_sum: 0.0,
             promoted: false,
             extreme: None,
+            first: None,
         }
     }
 
@@ -133,6 +147,11 @@ impl Accumulator {
                     self.extreme = Some(value.clone());
                 }
             }
+            AggregationFn::First => {
+                if self.first.is_none() {
+                    self.first = Some(value.clone());
+                }
+            }
         }
     }
 
@@ -169,6 +188,7 @@ impl Accumulator {
             AggregationFn::Min | AggregationFn::Max => {
                 self.extreme.clone().unwrap_or(CellValue::None)
             }
+            AggregationFn::First => self.first.clone().unwrap_or(CellValue::None),
         }
     }
 }
@@ -301,13 +321,33 @@ mod tests {
     }
 
     #[test]
-    fn all_lists_five_distinct_functions() {
+    fn all_lists_six_distinct_functions() {
         let all = AggregationFn::all();
-        assert_eq!(all.len(), 5);
+        assert_eq!(all.len(), 6);
         for (i, a) in all.iter().enumerate() {
             for b in &all[i + 1..] {
                 assert_ne!(a, b);
             }
         }
+    }
+
+    #[test]
+    fn first_returns_the_first_non_null_in_source_order() {
+        let vals = vec![Null, Text("beta".into()), Text("alpha".into()), Integer(3)];
+        assert_eq!(aggregate(&vals, AggregationFn::First), Text("beta".into()));
+        // Preserves the source kind of whatever came first.
+        let nums = vec![Integer(7), Integer(1)];
+        assert_eq!(aggregate(&nums, AggregationFn::First), Integer(7));
+    }
+
+    #[test]
+    fn first_of_empty_or_all_null_is_none() {
+        assert_eq!(aggregate(&[], AggregationFn::First), Null);
+        assert_eq!(aggregate(&[Null, Null], AggregationFn::First), Null);
+    }
+
+    #[test]
+    fn first_caption_reads_naturally() {
+        assert_eq!(AggregationFn::First.caption("Name"), "First of Name");
     }
 }

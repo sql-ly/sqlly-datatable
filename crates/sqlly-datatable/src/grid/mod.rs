@@ -7,6 +7,7 @@ pub mod context_menu;
 pub mod menu;
 pub(crate) mod motion;
 pub mod paint;
+pub mod search;
 pub mod selection;
 pub mod state;
 pub mod theme;

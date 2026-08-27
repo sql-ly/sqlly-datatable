@@ -96,6 +96,12 @@ pub(crate) struct PaintData {
     /// focus-visible ring (WCAG 2.4.7). Set by the widget in the canvas
     /// prepaint, where a `Window` is available to query the focus handle.
     pub(crate) focused: bool,
+    /// `(display_row, col)` cells matching the active grid-wide search, for
+    /// the find highlight. Empty when no search is active. Shared as an `Arc`
+    /// so the paint snapshot is O(1) even for a large match set.
+    pub(crate) search_matches: Arc<std::collections::HashSet<(usize, usize)>>,
+    /// The focused match, drawn with a stronger highlight.
+    pub(crate) search_active: Option<(usize, usize)>,
 }
 
 impl PaintData {
@@ -125,6 +131,8 @@ impl PaintData {
             // Overridden by the widget's canvas prepaint, which has the
             // `Window` needed to query focus; `from_state` alone cannot.
             focused: false,
+            search_matches: Arc::clone(&s.search.match_set),
+            search_active: s.search_active_cell(),
         }
     }
 
@@ -586,6 +594,18 @@ pub(crate) fn paint_grid(
                 let cell_sel = is_cell_selected(&data.selection, dr, ci);
                 if cell_sel {
                     fill_quad(window, x, y, w, row_h, theme.selection_bg);
+                }
+                // Grid-wide find highlight (theme-agnostic amber, the universal
+                // find convention). A plain match tints its background when not
+                // selected; the focused match always gets a stronger tint so it
+                // stays visible even inside a selection.
+                if !data.search_matches.is_empty() {
+                    let is_active_match = data.search_active == Some((dr, ci));
+                    if is_active_match {
+                        fill_quad(window, x, y, w, row_h, gpui::hsla(0.09, 0.95, 0.55, 0.60));
+                    } else if !cell_sel && data.search_matches.contains(&(dr, ci)) {
+                        fill_quad(window, x, y, w, row_h, gpui::hsla(0.14, 0.90, 0.55, 0.38));
+                    }
                 }
                 let cell = &data.rows[row_idx][ci];
                 let fmt = &data.resolved_formats[ci];

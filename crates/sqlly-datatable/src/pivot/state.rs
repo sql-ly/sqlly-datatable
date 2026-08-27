@@ -516,7 +516,10 @@ impl PivotState {
                 };
             }
             AggregationFn::Avg => fmt.kind = ColumnKind::Decimal,
-            AggregationFn::Sum | AggregationFn::Min | AggregationFn::Max => {}
+            AggregationFn::Sum
+            | AggregationFn::Min
+            | AggregationFn::Max
+            | AggregationFn::First => {}
         }
         fmt.number.alignment = TextAlignment::Right;
         fmt.string.alignment = TextAlignment::Right;

@@ -14,6 +14,11 @@
 //! * Configurable column resizing, mouse-driven scrollbars, and edge-scroll
 //!   during drag selection.
 //! * Clipboard copy of any selection (with or without headers).
+//! * Grid-wide value search ([`grid::search`]): a case-insensitive find across
+//!   every column of the visible rows, with amber match highlighting, a focused
+//!   match, and next/previous navigation. The host supplies the find-bar UI and
+//!   drives it via [`GridState::set_search_query`], [`GridState::search_next`],
+//!   and [`GridState::search_prev`].
 //! * Conditional formatting ([`config::GridConfig::conditional_rules`]):
 //!   per-cell rule styling (colors, bold), color scales, and data bars,
 //!   declared per column by name — see the [`mod@conditional`] module.
@@ -24,7 +29,7 @@
 //!   reduce-motion preference.
 //! * An optional **pivot tab** ([`SqllyDataTableBuilder::pivot`]): a
 //!   cross-tabulation view with a drag-and-drop field sidebar (rows /
-//!   columns / values / filters), count/sum/avg/min/max aggregation,
+//!   columns / values / filters), count/sum/avg/min/max/first aggregation,
 //!   expandable row and column groups, subtotals and grand totals, sorting
 //!   on labels or values, source-value filters, and CSV export. The pivot
 //!   reads a shared snapshot of the grid's rows and never mutates them;

@@ -310,6 +310,28 @@ pub struct GridState {
     /// loading overlay. Set by [`GridState::spawn_background`] /
     /// [`GridState::set_busy`]; cleared on completion.
     pub(crate) busy: Option<BusyState>,
+    /// Grid-wide value search (see [`crate::grid::search`]). Empty query means
+    /// no search is active. Matches are `(display_row, col)` pairs over the
+    /// currently resident/visible rows, highlighted by the paint layer.
+    pub(crate) search: SearchState,
+}
+
+/// Grid-wide find state: the query, every matching cell, and which match is
+/// currently focused. Populated by [`GridState::set_search_query`].
+#[derive(Clone, Debug, Default)]
+pub struct SearchState {
+    /// The active query. Empty means search is off.
+    pub query: String,
+    /// `(display_row, col)` of every matching cell, in row-major order, capped
+    /// at [`crate::grid::search::MAX_SEARCH_MATCHES`].
+    pub matches: Vec<(usize, usize)>,
+    /// The same matches as a set for O(1) per-cell lookup during paint. Rebuilt
+    /// with `matches` so the paint layer never scans the vector per cell.
+    pub match_set: std::sync::Arc<std::collections::HashSet<(usize, usize)>>,
+    /// Index into `matches` of the focused match, if any.
+    pub active: Option<usize>,
+    /// True when the match scan hit the cap and stopped early.
+    pub truncated: bool,
 }
 
 /// State backing the built-in loading overlay shown while a background task
@@ -762,6 +784,7 @@ impl GridState {
             column_meta,
             self_weak: None,
             busy: None,
+            search: SearchState::default(),
         }
     }
 
@@ -1208,6 +1231,11 @@ impl GridState {
         }
         self.row_groups = Arc::new(groups);
         self.display_rows = Arc::new(display_rows);
+        // Match positions are keyed by display row, so filter/sort/group
+        // changes invalidate them; refresh while a search is active.
+        if !self.search.query.is_empty() {
+            self.recompute_search_matches();
+        }
     }
 
     fn content_size(&self) -> (f32, f32) {
