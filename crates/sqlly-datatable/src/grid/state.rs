@@ -845,6 +845,9 @@ impl GridState {
                     flat_row: source_row,
                 },
             ));
+            // The fast path bypasses rebuild_display_rows; an active search
+            // must still see the appended rows.
+            self.refresh_search_after_display_change();
         }
         if let Some(window) = &mut self.window {
             window.total_rows += self.data.rows.len() - base;
@@ -1182,6 +1185,9 @@ impl GridState {
                     })
                     .collect(),
             );
+            // This branch covers the common ungrouped and windowed cases —
+            // the refresh must run here too, not only after grouping below.
+            self.refresh_search_after_display_change();
             return;
         };
 
@@ -1231,8 +1237,13 @@ impl GridState {
         }
         self.row_groups = Arc::new(groups);
         self.display_rows = Arc::new(display_rows);
-        // Match positions are keyed by display row, so filter/sort/group
-        // changes invalidate them; refresh while a search is active.
+        self.refresh_search_after_display_change();
+    }
+
+    /// Match positions are keyed by display row, so anything that changes the
+    /// visible rows (filter, sort, group, window paging, appended rows) must
+    /// refresh them while a search is active. Free when search is off.
+    fn refresh_search_after_display_change(&mut self) {
         if !self.search.query.is_empty() {
             self.recompute_search_matches();
         }

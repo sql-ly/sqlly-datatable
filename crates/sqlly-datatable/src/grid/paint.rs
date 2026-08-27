@@ -595,18 +595,6 @@ pub(crate) fn paint_grid(
                 if cell_sel {
                     fill_quad(window, x, y, w, row_h, theme.selection_bg);
                 }
-                // Grid-wide find highlight (theme-agnostic amber, the universal
-                // find convention). A plain match tints its background when not
-                // selected; the focused match always gets a stronger tint so it
-                // stays visible even inside a selection.
-                if !data.search_matches.is_empty() {
-                    let is_active_match = data.search_active == Some((dr, ci));
-                    if is_active_match {
-                        fill_quad(window, x, y, w, row_h, gpui::hsla(0.09, 0.95, 0.55, 0.60));
-                    } else if !cell_sel && data.search_matches.contains(&(dr, ci)) {
-                        fill_quad(window, x, y, w, row_h, gpui::hsla(0.14, 0.90, 0.55, 0.38));
-                    }
-                }
                 let cell = &data.rows[row_idx][ci];
                 let fmt = &data.resolved_formats[ci];
                 // Conditional formatting: the single `is_empty` check keeps
@@ -637,6 +625,20 @@ pub(crate) fn paint_grid(
                             // against the row, not a full-cell fill.
                             fill_quad(window, x + 1.0, y + 2.0, (w - 2.0) * frac, row_h - 4.0, bar);
                         }
+                    }
+                }
+                // Grid-wide find highlight (theme-agnostic amber, the universal
+                // find convention). Painted AFTER the null fill and conditional
+                // backgrounds/bars so a match stays visible on cells those
+                // opaque fills cover; a plain match still yields to the
+                // selection highlight, while the focused match overlays
+                // everything so it can never be lost.
+                if !data.search_matches.is_empty() {
+                    let is_active_match = data.search_active == Some((dr, ci));
+                    if is_active_match {
+                        fill_quad(window, x, y, w, row_h, gpui::hsla(0.09, 0.95, 0.55, 0.60));
+                    } else if !cell_sel && data.search_matches.contains(&(dr, ci)) {
+                        fill_quad(window, x, y, w, row_h, gpui::hsla(0.14, 0.90, 0.55, 0.38));
                     }
                 }
                 let (text, is_neg) = if is_null {
