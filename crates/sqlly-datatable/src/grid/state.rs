@@ -15,7 +15,7 @@ use crate::grid::theme::{GridTheme, GridThemePair};
 
 use crate::config::{GridConfig, ResolvedColumnFormat};
 use gpui::{
-    px, App, Bounds, FocusHandle, Keystroke, MouseButton, Pixels, Point, ScrollHandle, Size,
+    px, App, Bounds, FocusHandle, Hsla, Keystroke, MouseButton, Pixels, Point, ScrollHandle, Size,
     TouchPhase,
 };
 use std::collections::{HashMap, HashSet};
@@ -252,6 +252,15 @@ pub struct GridState {
     pub(crate) range_active: Option<(usize, usize)>,
     pub sort: Option<(usize, SortDirection)>,
     pub filters: Vec<ColumnFilter>,
+    /// Number of leading *display* columns that stay pinned while the rest
+    /// scroll horizontally. Clamped to `display_columns.len()`.
+    pub frozen_columns: usize,
+    /// Display position → source column index. Columns omitted from this
+    /// list are hidden. Default is identity (`0..n`).
+    pub(crate) display_columns: Vec<usize>,
+    /// Optional per-source-row background, painted after the zebra stripe
+    /// and skipped on a selected cell. Empty means no override.
+    pub row_backgrounds: Arc<Vec<Option<Hsla>>>,
     pub scroll_handle: ScrollHandle,
     pub focus_handle: FocusHandle,
     pub bounds: Bounds<Pixels>,
@@ -757,6 +766,9 @@ impl GridState {
             range_active: None,
             sort: None,
             filters: vec![ColumnFilter::default(); col_count],
+            frozen_columns: 0,
+            display_columns: (0..col_count).collect(),
+            row_backgrounds: Arc::new(Vec::new()),
             scroll_handle: ScrollHandle::new(),
             focus_handle,
             bounds: Bounds::default(),
@@ -797,6 +809,133 @@ impl GridState {
             busy: None,
             search: SearchState::default(),
         }
+    }
+
+    /// Pin the first `n` display columns. Values above the visible column
+    /// count are clamped.
+    pub fn set_frozen_columns(&mut self, n: usize) {
+        self.frozen_columns = n.min(self.display_columns.len());
+    }
+
+    #[must_use]
+    pub fn frozen_columns(&self) -> usize {
+        self.frozen_columns
+    }
+
+    /// Width of the frozen leading display columns, in pixels.
+    #[must_use]
+    pub(crate) fn frozen_width(&self) -> f32 {
+        self.display_columns
+            .iter()
+            .take(self.frozen_columns)
+            .map(|&src| self.column_width(src))
+            .sum()
+    }
+
+    /// Grid-relative x of the left edge of source column `col`.
+    fn column_left_x(&self, col: usize, sx: f32) -> f32 {
+        let rhw = self.row_header_width;
+        let frozen_n = self.frozen_columns.min(self.display_columns.len());
+        let frozen_w = self.frozen_width();
+        let mut acc = 0.0;
+        for (di, &src) in self.display_columns.iter().enumerate() {
+            if src == col {
+                return if di < frozen_n {
+                    rhw + acc
+                } else {
+                    rhw + frozen_w + (acc - frozen_w) - sx
+                };
+            }
+            acc += self.column_width(src);
+        }
+        rhw
+    }
+
+    fn column_width(&self, src: usize) -> f32 {
+        self.data.columns.get(src).map(|c| c.width).unwrap_or(0.0)
+    }
+
+    /// Sum of currently displayed (not hidden) column widths.
+    fn display_content_width(&self) -> f32 {
+        self.display_columns
+            .iter()
+            .map(|&src| self.column_width(src))
+            .sum()
+    }
+
+    /// Replace the display order. `order` must be a duplicate-free subset of
+    /// `0..column_count`; omitted indices are hidden. Invalid input is ignored.
+    pub fn set_column_order(&mut self, order: &[usize]) {
+        let n = self.data.columns.len();
+        if !Self::is_valid_column_order(order, n) {
+            return;
+        }
+        self.display_columns = order.to_vec();
+        self.frozen_columns = self.frozen_columns.min(self.display_columns.len());
+    }
+
+    fn is_valid_column_order(order: &[usize], n: usize) -> bool {
+        let mut seen = vec![false; n];
+        for &idx in order {
+            if idx >= n || seen[idx] {
+                return false;
+            }
+            seen[idx] = true;
+        }
+        true
+    }
+
+    #[must_use]
+    pub fn column_order(&self) -> &[usize] {
+        &self.display_columns
+    }
+
+    pub fn hide_column(&mut self, col: usize) {
+        if col >= self.data.columns.len() {
+            return;
+        }
+        self.display_columns.retain(|&src| src != col);
+        self.frozen_columns = self.frozen_columns.min(self.display_columns.len());
+    }
+
+    pub fn show_all_columns(&mut self) {
+        self.display_columns = (0..self.data.columns.len()).collect();
+        self.frozen_columns = self.frozen_columns.min(self.display_columns.len());
+    }
+
+    #[must_use]
+    pub fn hidden_columns(&self) -> Vec<usize> {
+        let n = self.data.columns.len();
+        let mut visible = vec![false; n];
+        for &src in &self.display_columns {
+            if src < n {
+                visible[src] = true;
+            }
+        }
+        (0..n).filter(|&i| !visible[i]).collect()
+    }
+
+    fn display_index_of(&self, col: usize) -> Option<usize> {
+        self.display_columns.iter().position(|&src| src == col)
+    }
+
+    fn move_column(&mut self, col: usize, delta: isize) {
+        let Some(idx) = self.display_index_of(col) else {
+            return;
+        };
+        let Some(target) = idx.checked_add_signed(delta) else {
+            return;
+        };
+        if target >= self.display_columns.len() {
+            return;
+        }
+        self.display_columns.swap(idx, target);
+    }
+
+    /// Replace per-source-row background colors. Empty / shorter vectors
+    /// leave later rows on the default zebra stripe.
+    pub fn set_row_backgrounds(&mut self, backgrounds: Vec<Option<Hsla>>) {
+        self.row_backgrounds = Arc::new(backgrounds);
     }
 
     pub fn set_config(&mut self, config: GridConfig) {
@@ -1261,7 +1400,7 @@ impl GridState {
     }
 
     fn content_size(&self) -> (f32, f32) {
-        let cw: f32 = self.data.columns.iter().map(|c| c.width).sum();
+        let cw: f32 = self.display_content_width();
         let ch = self.display_row_count() as f32 * self.row_height;
         (cw, ch)
     }
@@ -1271,9 +1410,11 @@ impl GridState {
         let (rw, rh) = self.scrollbar_reserved();
         let vw: f32 = self.bounds.size.width.into();
         let vh: f32 = self.bounds.size.height.into();
-        let vw = vw - self.row_header_width - rw;
+        let frozen_w = self.frozen_width();
+        let vw = (vw - self.row_header_width - rw - frozen_w).max(0.0);
         let vh = vh - self.header_height - rh;
-        ((cw - vw).max(0.0), (ch - vh).max(0.0))
+        let scrollable_w = (cw - frozen_w).max(0.0);
+        ((scrollable_w - vw).max(0.0), (ch - vh).max(0.0))
     }
 
     /// Route a wheel event through the scroll physics: normal scrolling plus
@@ -1356,7 +1497,12 @@ impl GridState {
         let vw = vw - self.row_header_width;
         let vh = vh - self.header_height;
         let reserved_w = if ch > vh { SCROLLBAR_SIZE } else { 0.0 };
-        let reserved_h = if cw > vw { SCROLLBAR_SIZE } else { 0.0 };
+        let reserved_h =
+            if (cw - self.frozen_width()).max(0.0) > (vw - self.frozen_width()).max(0.0) {
+                SCROLLBAR_SIZE
+            } else {
+                0.0
+            };
         (reserved_w, reserved_h)
     }
 
@@ -1950,6 +2096,15 @@ impl GridState {
             }
             MenuAction::GroupBy => self.set_grouped_column(Some(col)),
             MenuAction::ClearGrouping => self.set_grouped_column(None),
+            MenuAction::FreezeToHere => {
+                let n = self.display_index_of(col).map_or(0, |i| i + 1);
+                self.set_frozen_columns(n);
+            }
+            MenuAction::UnfreezeColumns => self.set_frozen_columns(0),
+            MenuAction::HideColumn => self.hide_column(col),
+            MenuAction::ShowAllColumns => self.show_all_columns(),
+            MenuAction::MoveColumnLeft => self.move_column(col, -1),
+            MenuAction::MoveColumnRight => self.move_column(col, 1),
             MenuAction::FilterPrompt => {
                 let anchor = self.context_menu.as_ref().map(|m| m.anchor);
                 self.open_filter_panel(col, anchor);
@@ -1979,12 +2134,7 @@ impl GridState {
             return;
         }
         let sx = f32::from(self.scroll_handle.offset().x);
-        let col_x = self.row_header_width
-            + self.data.columns[..col]
-                .iter()
-                .map(|c| c.width)
-                .sum::<f32>()
-            - sx;
+        let col_x = self.column_left_x(col, sx);
         let anchor = Point {
             x: px(col_x + self.data.columns[col].width * 0.5),
             y: px(0.0),
@@ -2791,20 +2941,14 @@ impl GridState {
             if x < self.row_header_width {
                 return HitResult::Corner;
             }
-            let col_x = x - self.row_header_width + sx;
-            let mut acc = 0.0;
-            for (i, col) in self.data.columns.iter().enumerate() {
-                let right = acc + col.width;
-                if col_x >= right - 5.0 && col_x <= right + 5.0 {
-                    return HitResult::ColumnBorder(i);
+            if let Some(src) = self.hit_test_column_border(x, sx) {
+                return HitResult::ColumnBorder(src);
+            }
+            if let Some((src, offset, width)) = self.hit_test_display_column(x, sx) {
+                if offset >= width - 20.0 {
+                    return HitResult::SortButton(src);
                 }
-                if col_x >= acc && col_x < right {
-                    if col_x >= right - 20.0 {
-                        return HitResult::SortButton(i);
-                    }
-                    return HitResult::ColumnHeader(i);
-                }
-                acc = right;
+                return HitResult::ColumnHeader(src);
             }
             return HitResult::None;
         }
@@ -2823,7 +2967,6 @@ impl GridState {
             }
             return HitResult::None;
         }
-        let col_x = x - self.row_header_width + sx;
         let row_y = y - self.header_height + sy;
         if row_y < 0.0 {
             return HitResult::None;
@@ -2835,14 +2978,74 @@ impl GridState {
         if let Some(GridDisplayRow::GroupHeader { group }) = self.display_rows.get(row_idx) {
             return HitResult::GroupHeader(*group);
         }
-        let mut acc = 0.0;
-        for (i, col) in self.data.columns.iter().enumerate() {
-            if col_x >= acc && col_x < acc + col.width {
-                return HitResult::Cell(row_idx, i);
-            }
-            acc += col.width;
+        if let Some((src, _, _)) = self.hit_test_display_column(x, sx) {
+            return HitResult::Cell(row_idx, src);
         }
         HitResult::None
+    }
+
+    /// Source column under grid-relative `x`, plus offset within that column
+    /// and the column width. Frozen columns ignore `sx`.
+    fn hit_test_display_column(&self, x: f32, sx: f32) -> Option<(usize, f32, f32)> {
+        if x < self.row_header_width {
+            return None;
+        }
+        let rhw = self.row_header_width;
+        let frozen_n = self.frozen_columns.min(self.display_columns.len());
+        let frozen_w = self.frozen_width();
+        if frozen_n > 0 && x < rhw + frozen_w {
+            let mut acc = rhw;
+            for &src in &self.display_columns[..frozen_n] {
+                let w = self.column_width(src);
+                if x >= acc && x < acc + w {
+                    return Some((src, x - acc, w));
+                }
+                acc += w;
+            }
+            return None;
+        }
+        let local = x - rhw - frozen_w + sx;
+        let mut acc = 0.0;
+        for &src in &self.display_columns[frozen_n..] {
+            let w = self.column_width(src);
+            if local >= acc && local < acc + w {
+                return Some((src, local - acc, w));
+            }
+            acc += w;
+        }
+        None
+    }
+
+    /// Column whose right edge is within 5px of `x` (the resize handle).
+    fn hit_test_column_border(&self, x: f32, sx: f32) -> Option<usize> {
+        let mut found = None;
+        self.visit_display_geom(sx, |src, left, w, _frozen| {
+            let right = left + w;
+            if x >= right - 5.0 && x <= right + 5.0 {
+                found = Some(src);
+            }
+        });
+        found
+    }
+
+    fn visit_display_geom(&self, sx: f32, mut visit: impl FnMut(usize, f32, f32, bool)) {
+        let rhw = self.row_header_width;
+        let frozen_n = self.frozen_columns.min(self.display_columns.len());
+        let frozen_w = self.frozen_width();
+        let mut frozen_acc = 0.0;
+        let mut scroll_acc = 0.0;
+        for (di, &src) in self.display_columns.iter().enumerate() {
+            let w = self.column_width(src);
+            if di < frozen_n {
+                let left = rhw + frozen_acc;
+                frozen_acc += w;
+                visit(src, left, w, true);
+            } else {
+                let left = rhw + frozen_w + scroll_acc - sx;
+                scroll_acc += w;
+                visit(src, left, w, false);
+            }
+        }
     }
 
     #[must_use]

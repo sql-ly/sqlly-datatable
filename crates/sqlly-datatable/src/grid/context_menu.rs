@@ -424,6 +424,13 @@ impl ContextMenuItem {
             Self::BuiltIn(MenuAction::GroupBy),
             Self::BuiltIn(MenuAction::ClearGrouping),
             Self::Separator,
+            Self::BuiltIn(MenuAction::FreezeToHere),
+            Self::BuiltIn(MenuAction::UnfreezeColumns),
+            Self::BuiltIn(MenuAction::HideColumn),
+            Self::BuiltIn(MenuAction::ShowAllColumns),
+            Self::BuiltIn(MenuAction::MoveColumnLeft),
+            Self::BuiltIn(MenuAction::MoveColumnRight),
+            Self::Separator,
             Self::BuiltIn(MenuAction::FilterPrompt),
             Self::BuiltIn(MenuAction::ClearFilter),
         ]
@@ -622,14 +629,14 @@ mod tests {
     #[test]
     fn standard_column_header_items_match_builtin_order() {
         let items = ContextMenuItem::standard_column_header_items();
-        assert_eq!(items.len(), 13);
+        assert_eq!(items.len(), 20);
         assert!(matches!(
             items[0],
             ContextMenuItem::BuiltIn(MenuAction::SelectColumn)
         ));
         assert!(matches!(items[3], ContextMenuItem::Separator));
         assert!(matches!(
-            items[12],
+            items[19],
             ContextMenuItem::BuiltIn(MenuAction::ClearFilter)
         ));
     }

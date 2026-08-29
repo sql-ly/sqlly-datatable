@@ -5,6 +5,13 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.2.0] - 2026-08-29
+
+### Added — Frozen leading columns, hide/reorder, row backgrounds
+- `GridState::set_frozen_columns` / `frozen_columns()` pin the first N display columns; the header menu offers Freeze Columns Up to Here and Unfreeze Columns. Frozen columns ignore horizontal scroll and keep a 1px freeze boundary.
+- `set_column_order`, `column_order`, `hide_column`, `show_all_columns`, and `hidden_columns` control display order. Selection, copy, filter, and sort stay on source indices. Header menu: Hide Column, Show All Columns, Move Column Left/Right.
+- `set_row_backgrounds` paints an optional per-source-row fill after the zebra stripe and skips it on a selected cell.
+
 ## [5.1.1] - 2026-08-29
 
 ### Fixed

@@ -28,6 +28,12 @@ pub enum MenuAction {
     ClearSort,
     GroupBy,
     ClearGrouping,
+    FreezeToHere,
+    UnfreezeColumns,
+    HideColumn,
+    ShowAllColumns,
+    MoveColumnLeft,
+    MoveColumnRight,
     FilterPrompt,
     ClearFilter,
 }
@@ -85,6 +91,13 @@ impl ContextMenu {
                 MenuItem::Separator,
                 MenuItem::Action(MenuAction::GroupBy),
                 MenuItem::Action(MenuAction::ClearGrouping),
+                MenuItem::Separator,
+                MenuItem::Action(MenuAction::FreezeToHere),
+                MenuItem::Action(MenuAction::UnfreezeColumns),
+                MenuItem::Action(MenuAction::HideColumn),
+                MenuItem::Action(MenuAction::ShowAllColumns),
+                MenuItem::Action(MenuAction::MoveColumnLeft),
+                MenuItem::Action(MenuAction::MoveColumnRight),
                 MenuItem::Separator,
                 MenuItem::Action(MenuAction::FilterPrompt),
                 MenuItem::Action(MenuAction::ClearFilter),
@@ -207,6 +220,12 @@ pub fn label(action: MenuAction) -> &'static str {
         MenuAction::ClearSort => "Clear sort",
         MenuAction::GroupBy => "Group by this column",
         MenuAction::ClearGrouping => "Clear grouping",
+        MenuAction::FreezeToHere => "Freeze Columns Up to Here",
+        MenuAction::UnfreezeColumns => "Unfreeze Columns",
+        MenuAction::HideColumn => "Hide Column",
+        MenuAction::ShowAllColumns => "Show All Columns",
+        MenuAction::MoveColumnLeft => "Move Column Left",
+        MenuAction::MoveColumnRight => "Move Column Right",
         MenuAction::FilterPrompt => "Filter...",
         MenuAction::ClearFilter => "Clear filter",
     }
@@ -326,6 +345,12 @@ mod tests {
                 MenuItem::Action(MenuAction::ClearSort) => "ClearSort",
                 MenuItem::Action(MenuAction::GroupBy) => "GroupBy",
                 MenuItem::Action(MenuAction::ClearGrouping) => "ClearGrouping",
+                MenuItem::Action(MenuAction::FreezeToHere) => "FreezeToHere",
+                MenuItem::Action(MenuAction::UnfreezeColumns) => "UnfreezeColumns",
+                MenuItem::Action(MenuAction::HideColumn) => "HideColumn",
+                MenuItem::Action(MenuAction::ShowAllColumns) => "ShowAllColumns",
+                MenuItem::Action(MenuAction::MoveColumnLeft) => "MoveColumnLeft",
+                MenuItem::Action(MenuAction::MoveColumnRight) => "MoveColumnRight",
                 MenuItem::Action(MenuAction::FilterPrompt) => "FilterPrompt",
                 MenuItem::Action(MenuAction::ClearFilter) => "ClearFilter",
                 MenuItem::Custom { .. } => "Custom",
@@ -345,6 +370,13 @@ mod tests {
                 "GroupBy",
                 "ClearGrouping",
                 "Separator",
+                "FreezeToHere",
+                "UnfreezeColumns",
+                "HideColumn",
+                "ShowAllColumns",
+                "MoveColumnLeft",
+                "MoveColumnRight",
+                "Separator",
                 "FilterPrompt",
                 "ClearFilter",
             ],
@@ -359,7 +391,7 @@ mod tests {
             .iter()
             .filter(|i| matches!(i, MenuItem::Separator))
             .count();
-        assert_eq!(separators, 3);
+        assert_eq!(separators, 4);
     }
 
     #[test]
@@ -373,6 +405,12 @@ mod tests {
             MenuAction::ClearSort,
             MenuAction::GroupBy,
             MenuAction::ClearGrouping,
+            MenuAction::FreezeToHere,
+            MenuAction::UnfreezeColumns,
+            MenuAction::HideColumn,
+            MenuAction::ShowAllColumns,
+            MenuAction::MoveColumnLeft,
+            MenuAction::MoveColumnRight,
             MenuAction::FilterPrompt,
             MenuAction::ClearFilter,
         ] {

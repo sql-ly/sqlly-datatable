@@ -152,6 +152,7 @@ impl SqllyDataTable {
             pivot_sidebar_width: DEFAULT_PIVOT_SIDEBAR_WIDTH,
             pivot_row_height: DEFAULT_PIVOT_ROW_HEIGHT,
             pivot_column_width: DEFAULT_PIVOT_COLUMN_WIDTH,
+            frozen_columns: 0,
         }
     }
 
@@ -438,6 +439,7 @@ pub struct SqllyDataTableBuilder {
     pivot_sidebar_width: f32,
     pivot_row_height: f32,
     pivot_column_width: f32,
+    frozen_columns: usize,
 }
 
 impl SqllyDataTableBuilder {
@@ -494,6 +496,14 @@ impl SqllyDataTableBuilder {
     #[must_use]
     pub fn group_by_column(mut self, column: usize) -> Self {
         self.grouped_column = Some(column);
+        self
+    }
+
+    /// Pin the first `n` display columns so they stay in view while the rest
+    /// scroll horizontally. Clamped to the column count at build time.
+    #[must_use]
+    pub fn frozen_columns(mut self, n: usize) -> Self {
+        self.frozen_columns = n;
         self
     }
 
@@ -588,12 +598,14 @@ impl SqllyDataTableBuilder {
         let pivot_sidebar_width = self.pivot_sidebar_width;
         let pivot_row_height = self.pivot_row_height;
         let pivot_column_width = self.pivot_column_width;
+        let frozen_columns = self.frozen_columns;
         let follow_system_appearance = theme_override.is_none();
         let state = cx.new(|cx| {
             let mut s = GridState::new(self.data, self.config, focus.clone());
             s.context_menu_provider = provider;
             s.debug_bar_enabled = debug_bar;
             s.set_grouped_column(grouped_column);
+            s.set_frozen_columns(frozen_columns);
             s.self_weak = Some(cx.weak_entity());
             if let Some(family) = theme_family {
                 s.theme = family.light.clone();

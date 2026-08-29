@@ -107,6 +107,10 @@ pub(crate) struct PaintData {
     /// gesture pulls past an edge or the bounce-back spring runs. Scrollbars
     /// and the focus ring stay pinned to the true bounds. `(0, 0)` at rest.
     pub(crate) overscroll: (f32, f32),
+    /// Display position → source column. Hidden columns are omitted.
+    pub(crate) display_columns: Vec<usize>,
+    pub(crate) frozen_columns: usize,
+    pub(crate) row_backgrounds: Arc<Vec<Option<Hsla>>>,
 }
 
 impl PaintData {
@@ -139,6 +143,9 @@ impl PaintData {
             search_matches: Arc::clone(&s.search.match_set),
             search_active: s.search_active_cell(),
             overscroll: s.scroll_overscroll_shift(),
+            display_columns: s.display_columns.clone(),
+            frozen_columns: s.frozen_columns.min(s.display_columns.len()),
+            row_backgrounds: Arc::clone(&s.row_backgrounds),
         }
     }
 
@@ -175,6 +182,41 @@ impl PaintData {
         match self.display_rows.get(display_row) {
             Some(GridDisplayRow::Data { flat_row, .. }) => flat_row + 1,
             _ => display_row + 1,
+        }
+    }
+
+    fn display_content_width(&self) -> f32 {
+        self.display_columns
+            .iter()
+            .map(|&src| self.columns.get(src).map(|c| c.width).unwrap_or(0.0))
+            .sum()
+    }
+
+    fn frozen_width(&self) -> f32 {
+        self.display_columns
+            .iter()
+            .take(self.frozen_columns)
+            .map(|&src| self.columns.get(src).map(|c| c.width).unwrap_or(0.0))
+            .sum()
+    }
+
+    fn visit_display_columns(&self, sx: f32, mut visit: impl FnMut(usize, f32, f32, bool)) {
+        let rhw = self.row_header_width;
+        let frozen_n = self.frozen_columns.min(self.display_columns.len());
+        let frozen_w = self.frozen_width();
+        let mut frozen_acc = 0.0;
+        let mut scroll_acc = 0.0;
+        for (di, &src) in self.display_columns.iter().enumerate() {
+            let w = self.columns.get(src).map(|c| c.width).unwrap_or(0.0);
+            if di < frozen_n {
+                let x = rhw + frozen_acc;
+                frozen_acc += w;
+                visit(src, x, w, true);
+            } else {
+                let x = rhw + frozen_w + scroll_acc - sx;
+                scroll_acc += w;
+                visit(src, x, w, false);
+            }
         }
     }
 }
@@ -290,18 +332,20 @@ pub(crate) fn paint_scrollbars(
 ) {
     let scroll = data.scroll_offset;
     let (content_w, content_h) = (
-        data.columns.iter().map(|c| c.width).sum::<f32>(),
+        data.display_content_width(),
         data.display_row_count() as f32 * data.row_height,
     );
     let vw_full = sw - data.row_header_width;
     let vh_full = sh - data.header_height;
+    let frozen_w = data.frozen_width();
     let has_v = content_h > vh_full;
-    let has_h = content_w > vw_full;
+    let scrollable_w = (content_w - frozen_w).max(0.0);
+    let has_h = scrollable_w > (vw_full - frozen_w).max(0.0);
     let reserved_w = if has_v { SCROLLBAR_SIZE } else { 0.0 };
     let reserved_h = if has_h { SCROLLBAR_SIZE } else { 0.0 };
-    let vw = vw_full - reserved_w;
+    let vw = (vw_full - reserved_w - frozen_w).max(0.0);
     let vh = vh_full - reserved_h;
-    let max_x = (content_w - vw).max(0.0);
+    let max_x = (scrollable_w - vw).max(0.0);
     let max_y = (content_h - vh).max(0.0);
     let (sx, sy) = (f32::from(scroll.x), f32::from(scroll.y));
     let track_bg = theme.row_header_bg;
@@ -337,7 +381,7 @@ pub(crate) fn paint_scrollbars(
             // 1px separator so the track reads as a scrollbar gutter rather
             // than blending into the bottom row.
             fill_quad(window, track_x, track_y, track_w, 1.0, theme.grid_line);
-            let thumb_w = ((track_w * (vw / content_w)).max(20.0)).min(track_w);
+            let thumb_w = ((track_w * (vw / scrollable_w.max(1.0))).max(20.0)).min(track_w);
             let frac = if max_x > 0.0 { sx / max_x } else { 0.0 };
             let thumb_x = track_x + frac * (track_w - thumb_w);
             fill_quad(
@@ -542,7 +586,7 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
     // painting is clipped so partially visible rows/columns never bleed
     // past the grid bounds or under the scrollbar strips.
     let (content_w, content_h) = (
-        data.columns.iter().map(|c| c.width).sum::<f32>(),
+        data.display_content_width(),
         data.display_row_count() as f32 * row_h,
     );
     let rsv_w = if content_h > sh - hdr_h {
@@ -550,10 +594,14 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
     } else {
         0.0
     };
-    let rsv_h = if content_w > sw - rhw {
-        SCROLLBAR_SIZE
-    } else {
-        0.0
+    let rsv_h = {
+        let frozen_w = data.frozen_width();
+        let scrollable_w = (content_w - frozen_w).max(0.0);
+        if scrollable_w > (sw - rhw - frozen_w).max(0.0) {
+            SCROLLBAR_SIZE
+        } else {
+            0.0
+        }
     };
     let clip = |x: f32, y: f32, w: f32, h: f32| {
         Some(ContentMask {
@@ -608,14 +656,24 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                 fill_quad(window, ox, y + row_h, rhw + cols_w, 1.0, theme.grid_line);
                 continue;
             };
+            if !row_sel {
+                if let Some(Some(bg)) = data.row_backgrounds.get(row_idx) {
+                    fill_quad(window, ox + rhw, y, cols_w, row_h, *bg);
+                }
+            }
 
-            let mut col_x = rhw - sx;
-            for (ci, col) in data.columns.iter().enumerate() {
+            let freeze_edge = ox + rhw + data.frozen_width();
+            data.visit_display_columns(sx, |ci, col_x, w, is_frozen| {
                 let x = ox + col_x;
-                let w = col.width;
-                if x + w < ox + rhw || x > ox + sw {
-                    col_x += w;
-                    continue;
+                if is_frozen {
+                    if x + w < ox + rhw || x > freeze_edge {
+                        return;
+                    }
+                } else if x + w <= freeze_edge || x > ox + sw {
+                    return;
+                }
+                if ci >= data.rows[row_idx].len() || ci >= data.resolved_formats.len() {
+                    return;
                 }
                 let cell_sel = is_cell_selected(&data.selection, dr, ci);
                 if cell_sel {
@@ -718,8 +776,7 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                     );
                 }
                 fill_quad(window, x + w, y, 1.0, row_h, theme.grid_line);
-                col_x += w;
-            }
+            });
             fill_quad(window, ox, y + row_h, rhw + cols_w, 1.0, theme.grid_line);
         }
     });
@@ -769,14 +826,20 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
     fill_quad(window, ox, oy, sw, hdr_h, theme.header_bg);
     let header_clip = clip(ox + rhw, oy, sw - rhw - rsv_w, hdr_h);
     window.with_content_mask(header_clip, |window| {
-        let mut col_x = rhw - sx;
-        for (ci, col) in data.columns.iter().enumerate() {
+        let freeze_edge = ox + rhw + data.frozen_width();
+        data.visit_display_columns(sx, |ci, col_x, w, is_frozen| {
             let x = ox + col_x;
-            let w = col.width;
-            if x + w < ox + rhw || x > ox + sw {
-                col_x += w;
-                continue;
+            if is_frozen {
+                if x + w < ox + rhw || x > freeze_edge {
+                    return;
+                }
+            } else if x + w <= freeze_edge || x > ox + sw {
+                return;
             }
+            if ci >= data.columns.len() {
+                return;
+            }
+            let col = &data.columns[ci];
             if is_column_selected(&data.selection, ci) {
                 fill_quad(window, x, oy, w, hdr_h, theme.selection_bg);
             }
@@ -793,13 +856,14 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
             // with the glyphs. A right-aligned label only shifts right when it
             // genuinely fits; otherwise it falls back to the left edge and
             // ellipsizes there.
-            let right_reserve = if data.filters_active[ci] { 46.0 } else { 28.0 };
+            let filter_active = data.filters_active.get(ci).copied().unwrap_or(false);
+            let right_reserve = if filter_active { 46.0 } else { 28.0 };
             let label_max = w - right_reserve;
             let label_y = oy + (hdr_h - fs) * 0.5;
-            let right_aligned = matches!(
-                data.resolved_formats[ci].alignment(),
-                crate::config::TextAlignment::Right
-            );
+            let right_aligned = data
+                .resolved_formats
+                .get(ci)
+                .is_some_and(|fmt| matches!(fmt.alignment(), crate::config::TextAlignment::Right));
             // Shape once, then right-align by the true laid-out width when it
             // fits (double-width glyphs included); otherwise fall back to the
             // left edge and let it ellipsize there.
@@ -880,7 +944,7 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                     ind_bold,
                 );
             }
-            if data.filters_active[ci] {
+            if filter_active {
                 paint_funnel(
                     window,
                     btn_x - fs * ICON_SCALE - 4.0,
@@ -890,13 +954,16 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                 );
             }
             fill_quad(window, x + w, oy, 1.0, hdr_h, theme.grid_line);
-            col_x += w;
-        }
+        });
     });
     fill_quad(window, ox, oy, rhw, hdr_h, theme.row_header_bg);
 
     fill_quad(window, ox, oy + hdr_h, sw, 1.0, theme.grid_line);
     fill_quad(window, ox + rhw, oy, 1.0, sh, theme.grid_line);
+    let frozen_w = data.frozen_width();
+    if frozen_w > 0.0 {
+        fill_quad(window, ox + rhw + frozen_w, oy, 1.0, sh, theme.grid_line);
+    }
 
     // Empty result set: a quiet centered hint instead of a bare void. The
     // text is host-configurable (and localizable) via `GridConfig::empty_text`.

@@ -14,6 +14,9 @@
 //! * Configurable column resizing, mouse-driven scrollbars, and edge-scroll
 //!   during drag selection.
 //! * Clipboard copy of any selection (with or without headers).
+//! * Frozen leading columns, hide/reorder of display columns, and optional
+//!   per-source-row background fills ([`GridState::set_frozen_columns`],
+//!   [`GridState::set_column_order`], [`GridState::set_row_backgrounds`]).
 //! * Grid-wide value search ([`grid::search`]): a case-insensitive find across
 //!   every column of the visible rows, with amber match highlighting, a focused
 //!   match, and next/previous navigation. The host supplies the find-bar UI and
