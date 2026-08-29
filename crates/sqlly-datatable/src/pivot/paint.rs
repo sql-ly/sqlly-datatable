@@ -56,6 +56,12 @@ pub(crate) struct PivotPaintData {
     pub(crate) font_size: f32,
     pub(crate) char_width: f32,
     pub(crate) is_ready: bool,
+    /// Rubber-band overscroll translation (px added to the paint origin):
+    /// the whole pivot surface — headers included — shifts by this while a
+    /// gesture pulls past an edge or the bounce-back spring runs. Scrollbars
+    /// and the base background stay pinned to the true bounds. `(0, 0)` at
+    /// rest.
+    pub(crate) overscroll: (f32, f32),
 }
 
 impl PivotPaintData {
@@ -95,6 +101,7 @@ impl PivotPaintData {
             font_size: s.font_size,
             char_width: s.char_width,
             is_ready: s.config.is_ready(),
+            overscroll: s.scroll_overscroll_shift(),
         }
     }
 
@@ -207,6 +214,24 @@ pub(crate) fn paint_pivot_grid(
     cx: &mut App,
     bounds: Bounds<Pixels>,
 ) {
+    // While rubber-banding, the content paints translated past the pivot's
+    // edges; clip to the true bounds so it never bleeds over neighboring UI
+    // (sidebar, tab bar, host chrome). At rest, skip the extra mask.
+    if data.overscroll == (0.0, 0.0) {
+        paint_pivot_content(data, window, cx, bounds);
+    } else {
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            paint_pivot_content(data, window, cx, bounds);
+        });
+    }
+}
+
+fn paint_pivot_content(
+    data: &PivotPaintData,
+    window: &mut Window,
+    cx: &mut App,
+    bounds: Bounds<Pixels>,
+) {
     // Hand cursor over the clickable header surfaces (sort targets and
     // expand/collapse chevrons). Must happen during paint — GPUI panics if
     // the cursor style is set from an event handler.
@@ -229,8 +254,13 @@ pub(crate) fn paint_pivot_grid(
         window.set_window_cursor_style(CursorStyle::PointingHand);
     }
 
-    let ox = f32::from(bounds.origin.x);
-    let oy = f32::from(bounds.origin.y);
+    // True origin (scrollbars and the base background pin here) vs the
+    // content origin, which carries the rubber-band overscroll translation
+    // so the whole surface — headers included — pulls with the gesture.
+    let ox0 = f32::from(bounds.origin.x);
+    let oy0 = f32::from(bounds.origin.y);
+    let ox = ox0 + data.overscroll.0;
+    let oy = oy0 + data.overscroll.1;
     let sw = f32::from(bounds.size.width);
     let sh = f32::from(bounds.size.height);
     let sx = f32::from(data.scroll_offset.x);
@@ -339,7 +369,9 @@ pub(crate) fn paint_pivot_grid(
             );
         };
 
-    fill_quad(window, ox, oy, sw, sh, theme.bg);
+    // Base canvas fill pins to the true bounds: while rubber-banding, the
+    // strip revealed past the pulled content shows the plain background.
+    fill_quad(window, ox0, oy0, sw, sh, theme.bg);
 
     let n_rows = data.visible_rows.len();
     let n_cols = data.visible_cols.len();
@@ -1043,7 +1075,7 @@ pub(crate) fn paint_pivot_grid(
     fill_quad(window, ox, oy + hdr_row_h - 1.0, sw, 1.0, theme.grid_line);
 
     paint_pivot_scrollbars(
-        data, window, ox, oy, sw, sh, content_w, content_h, rsv_w, rsv_h,
+        data, window, ox0, oy0, sw, sh, content_w, content_h, rsv_w, rsv_h,
     );
 }
 

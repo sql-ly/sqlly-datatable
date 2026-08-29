@@ -102,6 +102,11 @@ pub(crate) struct PaintData {
     pub(crate) search_matches: Arc<std::collections::HashSet<(usize, usize)>>,
     /// The focused match, drawn with a stronger highlight.
     pub(crate) search_active: Option<(usize, usize)>,
+    /// Rubber-band overscroll translation (px added to the paint origin):
+    /// the whole content surface — headers included — shifts by this while a
+    /// gesture pulls past an edge or the bounce-back spring runs. Scrollbars
+    /// and the focus ring stay pinned to the true bounds. `(0, 0)` at rest.
+    pub(crate) overscroll: (f32, f32),
 }
 
 impl PaintData {
@@ -133,6 +138,7 @@ impl PaintData {
             focused: false,
             search_matches: Arc::clone(&s.search.match_set),
             search_active: s.search_active_cell(),
+            overscroll: s.scroll_overscroll_shift(),
         }
     }
 
@@ -362,11 +368,29 @@ pub(crate) fn paint_grid(
     cx: &mut App,
     bounds: Bounds<Pixels>,
 ) {
+    // While rubber-banding, the content paints translated past the grid's
+    // edges; clip to the true bounds so it never bleeds over neighboring UI
+    // (tab bar, status bar, host chrome). At rest, skip the extra mask.
+    if data.overscroll == (0.0, 0.0) {
+        paint_grid_content(data, window, cx, bounds);
+    } else {
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            paint_grid_content(data, window, cx, bounds);
+        });
+    }
+}
+
+fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bounds: Bounds<Pixels>) {
     if matches!(data.hover_hit, Some(HitResult::ColumnBorder(_))) {
         window.set_window_cursor_style(CursorStyle::ResizeLeftRight);
     }
-    let ox = f32::from(bounds.origin.x);
-    let oy = f32::from(bounds.origin.y);
+    // True origin (scrollbars and the focus ring pin here) vs the content
+    // origin, which carries the rubber-band overscroll translation so the
+    // whole surface — headers included — pulls with the gesture.
+    let ox0 = f32::from(bounds.origin.x);
+    let oy0 = f32::from(bounds.origin.y);
+    let ox = ox0 + data.overscroll.0;
+    let oy = oy0 + data.overscroll.1;
     let sw = f32::from(bounds.size.width);
     let sh = f32::from(bounds.size.height);
     let (sx, sy) = (
@@ -503,7 +527,9 @@ pub(crate) fn paint_grid(
             );
         };
 
-    fill_quad(window, ox, oy, sw, sh, theme.bg);
+    // Base canvas fill pins to the true bounds: while rubber-banding, the
+    // strip revealed past the pulled content shows the plain background.
+    fill_quad(window, ox0, oy0, sw, sh, theme.bg);
     fill_quad(window, ox, oy, rhw, sh, theme.row_header_bg);
 
     let data_y = hdr_h;
@@ -929,7 +955,7 @@ pub(crate) fn paint_grid(
         });
     }
 
-    paint_scrollbars(data, window, ox, oy, sw, sh, theme);
+    paint_scrollbars(data, window, ox0, oy0, sw, sh, theme);
 
     // Focus-visible ring (WCAG 2.4.7): a 1px accent frame around the grid
     // signals that it holds keyboard focus, so a keyboard user always knows
@@ -938,10 +964,10 @@ pub(crate) fn paint_grid(
     // (the accent role already used for sort/selection affordances).
     if data.focused {
         let ring = theme.sort_indicator;
-        fill_quad(window, ox, oy, sw, 1.0, ring);
-        fill_quad(window, ox, oy + sh - 1.0, sw, 1.0, ring);
-        fill_quad(window, ox, oy, 1.0, sh, ring);
-        fill_quad(window, ox + sw - 1.0, oy, 1.0, sh, ring);
+        fill_quad(window, ox0, oy0, sw, 1.0, ring);
+        fill_quad(window, ox0, oy0 + sh - 1.0, sw, 1.0, ring);
+        fill_quad(window, ox0, oy0, 1.0, sh, ring);
+        fill_quad(window, ox0 + sw - 1.0, oy0, 1.0, sh, ring);
     }
 
     // The context menu is no longer painted here. It is rendered as a

@@ -1190,6 +1190,33 @@ impl SqllyDataTable {
             .detach();
         }
 
+        // Scroll-physics timer: drives rubber-band bounce-back and smooth
+        // wheel glide (see `grid::scroll_physics`). Same guarded single-loop
+        // pattern as edge scrolling above — the wheel handler notifies, this
+        // render sees pending physics work and spawns exactly one 16 ms loop,
+        // which exits (clearing the guard) once the surface is at rest.
+        if self.state.read(cx).scroll_physics.needs_step()
+            && !self.state.read(cx).scroll_anim_active
+        {
+            self.state.update(cx, |s, _cx| s.scroll_anim_active = true);
+            let state_phys = self.state.clone();
+            cx.spawn(async move |_weak, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(EDGE_SCROLL_TICK_MS))
+                        .await;
+                    let active =
+                        cx.update(|cx| state_phys.update(cx, |s, _cx| s.step_scroll_physics()));
+                    state_phys.update(cx, |_s, cx| cx.notify());
+                    if !active {
+                        break;
+                    }
+                }
+                cx.update(|cx| state_phys.update(cx, |s, _cx| s.scroll_anim_active = false));
+            })
+            .detach();
+        }
+
         div()
             .flex()
             .flex_col()
@@ -1349,14 +1376,12 @@ impl SqllyDataTable {
                 state_scroll.update(cx, |s, cx| {
                     let line_h = px(s.row_height);
                     let delta = event.delta.pixel_delta(line_h);
-                    let scroll = s.scroll_handle.offset();
-                    let (mx, my) = s.max_scroll();
-                    let new_y = (f32::from(scroll.y) - f32::from(delta.y)).clamp(0.0, my);
-                    let new_x = (f32::from(scroll.x) - f32::from(delta.x)).clamp(0.0, mx);
-                    s.scroll_handle.set_offset(point(px(new_x), px(new_y)));
-                    if s.drag_start.is_some() {
-                        s.handle_scroll_drag();
-                    }
+                    let precise = matches!(event.delta, gpui::ScrollDelta::Pixels(_));
+                    s.handle_wheel(
+                        (f32::from(delta.x), f32::from(delta.y)),
+                        precise,
+                        event.touch_phase,
+                    );
                     cx.notify();
                 });
             })

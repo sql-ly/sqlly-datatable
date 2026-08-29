@@ -5,6 +5,33 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.1.0] - 2026-08-29
+
+### Added
+- **macOS-style scroll feel** on both the flat grid and the pivot (new
+  `grid::scroll_physics` module, shared by both surfaces):
+  - *Rubber-band overscroll*: a trackpad gesture that runs past the
+    scrollable range pulls the whole painted surface — headers included —
+    with Apple's asymptotic resistance curve, revealing the plain
+    background past the edge. Scrollbars and the focus ring stay pinned.
+  - *Bounce-back*: releasing the gesture returns the pull to rest on a
+    critically damped spring; a momentum fling into an edge (macOS delivers
+    momentum deltas after the gesture's `Ended`) converts into a spring
+    impulse, so it dips into overscroll and springs back instead of
+    dead-stopping. A watchdog treats a gesture silent for 250 ms as
+    released, so a lost `Ended` can never freeze a pull on screen.
+  - *Smooth wheel scrolling*: discrete mouse-wheel ticks glide to their
+    accumulated target with an exponential ease-out instead of jumping
+    (macOS supplies wheel acceleration at the OS level; ticks landing
+    mid-glide accumulate into one target). Click wheels hard-clamp — they
+    do not rubber-band, matching platform behavior.
+  Axes only overscroll when actually scrollable (`NSScrollView`'s default
+  bounce rule), and everything is gated on `GridConfig::animations` /
+  `PivotState::animations` — with animations off, scrolling is exactly the
+  previous instant, hard-clamped behavior. Direct scroll writes (scrollbar
+  thumb drags, keyboard navigation, `PivotState::apply_scroll_delta`)
+  cancel any in-flight glide or bounce.
+
 ## [5.0.0] - 2026-08-29
 
 ### Changed

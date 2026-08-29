@@ -9,12 +9,14 @@ use crate::filter::{
     NumberOp, TextOp,
 };
 use crate::format::format_cell;
+use crate::grid::scroll_physics::ScrollPhysics;
 use crate::grid::state::state_inner::apply_edge_scroll;
 use crate::grid::theme::{GridTheme, GridThemePair};
 
 use crate::config::{GridConfig, ResolvedColumnFormat};
 use gpui::{
     px, App, Bounds, FocusHandle, Keystroke, MouseButton, Pixels, Point, ScrollHandle, Size,
+    TouchPhase,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -298,6 +300,13 @@ pub struct GridState {
     /// `render` spawning a new task on every frame/notify during a drag, which
     /// would stack many concurrent 16 ms loops and multiply the scroll speed.
     pub(crate) edge_scroll_active: bool,
+    /// macOS-style scroll feel: rubber-band overscroll with bounce-back and
+    /// smooth wheel glide (see [`crate::grid::scroll_physics`]). Inert when
+    /// [`crate::GridConfig::animations`] is off.
+    pub(crate) scroll_physics: ScrollPhysics,
+    /// `true` while a single scroll-physics timer task is running; same
+    /// stacking guard as [`Self::edge_scroll_active`].
+    pub(crate) scroll_anim_active: bool,
     /// Shared, immutable column metadata (index/name/kind) built once in
     /// `new()`. Cloned (O(1)) into every [`ContextMenuRequest`] so building a
     /// right-click request never walks the columns.
@@ -781,6 +790,8 @@ impl GridState {
             scrollbar_drag_start_pos: 0.0,
             window_viewport: Size::default(),
             edge_scroll_active: false,
+            scroll_physics: ScrollPhysics::default(),
+            scroll_anim_active: false,
             column_meta,
             self_weak: None,
             busy: None,
@@ -1265,6 +1276,58 @@ impl GridState {
         ((cw - vw).max(0.0), (ch - vh).max(0.0))
     }
 
+    /// Route a wheel event through the scroll physics: normal scrolling plus
+    /// macOS-style rubber-band overscroll (trackpad) and smooth glide
+    /// (discrete wheel). `delta` is in px with the existing sign convention
+    /// (`new = scroll - delta`); `precise` is true for pixel-precise deltas.
+    pub(crate) fn handle_wheel(&mut self, delta: (f32, f32), precise: bool, phase: TouchPhase) {
+        let (mx, my) = self.max_scroll();
+        let s = self.scroll_handle.offset();
+        let (nx, ny) = self.scroll_physics.on_wheel(
+            delta,
+            precise,
+            phase,
+            (f32::from(s.x), f32::from(s.y)),
+            (mx, my),
+            self.config.animations,
+            std::time::Instant::now(),
+        );
+        self.scroll_handle.set_offset(Point {
+            x: px(nx),
+            y: px(ny),
+        });
+        if self.drag_start.is_some() {
+            self.handle_scroll_drag();
+        }
+    }
+
+    /// Advance the scroll physics one frame (bounce-back springs and wheel
+    /// glide). Returns `true` while more frames are needed; the widget's
+    /// timer loop keeps ticking until this goes false.
+    pub(crate) fn step_scroll_physics(&mut self) -> bool {
+        let (mx, my) = self.max_scroll();
+        let s = self.scroll_handle.offset();
+        let ((nx, ny), active) = self.scroll_physics.step(
+            (f32::from(s.x), f32::from(s.y)),
+            (mx, my),
+            std::time::Instant::now(),
+        );
+        self.scroll_handle.set_offset(Point {
+            x: px(nx),
+            y: px(ny),
+        });
+        active
+    }
+
+    /// Displayed overscroll translation for paint, in px added to the grid's
+    /// paint origin.
+    pub(crate) fn scroll_overscroll_shift(&self) -> (f32, f32) {
+        self.scroll_physics.display_shift((
+            f32::from(self.bounds.size.width),
+            f32::from(self.bounds.size.height),
+        ))
+    }
+
     /// Re-clamp the scroll offset after the grid's layout bounds change
     /// (e.g. the host resizes the area allocated to the grid). Without this
     /// the offset can sit beyond the new maximum until the next scroll event,
@@ -1333,6 +1396,9 @@ impl GridState {
     }
 
     pub(crate) fn scroll_to_vbar(&mut self, mouse_y: f32) {
+        // A thumb drag is direct position control: cancel any wheel glide or
+        // bounce so stale physics can't fight the pointer.
+        self.scroll_physics.reset();
         if let Some((_, track_y, _, track_h, thumb_h)) = self.vbar_geom() {
             let (_, max_y) = self.max_scroll();
             let range = (track_h - thumb_h).max(0.0);
@@ -1345,6 +1411,7 @@ impl GridState {
     }
 
     pub(crate) fn scroll_to_hbar(&mut self, mouse_x: f32) {
+        self.scroll_physics.reset();
         if let Some((track_x, _, track_w, _, thumb_w)) = self.hbar_geom() {
             let (max_x, _) = self.max_scroll();
             let range = (track_w - thumb_w).max(0.0);
@@ -2611,6 +2678,9 @@ impl GridState {
     /// axis untouched. Used after keyboard navigation so the active cell never
     /// slips off-screen — the spreadsheet convention a keyboard user expects.
     pub(crate) fn ensure_visible(&mut self, row: Option<usize>, col: Option<usize>) {
+        // Keyboard navigation is direct position control: cancel any wheel
+        // glide or bounce so stale physics can't tug the viewport back.
+        self.scroll_physics.reset();
         let (rw, rh) = self.scrollbar_reserved();
         let vw: f32 = self.bounds.size.width.into();
         let vh: f32 = self.bounds.size.height.into();

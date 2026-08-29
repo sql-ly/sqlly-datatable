@@ -7,6 +7,7 @@ pub mod context_menu;
 pub mod menu;
 pub(crate) mod motion;
 pub mod paint;
+pub(crate) mod scroll_physics;
 pub mod search;
 pub mod selection;
 pub mod state;

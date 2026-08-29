@@ -22,7 +22,8 @@ use crate::pivot::context_menu::{
 };
 use crate::pivot::engine::{compute_pivot, PivotNode, PivotResult, TOTAL_KEY};
 
-use gpui::{px, App, Bounds, FocusHandle, Pixels, Point, ScrollHandle, Size};
+use crate::grid::scroll_physics::ScrollPhysics;
+use gpui::{px, App, Bounds, FocusHandle, Pixels, Point, ScrollHandle, Size, TouchPhase};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -310,6 +311,15 @@ pub struct PivotState {
     pub hover_hit: Option<PivotHitResult>,
     pub(crate) scrollbar_drag: Option<ScrollbarAxis>,
     resize_drag: Option<PivotResizeDrag>,
+    /// macOS-style scroll feel — rubber-band overscroll with bounce-back and
+    /// smooth wheel glide — shared with the flat grid (see
+    /// [`crate::grid::scroll_physics`]). Inert when [`Self::animations`] is
+    /// off.
+    pub(crate) scroll_physics: ScrollPhysics,
+    /// `true` while a single scroll-physics timer task is running; guards the
+    /// widget against spawning stacked loops (same pattern as the grid's
+    /// `edge_scroll_active`).
+    pub(crate) scroll_anim_active: bool,
 
     /// Theme shared with the host grid.
     pub theme: GridTheme,
@@ -378,6 +388,8 @@ impl PivotState {
             is_selecting: false,
             hover_hit: None,
             scrollbar_drag: None,
+            scroll_physics: ScrollPhysics::default(),
+            scroll_anim_active: false,
             theme: GridTheme::default(),
             animations: true,
             key_bindings,
@@ -1667,8 +1679,60 @@ impl PivotState {
         self.resize_drag = None;
     }
 
-    /// Apply a scroll-wheel delta, clamped to the content.
+    /// Route a wheel event through the scroll physics: normal scrolling plus
+    /// macOS-style rubber-band overscroll (trackpad) and smooth glide
+    /// (discrete wheel). Mirrors `GridState::handle_wheel`; the plain
+    /// hard-clamped path stays available as [`Self::apply_scroll_delta`].
+    pub(crate) fn handle_wheel(&mut self, delta: (f32, f32), precise: bool, phase: TouchPhase) {
+        let (mx, my) = self.max_scroll();
+        let s = self.scroll_handle.offset();
+        let (nx, ny) = self.scroll_physics.on_wheel(
+            delta,
+            precise,
+            phase,
+            (f32::from(s.x), f32::from(s.y)),
+            (mx, my),
+            self.animations,
+            std::time::Instant::now(),
+        );
+        self.scroll_handle.set_offset(Point {
+            x: px(nx),
+            y: px(ny),
+        });
+    }
+
+    /// Advance the scroll physics one frame (bounce-back springs and wheel
+    /// glide). Returns `true` while more frames are needed.
+    pub(crate) fn step_scroll_physics(&mut self) -> bool {
+        let (mx, my) = self.max_scroll();
+        let s = self.scroll_handle.offset();
+        let ((nx, ny), active) = self.scroll_physics.step(
+            (f32::from(s.x), f32::from(s.y)),
+            (mx, my),
+            std::time::Instant::now(),
+        );
+        self.scroll_handle.set_offset(Point {
+            x: px(nx),
+            y: px(ny),
+        });
+        active
+    }
+
+    /// Displayed overscroll translation for paint, in px added to the
+    /// pivot's paint origin.
+    pub(crate) fn scroll_overscroll_shift(&self) -> (f32, f32) {
+        self.scroll_physics.display_shift((
+            f32::from(self.bounds.size.width),
+            f32::from(self.bounds.size.height),
+        ))
+    }
+
+    /// Apply a direct scroll delta, clamped to the content. This is the
+    /// instant, physics-free path (keyboard paging, hosts, tests); the wheel
+    /// handler goes through [`Self::handle_wheel`] instead. Cancels any
+    /// in-flight glide or bounce, since a direct write is position control.
     pub fn apply_scroll_delta(&mut self, dx: f32, dy: f32) {
+        self.scroll_physics.reset();
         let (mx, my) = self.max_scroll();
         let s = self.scroll_handle.offset();
         let nx = (f32::from(s.x) - dx).clamp(0.0, mx);
@@ -1680,6 +1744,9 @@ impl PivotState {
     }
 
     pub(crate) fn scroll_to_vbar(&mut self, mouse_y: f32) {
+        // A thumb drag is direct position control: cancel any wheel glide or
+        // bounce so stale physics can't fight the pointer.
+        self.scroll_physics.reset();
         let (_, my) = self.max_scroll();
         let hdr = self.header_height();
         let (_, rh) = self.scrollbar_reserved();
@@ -1700,6 +1767,7 @@ impl PivotState {
     }
 
     pub(crate) fn scroll_to_hbar(&mut self, mouse_x: f32) {
+        self.scroll_physics.reset();
         let (mx, _) = self.max_scroll();
         let (rw, _) = self.scrollbar_reserved();
         let track_x = self.row_header_width;
