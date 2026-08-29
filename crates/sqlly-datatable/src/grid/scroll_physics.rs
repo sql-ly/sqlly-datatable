@@ -7,13 +7,17 @@
 //!    scrollable range keeps pulling the whole painted surface with
 //!    asymptotic resistance (Apple's classic `limit·d / (limit + d)` curve),
 //!    exactly like an `NSScrollView`. The *raw* pull accumulates 1:1 so the
-//!    gesture stays reversible; only the displayed offset is compressed.
+//!    gesture stays reversible; only the displayed offset is compressed, and
+//!    it stays strictly under [`RUBBER_LIMIT_MAX`] (150 px) on any viewport.
 //! 2. **Bounce-back** — when the gesture releases (`TouchPhase::Ended`), a
 //!    critically damped spring returns the pull to zero. Momentum deltas —
 //!    which macOS delivers as `Moved` events *after* `Ended`, since gpui maps
-//!    only `NSEvent.phase()` and not `momentumPhase()` — convert into spring
-//!    velocity impulses at the edge, so a momentum fling into an edge dips
-//!    into overscroll and springs back instead of dead-stopping.
+//!    only `NSEvent.phase()` and not `momentumPhase()` — are spent as
+//!    exactly **one** spring impulse per stream and edge: the first delta to
+//!    cross the edge kicks the spring with the content's impact velocity,
+//!    and the rest of the decaying momentum tail is swallowed. (Letting
+//!    every tail event re-pump the spring while it fights back is visible
+//!    jitter.)
 //! 3. **Smooth wheel scrolling** — discrete mouse-wheel ticks (`Lines`
 //!    deltas) animate toward their accumulated target with an exponential
 //!    ease-out instead of teleporting, matching the feel of macOS smooth
@@ -45,8 +49,17 @@ const REST_VELOCITY: f32 = 20.0;
 const MAX_IMPULSE_VELOCITY: f32 = 3_000.0;
 /// A gesture with no wheel events for this long is treated as released even
 /// if the terminal `Ended` event was lost (e.g. the window lost focus
-/// mid-gesture). Without this a stale pull would freeze on screen.
-const GESTURE_TIMEOUT: Duration = Duration::from_millis(250);
+/// mid-gesture). Without this a stale pull would freeze on screen. Generous,
+/// because fingers *resting* on the trackpad mid-pull also produce silence —
+/// macOS holds the rubber under resting fingers, so the watchdog must only
+/// catch genuinely lost releases, not pauses in a live gesture.
+const GESTURE_TIMEOUT: Duration = Duration::from_millis(1_200);
+/// A precise (trackpad) `Moved` event arriving after a gap this long cannot
+/// be momentum — macOS momentum streams tick continuously until they die —
+/// so it is a finger resuming contact (its `Started` was consumed by an
+/// earlier gesture, or the watchdog released it during a rest). Re-enter
+/// position control instead of misreading the finger as momentum impulses.
+const STREAM_GAP: Duration = Duration::from_millis(100);
 /// Time constant for smooth wheel scrolling; ~90 ms reaches 63% of the
 /// remaining distance, fast enough to feel direct.
 const SMOOTH_TAU: f32 = 0.09;
@@ -56,6 +69,15 @@ const SMOOTH_EPSILON: f32 = 0.5;
 const RUBBER_LIMIT_FRACTION: f32 = 0.45;
 /// Floor for the rubber-band limit so tiny panes still visibly pull.
 const RUBBER_LIMIT_MIN: f32 = 60.0;
+/// Hard ceiling on the rubber-band limit: the displayed overscroll never
+/// reaches 150 px no matter how tall the viewport is (the curve is
+/// asymptotic, so the shift stays strictly below this).
+const RUBBER_LIMIT_MAX: f32 = 150.0;
+/// Cap on the raw accumulated pull, ~3× the largest rubber limit (display
+/// ≈ 75% of the limit there). Deep into the asymptote the curve's slope
+/// collapses, so an uncapped raw pull would make a reversed gesture unwind
+/// for hundreds of pixels before the content visibly responds.
+const MAX_RAW_PULL: f32 = 450.0;
 
 /// Scroll physics for one scrollable surface. See the module docs.
 #[derive(Debug, Clone)]
@@ -67,6 +89,13 @@ pub(crate) struct ScrollPhysics {
     velocity: (f32, f32),
     /// Whether a trackpad gesture (fingers down) is in flight.
     gesture_active: bool,
+    /// Per axis: the current momentum stream has already met the edge, and
+    /// its collision was spent (one spring impulse). Every later momentum
+    /// delta that would push past the edge is swallowed — otherwise the
+    /// decaying momentum tail re-pumps the spring each event while the
+    /// spring fights back, which reads as jitter. Cleared when a new gesture
+    /// starts (or a resumed finger re-arms position control).
+    momentum_absorbed: (bool, bool),
     /// Accumulated smooth-scroll target for discrete wheel input.
     smooth_target: Option<(f32, f32)>,
     /// When the last wheel event arrived (gesture-timeout safety and
@@ -82,6 +111,7 @@ impl Default for ScrollPhysics {
             pull: (0.0, 0.0),
             velocity: (0.0, 0.0),
             gesture_active: false,
+            momentum_absorbed: (false, false),
             smooth_target: None,
             last_event: None,
             last_step: None,
@@ -122,9 +152,16 @@ impl ScrollPhysics {
             );
         }
 
-        let dt_event = self
-            .last_event
-            .map(|t| now.saturating_duration_since(t))
+        // Episode start: when the surface was at rest, refresh the step
+        // clock so the first animation frame integrates one tick — not the
+        // stale gap since the previous episode, which would jolt the spring
+        // or glide several frames ahead in a single visible jump.
+        if !self.needs_step() {
+            self.last_step = Some(now);
+        }
+
+        let gap = self.last_event.map(|t| now.saturating_duration_since(t));
+        let dt_event = gap
             .unwrap_or(Duration::from_millis(16))
             .as_secs_f32()
             .clamp(0.004, 0.032);
@@ -148,68 +185,88 @@ impl ScrollPhysics {
             TouchPhase::Started => {
                 self.gesture_active = true;
                 self.velocity = (0.0, 0.0);
+                self.momentum_absorbed = (false, false);
                 self.smooth_target = None;
             }
             TouchPhase::Ended | TouchPhase::Cancelled => {
                 self.gesture_active = false;
             }
-            _ => {}
+            _ => {
+                // A precise `Moved` after a real pause is a finger resuming
+                // contact, not momentum (see `STREAM_GAP`): re-enter
+                // position control so the finger drives the pull directly
+                // instead of being misread as momentum impulses.
+                if !self.gesture_active && gap.is_none_or(|g| g > STREAM_GAP) {
+                    self.gesture_active = true;
+                    self.velocity = (0.0, 0.0);
+                    self.momentum_absorbed = (false, false);
+                    self.smooth_target = None;
+                }
+            }
         }
 
-        let apply = |axis_scroll: f32,
-                     axis_delta: f32,
-                     axis_max: f32,
-                     axis_pull: &mut f32,
-                     axis_vel: &mut f32,
-                     gesture: bool| {
+        let gesture = self.gesture_active;
+        let mut out = [scroll.0, scroll.1];
+        let axes = [
+            (
+                0usize,
+                scroll.0,
+                delta.0,
+                max.0,
+                &mut self.pull.0,
+                &mut self.velocity.0,
+                &mut self.momentum_absorbed.0,
+            ),
+            (
+                1usize,
+                scroll.1,
+                delta.1,
+                max.1,
+                &mut self.pull.1,
+                &mut self.velocity.1,
+                &mut self.momentum_absorbed.1,
+            ),
+        ];
+        for (ix, axis_scroll, axis_delta, axis_max, pull, vel, absorbed) in axes {
             if axis_max <= 0.0 {
                 // Not scrollable on this axis: no motion, no bounce.
-                *axis_pull = 0.0;
-                return axis_scroll;
+                *pull = 0.0;
+                out[ix] = axis_scroll;
+                continue;
             }
-            if gesture {
+            out[ix] = if gesture {
                 // Position control: the raw pull tracks the fingers 1:1
                 // through the clamp, so reversing direction unwinds it
-                // before the offset moves again.
-                let virtual_offset = axis_scroll - axis_delta + *axis_pull;
+                // before the offset moves again. Capped so the display (long
+                // saturated by the rubber curve) responds promptly when the
+                // gesture reverses.
+                let virtual_offset = axis_scroll - axis_delta + *pull;
                 let clamped = virtual_offset.clamp(0.0, axis_max);
-                *axis_pull = virtual_offset - clamped;
+                *pull = (virtual_offset - clamped).clamp(-MAX_RAW_PULL, MAX_RAW_PULL);
                 clamped
             } else {
-                // Momentum (or a phase-less precise event): in-range deltas
-                // scroll normally; the part that would cross an edge becomes
-                // a velocity impulse for the spring, which then owns the
-                // bounce. Sign: excess < 0 pushes beyond the start edge, and
-                // the spring integrates the matching negative pull.
+                // Momentum: in-range deltas scroll normally. The *first*
+                // event of the stream to cross an edge converts the
+                // content's impact velocity into one spring impulse; every
+                // later edge-crossing delta of the same stream is swallowed
+                // (`absorbed`) — re-pumping the spring per event while it
+                // fights back reads as jitter. A bounce already in flight
+                // (e.g. released mid-pull, tail still arriving) also absorbs
+                // the collision without a fresh kick.
                 let unclamped = axis_scroll - axis_delta;
                 let clamped = unclamped.clamp(0.0, axis_max);
                 let excess = unclamped - clamped;
                 if excess != 0.0 {
-                    *axis_vel = (*axis_vel + excess / dt_event)
-                        .clamp(-MAX_IMPULSE_VELOCITY, MAX_IMPULSE_VELOCITY);
+                    if !*absorbed && *pull == 0.0 && *vel == 0.0 {
+                        *vel = (-axis_delta / dt_event)
+                            .clamp(-MAX_IMPULSE_VELOCITY, MAX_IMPULSE_VELOCITY);
+                    }
+                    *absorbed = true;
                 }
                 clamped
-            }
-        };
-
-        let gesture = self.gesture_active;
-        let nx = apply(
-            scroll.0,
-            delta.0,
-            max.0,
-            &mut self.pull.0,
-            &mut self.velocity.0,
-            gesture,
-        );
-        let ny = apply(
-            scroll.1,
-            delta.1,
-            max.1,
-            &mut self.pull.1,
-            &mut self.velocity.1,
-            gesture,
-        );
-        (nx, ny)
+            };
+        }
+        (out[0], out[1])
     }
 
     /// Advance the physics by one frame. Returns the new scroll offset and
@@ -287,7 +344,8 @@ impl ScrollPhysics {
     /// the left edge shifts it right. Compresses the raw pull through the
     /// rubber curve against the viewport size.
     pub(crate) fn display_shift(&self, viewport: (f32, f32)) -> (f32, f32) {
-        let limit = |dim: f32| (dim * RUBBER_LIMIT_FRACTION).max(RUBBER_LIMIT_MIN);
+        let limit =
+            |dim: f32| (dim * RUBBER_LIMIT_FRACTION).clamp(RUBBER_LIMIT_MIN, RUBBER_LIMIT_MAX);
         (
             -rubber(self.pull.0, limit(viewport.0)),
             -rubber(self.pull.1, limit(viewport.1)),
@@ -651,13 +709,15 @@ mod tests {
             true,
             ms(base, 8),
         );
-        // No Ended ever arrives. Steps within the timeout hold the pull…
-        let (_, active) = p.step(s, max, ms(base, 100));
+        // No Ended ever arrives. Steps within the timeout hold the pull —
+        // resting fingers are a live gesture, so the hold must survive well
+        // past a typical pause…
+        let (_, active) = p.step(s, max, ms(base, 900));
         assert!(active);
         assert!(p.display_shift((800.0, 600.0)).1 > 0.0);
         // …after the timeout the spring takes over and settles home.
         for i in 0..600u64 {
-            let (ns, active) = p.step(s, max, ms(base, 300 + i * 16));
+            let (ns, active) = p.step(s, max, ms(base, 1400 + i * 16));
             s = ns;
             if !active {
                 break;
@@ -665,6 +725,277 @@ mod tests {
         }
         assert_eq!(p.display_shift((800.0, 600.0)), (0.0, 0.0));
         assert!(!p.needs_step());
+    }
+
+    #[test]
+    fn displayed_overscroll_never_reaches_150px() {
+        let mut p = ScrollPhysics::default();
+        let base = t0();
+        let max = (0.0, 5_000.0);
+        // A giant viewport and an absurdly long pull: raw pull caps at
+        // MAX_RAW_PULL and the limit caps at 150, so the display stays
+        // strictly under 150 px.
+        let mut s = p.on_wheel(
+            (0.0, 0.0),
+            true,
+            TouchPhase::Started,
+            (0.0, 0.0),
+            max,
+            true,
+            base,
+        );
+        for i in 1..=50u64 {
+            s = p.on_wheel(
+                (0.0, 200.0),
+                true,
+                TouchPhase::Moved,
+                s,
+                max,
+                true,
+                ms(base, i * 8),
+            );
+        }
+        let (_, sy) = p.display_shift((3_000.0, 4_000.0));
+        assert!(
+            sy < 150.0,
+            "displayed overscroll must stay under 150, got {sy}"
+        );
+        assert!(
+            sy > 100.0,
+            "a full pull should still get near the cap, got {sy}"
+        );
+    }
+
+    #[test]
+    fn raw_pull_cap_keeps_reversal_responsive() {
+        let mut p = ScrollPhysics::default();
+        let base = t0();
+        let max = (0.0, 500.0);
+        let mut s = p.on_wheel(
+            (0.0, 0.0),
+            true,
+            TouchPhase::Started,
+            (0.0, 0.0),
+            max,
+            true,
+            base,
+        );
+        // Pull 3000 px raw; the cap holds it at MAX_RAW_PULL.
+        for i in 1..=30u64 {
+            s = p.on_wheel(
+                (0.0, 100.0),
+                true,
+                TouchPhase::Moved,
+                s,
+                max,
+                true,
+                ms(base, i * 8),
+            );
+        }
+        let full = p.display_shift((800.0, 600.0)).1;
+        // Reversing 300 px must visibly move the display (with an uncapped
+        // 3000 px raw pull it would barely change).
+        s = p.on_wheel(
+            (0.0, -300.0),
+            true,
+            TouchPhase::Moved,
+            s,
+            max,
+            true,
+            ms(base, 300),
+        );
+        assert_eq!(s, (0.0, 0.0), "still inside the pull, offset unmoved");
+        let after = p.display_shift((800.0, 600.0)).1;
+        assert!(
+            after < full - 5.0,
+            "300 px of reversal must visibly retract the pull ({full} -> {after})"
+        );
+    }
+
+    #[test]
+    fn momentum_tail_does_not_repump_the_spring() {
+        // Two identical runs; one receives a long decaying momentum tail
+        // after the first edge collision. The bounce must be identical —
+        // the tail is swallowed, not pumped into the spring.
+        let base = t0();
+        let max = (0.0, 500.0);
+        let mut kicked = ScrollPhysics::default();
+        let mut control = ScrollPhysics::default();
+        for p in [&mut kicked, &mut control] {
+            let s = p.on_wheel(
+                (0.0, 0.0),
+                true,
+                TouchPhase::Started,
+                (0.0, 490.0),
+                max,
+                true,
+                base,
+            );
+            let s = p.on_wheel(
+                (0.0, -10.0),
+                true,
+                TouchPhase::Moved,
+                s,
+                max,
+                true,
+                ms(base, 8),
+            );
+            let s = p.on_wheel(
+                (0.0, 0.0),
+                true,
+                TouchPhase::Ended,
+                s,
+                max,
+                true,
+                ms(base, 16),
+            );
+            // First momentum event crosses the edge: one impulse.
+            p.on_wheel(
+                (0.0, -30.0),
+                true,
+                TouchPhase::Moved,
+                s,
+                max,
+                true,
+                ms(base, 24),
+            );
+        }
+        // Only `kicked` gets the decaying tail, interleaved with steps.
+        for i in 1..=10u64 {
+            kicked.step((0.0, 500.0), max, ms(base, 24 + i * 16));
+            kicked.on_wheel(
+                (0.0, -20.0),
+                true,
+                TouchPhase::Moved,
+                (0.0, 500.0),
+                max,
+                true,
+                ms(base, 24 + i * 16 + 4),
+            );
+            control.step((0.0, 500.0), max, ms(base, 24 + i * 16));
+        }
+        let shift_kicked = kicked.display_shift((800.0, 600.0)).1;
+        let shift_control = control.display_shift((800.0, 600.0)).1;
+        assert!(
+            (shift_kicked - shift_control).abs() < 0.01,
+            "momentum tail altered the bounce: {shift_kicked} vs {shift_control}"
+        );
+        // And both settle home.
+        settle(&mut kicked, (0.0, 500.0), max);
+        assert_eq!(kicked.display_shift((800.0, 600.0)), (0.0, 0.0));
+    }
+
+    #[test]
+    fn flick_release_tail_does_not_fight_the_return_spring() {
+        // Release with the rubber held, then let the momentum tail arrive:
+        // the tail must not kick the returning spring (that alternating
+        // fight is the visible jitter this guards against).
+        let base = t0();
+        let max = (0.0, 500.0);
+        let mut p = ScrollPhysics::default();
+        let s = p.on_wheel(
+            (0.0, 0.0),
+            true,
+            TouchPhase::Started,
+            (0.0, 0.0),
+            max,
+            true,
+            base,
+        );
+        let s = p.on_wheel(
+            (0.0, 80.0),
+            true,
+            TouchPhase::Moved,
+            s,
+            max,
+            true,
+            ms(base, 8),
+        );
+        let s = p.on_wheel(
+            (0.0, 0.0),
+            true,
+            TouchPhase::Ended,
+            s,
+            max,
+            true,
+            ms(base, 16),
+        );
+        // Spring starts returning; each tail event would previously inject
+        // an opposing impulse. The shift must now decrease monotonically.
+        let mut last = p.display_shift((800.0, 600.0)).1;
+        let mut scroll = s;
+        for i in 1..=30u64 {
+            let (ns, active) = p.step(scroll, max, ms(base, 16 + i * 16));
+            scroll = ns;
+            p.on_wheel(
+                (0.0, 25.0),
+                true,
+                TouchPhase::Moved,
+                scroll,
+                max,
+                true,
+                ms(base, 16 + i * 16 + 4),
+            );
+            let shift = p.display_shift((800.0, 600.0)).1;
+            assert!(
+                shift <= last + 0.01,
+                "return must be monotonic under a momentum tail ({last} -> {shift})"
+            );
+            last = shift;
+            if !active {
+                break;
+            }
+        }
+        // Tail over; the spring finishes the return unassisted.
+        settle(&mut p, scroll, max);
+        assert_eq!(p.display_shift((800.0, 600.0)), (0.0, 0.0));
+    }
+
+    #[test]
+    fn resumed_finger_after_watchdog_release_regains_position_control() {
+        let base = t0();
+        let max = (0.0, 500.0);
+        let mut p = ScrollPhysics::default();
+        let s = p.on_wheel(
+            (0.0, 0.0),
+            true,
+            TouchPhase::Started,
+            (0.0, 0.0),
+            max,
+            true,
+            base,
+        );
+        let s = p.on_wheel(
+            (0.0, 90.0),
+            true,
+            TouchPhase::Moved,
+            s,
+            max,
+            true,
+            ms(base, 8),
+        );
+        // Fingers rest past the watchdog; the spring reclaims some pull.
+        p.step(s, max, ms(base, 1_300));
+        p.step(s, max, ms(base, 1_316));
+        // Fingers move again — `Moved` after a long gap, no `Started`. This
+        // must re-enter position control (a further pull deepens the shift,
+        // it is not misread as a momentum impulse to swallow).
+        let before = p.display_shift((800.0, 600.0)).1;
+        let s2 = p.on_wheel(
+            (0.0, 40.0),
+            true,
+            TouchPhase::Moved,
+            s,
+            max,
+            true,
+            ms(base, 1_400),
+        );
+        assert_eq!(s2, (0.0, 0.0));
+        let after = p.display_shift((800.0, 600.0)).1;
+        assert!(
+            after > before,
+            "resumed finger must deepen the pull directly ({before} -> {after})"
+        );
     }
 
     #[test]

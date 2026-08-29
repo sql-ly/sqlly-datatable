@@ -71,9 +71,11 @@ impl Render for PivotGrid {
                             crate::grid::state::EDGE_SCROLL_TICK_MS,
                         ))
                         .await;
-                    let active =
+                    let (changed, active) =
                         cx.update(|cx| state_phys.update(cx, |s, _cx| s.step_scroll_physics()));
-                    state_phys.update(cx, |_s, cx| cx.notify());
+                    if changed {
+                        state_phys.update(cx, |_s, cx| cx.notify());
+                    }
                     if !active {
                         break;
                     }

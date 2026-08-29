@@ -5,6 +5,36 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.1.1] - 2026-08-29
+
+### Fixed
+- **Overscroll jitter.** Three causes, all in the scroll physics:
+  - macOS delivers a *decaying momentum tail* as `Moved` events after the
+    gesture's `Ended`; every tail delta at the edge re-pumped the spring
+    velocity while the spring fought back, which read as jitter. Each
+    momentum stream now spends its edge collision exactly once: the first
+    delta to cross the edge kicks the spring with the content's impact
+    velocity, and the rest of the tail is swallowed (per axis). A bounce
+    already in flight (flick-release with the rubber held) absorbs the tail
+    without any kick, so the return is strictly monotonic.
+  - The first spring/glide frame integrated the stale clock gap since the
+    *previous* physics episode (up to the 50 ms clamp), so a bounce began
+    with a visible jump. The step clock now resets when an episode starts.
+  - The 250 ms gesture watchdog released the pull under fingers *resting*
+    on the trackpad (rests deliver no events), making the spring fight the
+    finger. The watchdog is now 1.2 s — resting holds survive — and a
+    precise `Moved` arriving after a >100 ms silence re-enters position
+    control (momentum streams never pause that long), so a resumed finger
+    is never misread as momentum.
+  - Additionally, the physics timer loop only repaints when something
+    visibly moved; a held pull no longer repaints the full canvas at 60 Hz
+    (frame churn on large grids read as stutter).
+- **Displayed overscroll is now capped at 150 px** (previously 45% of the
+  viewport, which on a tall grid let the surface travel hundreds of px).
+  The rubber limit clamps to at most 150 px — asymptotic, so the shift
+  stays strictly below it — and the raw pull caps at 3× the limit so a
+  reversed gesture retracts visibly instead of unwinding dead pixels.
+
 ## [5.1.0] - 2026-08-29
 
 ### Added

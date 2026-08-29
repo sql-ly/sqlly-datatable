@@ -1702,20 +1702,24 @@ impl PivotState {
     }
 
     /// Advance the scroll physics one frame (bounce-back springs and wheel
-    /// glide). Returns `true` while more frames are needed.
-    pub(crate) fn step_scroll_physics(&mut self) -> bool {
+    /// glide). Returns `(changed, active)`: `changed` says something visible
+    /// moved (repaint), `active` says more frames are needed. A held rubber
+    /// pull is active-but-unchanged — the widget's timer loop keeps ticking
+    /// for the release watchdog without repainting a static frame.
+    pub(crate) fn step_scroll_physics(&mut self) -> (bool, bool) {
         let (mx, my) = self.max_scroll();
         let s = self.scroll_handle.offset();
-        let ((nx, ny), active) = self.scroll_physics.step(
-            (f32::from(s.x), f32::from(s.y)),
-            (mx, my),
-            std::time::Instant::now(),
-        );
+        let before = (f32::from(s.x), f32::from(s.y));
+        let before_shift = self.scroll_overscroll_shift();
+        let ((nx, ny), active) =
+            self.scroll_physics
+                .step(before, (mx, my), std::time::Instant::now());
         self.scroll_handle.set_offset(Point {
             x: px(nx),
             y: px(ny),
         });
-        active
+        let changed = (nx, ny) != before || self.scroll_overscroll_shift() != before_shift;
+        (changed, active)
     }
 
     /// Displayed overscroll translation for paint, in px added to the
