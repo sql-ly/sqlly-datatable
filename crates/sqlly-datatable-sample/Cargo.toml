@@ -35,4 +35,4 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
     "wayland",
     "runtime_shaders",
 ] }
-sqlly-datatable = { version = "4.1.0", path = "../sqlly-datatable" }
+sqlly-datatable = { version = "5.0.0", path = "../sqlly-datatable" }

@@ -6,7 +6,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "4.3.1"
+version = "5.0.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.96.0"
@@ -46,7 +46,10 @@ gpui-component-assets = "0.5"
 # and tests standalone; deliberately rev-less because gpui-component's own
 # gpui dependency is declared without a rev and patch sources must be
 # textually identical to unify — the build is pinned by Cargo.lock instead
-# (same revs as the SQLLY client lockfile). This root manifest is not
+# (gpui-component main plus the zed rev its own lockfile is tested against;
+# the SQLLY client workspace must bump its lockfile to at least these revs,
+# since `ResizableState::resize_panel` only exists upstream from here on).
+# This root manifest is not
 # packaged, so `cargo publish` of the member crate is unaffected; a crates.io
 # release stays blocked until gpui ships the git API in a registry version.
 [patch.crates-io]

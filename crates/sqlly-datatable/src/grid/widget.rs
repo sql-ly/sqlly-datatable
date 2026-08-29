@@ -905,14 +905,10 @@ impl Render for SqllyDataTable {
                     // Expanded: a `gpui-component` resizable split. The group
                     // state owns the live panel sizes; drag-to-resize is
                     // handled entirely by the library's resize handle.
-                    // Apply a programmatic `set_pivot_sidebar_width` by
-                    // dropping the group state so a fresh one re-seeds from
-                    // `.size()` below (`ResizableState::resize_panel` is
-                    // private in gpui-component 0.5.1).
-                    if self.pivot_sidebar_width_dirty {
-                        self.pivot_sidebar_width_dirty = false;
-                        self.pivot_sidebar_resize = None;
-                    }
+                    let sidebar_ix = match position {
+                        PivotSidebarPosition::Left => 0,
+                        PivotSidebarPosition::Right => 1,
+                    };
                     let resize_state = match self.pivot_sidebar_resize.clone() {
                         Some(state) => state,
                         None => {
@@ -921,10 +917,19 @@ impl Render for SqllyDataTable {
                             state
                         }
                     };
-                    let sidebar_ix = match position {
-                        PivotSidebarPosition::Left => 0,
-                        PivotSidebarPosition::Right => 1,
-                    };
+                    // Apply a programmatic `set_pivot_sidebar_width` through
+                    // the group state's own resize path, so it redistributes
+                    // and clamps exactly like a drag. On a state that has not
+                    // laid out yet (empty sizes) this is a no-op; the panel
+                    // then seeds from `.size()` below, which reads the same
+                    // width.
+                    if self.pivot_sidebar_width_dirty {
+                        self.pivot_sidebar_width_dirty = false;
+                        let width = px(self.pivot_sidebar_width);
+                        resize_state.update(cx, |state, cx| {
+                            state.resize_panel(sidebar_ix, width, window, cx);
+                        });
+                    }
 
                     let toggle_strip = pivot_toggle_strip(&theme, position, cx.entity().clone());
                     let sidebar_body = div()

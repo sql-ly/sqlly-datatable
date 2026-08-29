@@ -5,6 +5,24 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.0] - 2026-08-29
+
+### Changed
+- **Dependency floor moved to gpui-component `main`** (rev `6761b4ec`, past
+  the 0.5.2 registry release) and gpui to the zed rev gpui-component's own
+  lockfile is tested against (`f66ed399`). This is the breaking change: the
+  crate now calls `ResizableState::resize_panel`, which does not exist in
+  earlier gpui-component revisions, so consumers pinning older revs (e.g.
+  the SQLLY client workspace lockfile) must move to at least these revs.
+- `SqllyDataTable::set_pivot_sidebar_width` now applies programmatic widths
+  through gpui-component's public `ResizableState::resize_panel` (clamping
+  and redistributing exactly like a drag, and notifying `on_resize`
+  subscribers) instead of dropping and re-seeding the split state — the
+  private-API workaround the code carried since gpui-component 0.5.1.
+- Upstream gpui-component `ThemeColor` dropped the `accordion_hover` token;
+  the grid never read it, so `GridTheme::from_component_colors` is
+  unaffected.
+
 ## [4.2.0] - 2026-08-25
 
 ### Added
