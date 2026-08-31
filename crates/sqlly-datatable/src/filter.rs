@@ -276,6 +276,8 @@ mod tests {
             null: crate::config::NullFormat::default(),
             replacements: vec![],
             replacement_timing: ReplacementTiming::AfterFormat,
+            value_labels: None,
+            label_mode: crate::config::LabelMode::Beside,
         }
     }
 

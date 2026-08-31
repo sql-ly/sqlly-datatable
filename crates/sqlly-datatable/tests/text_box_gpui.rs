@@ -55,6 +55,8 @@ fn default_format_options_yield_safe_resolved_format() {
         null: sqlly_datatable::NullFormat::default(),
         replacements: vec![],
         replacement_timing: sqlly_datatable::ReplacementTiming::default(),
+        value_labels: None,
+        label_mode: sqlly_datatable::LabelMode::Beside,
     };
     assert_eq!(rcf.alignment(), TextAlignment::Right);
 }

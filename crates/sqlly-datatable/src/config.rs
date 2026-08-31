@@ -6,6 +6,9 @@
 //! [`ResolvedColumnFormat`]; the grid caches the resolved list on its state
 //! so this work does not repeat on every paint.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use crate::conditional::ConditionalRule;
 use crate::data::ColumnKind;
 
@@ -40,6 +43,15 @@ pub enum RelativeUnit {
     Week,
     Month,
     Year,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum LabelMode {
+    /// Raw key with the label in muted text beside it (`4821  Acme Ltd`).
+    #[default]
+    Beside,
+    /// Label replaces the visible text; copy/sort/filter still use the raw key.
+    Replace,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -211,6 +223,9 @@ pub struct ColumnOverride {
     pub null: Option<NullFormat>,
     pub replacements: Option<Vec<ReplacementRule>>,
     pub replacement_timing: Option<ReplacementTiming>,
+    /// Optional per-cell display labels keyed by the formatted raw cell text.
+    pub value_labels: Option<Arc<HashMap<String, String>>>,
+    pub label_mode: Option<LabelMode>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -223,6 +238,8 @@ pub struct ResolvedColumnFormat {
     pub null: NullFormat,
     pub replacements: Vec<ReplacementRule>,
     pub replacement_timing: ReplacementTiming,
+    pub value_labels: Option<Arc<HashMap<String, String>>>,
+    pub label_mode: LabelMode,
 }
 
 impl ResolvedColumnFormat {
@@ -405,6 +422,10 @@ impl GridConfig {
             replacement_timing: o
                 .and_then(|o| o.replacement_timing)
                 .unwrap_or(self.replacement_timing),
+            value_labels: o.and_then(|o| o.value_labels.clone()),
+            label_mode: o
+                .and_then(|o| o.label_mode)
+                .unwrap_or(LabelMode::Beside),
         }
     }
 

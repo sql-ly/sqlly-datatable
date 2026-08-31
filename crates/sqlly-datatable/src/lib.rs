@@ -112,8 +112,8 @@ pub use conditional::{
     ConditionalStyle, ResolvedConditionals, RgbaColor,
 };
 pub use config::{
-    BooleanFormat, ColumnOverride, DateFormat, GridConfig, KeyBinding, KeyBindings, NullFormat,
-    NumberFormat, RelativeDateFormat, RelativeUnit, ReplacementRule, ReplacementTiming,
+    BooleanFormat, ColumnOverride, DateFormat, GridConfig, KeyBinding, KeyBindings, LabelMode,
+    NullFormat, NumberFormat, RelativeDateFormat, RelativeUnit, ReplacementRule, ReplacementTiming,
     ResolvedColumnFormat, StringFormat, TextAlignment, TextCase, TruncationBehavior,
 };
 pub use data::{

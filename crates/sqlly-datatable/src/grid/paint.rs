@@ -730,6 +730,16 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                 } else {
                     crate::format::format_cell(cell, fmt)
                 };
+                let paint = if is_null {
+                    crate::format::ValueLabelPaint {
+                        primary: text.clone(),
+                        suffix: None,
+                        tooltip: None,
+                    }
+                } else {
+                    crate::format::value_label_paint(&text, fmt)
+                };
+                let text = paint.primary;
                 // A conditional foreground beats every default text color;
                 // it stays applied over a selection so rule-driven emphasis
                 // survives highlighting.
@@ -774,6 +784,18 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                         window,
                         cx,
                     );
+                    if let Some(suffix) = &paint.suffix {
+                        let suffix_x = tx + text_w;
+                        paint_txt(
+                            window,
+                            cx,
+                            suffix,
+                            suffix_x,
+                            ty,
+                            theme.muted_text,
+                            Some(w - suffix_x - CELL_TEXT_INSET),
+                        );
+                    }
                 }
                 fill_quad(window, x + w, y, 1.0, row_h, theme.grid_line);
             });

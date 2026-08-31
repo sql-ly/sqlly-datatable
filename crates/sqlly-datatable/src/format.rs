@@ -6,8 +6,9 @@
 //! clipboard-copy; tests below document the public behavior.
 
 use crate::config::{
-    DateFormat, NumberFormat, RelativeDateFormat, RelativeUnit, ReplacementRule, ReplacementTiming,
-    ResolvedColumnFormat, StringFormat, TextAlignment, TextCase, TruncationBehavior,
+    DateFormat, LabelMode, NumberFormat, RelativeDateFormat, RelativeUnit, ReplacementRule,
+    ReplacementTiming, ResolvedColumnFormat, StringFormat, TextAlignment, TextCase,
+    TruncationBehavior,
 };
 use crate::data::{CellValue, ColumnKind};
 
@@ -424,6 +425,45 @@ pub fn alignment_for(fmt: &ResolvedColumnFormat) -> TextAlignment {
     fmt.alignment()
 }
 
+/// Paint-only FK label shaping. Copy, sort, and filter continue to use
+/// [`format_cell`] / [`GridState::cell_text`] on the raw formatted value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueLabelPaint {
+    pub primary: String,
+    pub suffix: Option<String>,
+    pub tooltip: Option<String>,
+}
+
+#[must_use]
+pub fn value_label_paint(raw: &str, fmt: &ResolvedColumnFormat) -> ValueLabelPaint {
+    let Some(labels) = fmt.value_labels.as_ref() else {
+        return ValueLabelPaint {
+            primary: raw.to_string(),
+            suffix: None,
+            tooltip: None,
+        };
+    };
+    let Some(label) = labels.get(raw) else {
+        return ValueLabelPaint {
+            primary: raw.to_string(),
+            suffix: None,
+            tooltip: None,
+        };
+    };
+    match fmt.label_mode {
+        LabelMode::Replace => ValueLabelPaint {
+            primary: label.clone(),
+            suffix: None,
+            tooltip: Some(raw.to_string()),
+        },
+        LabelMode::Beside => ValueLabelPaint {
+            primary: raw.to_string(),
+            suffix: Some(format!("  {label}")),
+            tooltip: None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,6 +481,8 @@ mod tests {
             null: crate::config::NullFormat::default(),
             replacements: vec![],
             replacement_timing: ReplacementTiming::AfterFormat,
+            value_labels: None,
+            label_mode: LabelMode::Beside,
         }
     }
 
@@ -721,5 +763,45 @@ mod tests {
         assert_eq!(resolved.len(), 2);
         assert_eq!(resolved[0].kind, ColumnKind::Text);
         assert_eq!(resolved[1].kind, ColumnKind::Decimal);
+    }
+
+    #[test]
+    fn value_label_is_painted_beside_raw_text() {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let mut labels = HashMap::new();
+        labels.insert("4821".into(), "Acme Ltd".into());
+        let mut fmt = plain_resolved(ColumnKind::Text);
+        fmt.value_labels = Some(Arc::new(labels));
+        fmt.label_mode = LabelMode::Beside;
+        let paint = value_label_paint("4821", &fmt);
+        assert_eq!(paint.primary, "4821");
+        assert_eq!(paint.suffix.as_deref(), Some("  Acme Ltd"));
+        assert!(paint.tooltip.is_none());
+    }
+
+    #[test]
+    fn value_labels_never_affect_cell_text_or_sort() {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let mut labels = HashMap::new();
+        labels.insert("4821".into(), "Acme Ltd".into());
+        let mut fmt = plain_resolved(ColumnKind::Text);
+        fmt.value_labels = Some(Arc::new(labels));
+        fmt.label_mode = LabelMode::Replace;
+        let cell = CellValue::Text("4821".into());
+        assert_eq!(format_cell(&cell, &fmt).0, "4821");
+        assert_eq!(
+            crate::data::compare_cells(
+                &CellValue::Text("4821".into()),
+                &CellValue::Text("4822".into())
+            ),
+            std::cmp::Ordering::Less
+        );
+        let paint = value_label_paint("4821", &fmt);
+        assert_eq!(paint.primary, "Acme Ltd");
+        assert_eq!(paint.tooltip.as_deref(), Some("4821"));
     }
 }
