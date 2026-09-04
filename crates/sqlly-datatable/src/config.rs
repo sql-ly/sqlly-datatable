@@ -423,9 +423,7 @@ impl GridConfig {
                 .and_then(|o| o.replacement_timing)
                 .unwrap_or(self.replacement_timing),
             value_labels: o.and_then(|o| o.value_labels.clone()),
-            label_mode: o
-                .and_then(|o| o.label_mode)
-                .unwrap_or(LabelMode::Beside),
+            label_mode: o.and_then(|o| o.label_mode).unwrap_or(LabelMode::Beside),
         }
     }
 

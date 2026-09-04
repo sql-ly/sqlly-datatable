@@ -31,9 +31,20 @@
 //! (`max > 0`), matching `NSScrollView`'s default bounce behavior for an
 //! embedded pane.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_family = "wasm"))]
+use std::time::Instant;
+#[cfg(target_family = "wasm")]
+use web_time::Instant;
 
 use gpui::TouchPhase;
+
+/// The wall clock the scroll physics runs on. `std::time::Instant` panics on
+/// wasm targets, so callers must take "now" from here (web-time there)
+/// instead of naming `std::time` themselves.
+pub(crate) fn scroll_now() -> Instant {
+    Instant::now()
+}
 
 /// Spring stiffness (1/s²) for the bounce-back. ~230 settles a full pull in
 /// roughly a third of a second, which is the macOS feel.

@@ -9,7 +9,7 @@ use crate::filter::{
     NumberOp, TextOp,
 };
 use crate::format::format_cell;
-use crate::grid::scroll_physics::ScrollPhysics;
+use crate::grid::scroll_physics::{scroll_now, ScrollPhysics};
 use crate::grid::state::state_inner::apply_edge_scroll;
 use crate::grid::theme::{GridTheme, GridThemePair};
 
@@ -1431,7 +1431,7 @@ impl GridState {
             (f32::from(s.x), f32::from(s.y)),
             (mx, my),
             self.config.animations,
-            std::time::Instant::now(),
+            scroll_now(),
         );
         self.scroll_handle.set_offset(Point {
             x: px(nx),
@@ -1452,9 +1452,7 @@ impl GridState {
         let s = self.scroll_handle.offset();
         let before = (f32::from(s.x), f32::from(s.y));
         let before_shift = self.scroll_overscroll_shift();
-        let ((nx, ny), active) =
-            self.scroll_physics
-                .step(before, (mx, my), std::time::Instant::now());
+        let ((nx, ny), active) = self.scroll_physics.step(before, (mx, my), scroll_now());
         self.scroll_handle.set_offset(Point {
             x: px(nx),
             y: px(ny),

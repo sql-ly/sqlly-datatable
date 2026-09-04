@@ -22,7 +22,7 @@ use crate::pivot::context_menu::{
 };
 use crate::pivot::engine::{compute_pivot, PivotNode, PivotResult, TOTAL_KEY};
 
-use crate::grid::scroll_physics::ScrollPhysics;
+use crate::grid::scroll_physics::{scroll_now, ScrollPhysics};
 use gpui::{px, App, Bounds, FocusHandle, Pixels, Point, ScrollHandle, Size, TouchPhase};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -1693,7 +1693,7 @@ impl PivotState {
             (f32::from(s.x), f32::from(s.y)),
             (mx, my),
             self.animations,
-            std::time::Instant::now(),
+            scroll_now(),
         );
         self.scroll_handle.set_offset(Point {
             x: px(nx),
@@ -1711,9 +1711,7 @@ impl PivotState {
         let s = self.scroll_handle.offset();
         let before = (f32::from(s.x), f32::from(s.y));
         let before_shift = self.scroll_overscroll_shift();
-        let ((nx, ny), active) =
-            self.scroll_physics
-                .step(before, (mx, my), std::time::Instant::now());
+        let ((nx, ny), active) = self.scroll_physics.step(before, (mx, my), scroll_now());
         self.scroll_handle.set_offset(Point {
             x: px(nx),
             y: px(ny),
