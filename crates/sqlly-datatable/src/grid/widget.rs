@@ -3,6 +3,10 @@
 //! its methods. A bunch of `state.clone()` clones exist because each closure
 //! needs its own owned reference to the GPUI entity handle.
 
+use crate::chart::config::ChartConfig;
+use crate::chart::sidebar::ChartSidebar;
+use crate::chart::state::{ChartSaveConfigHandler, ChartState};
+use crate::chart::widget::{ChartCanvas, DEFAULT_CHART_SIDEBAR_WIDTH};
 use crate::config::GridConfig;
 use crate::data::GridData;
 use crate::filter::{ColumnFilter, FilterPredicate};
@@ -10,6 +14,7 @@ use crate::grid::context_menu::{
     ContextMenuProvider, ContextMenuProviderHandle, PendingCustomContextMenuAction,
 };
 use crate::grid::paint::{paint_grid, paint_status_bar, PaintData, StatusBarData};
+use crate::grid::selection::Selection;
 use crate::grid::state::state_inner;
 use crate::grid::state::{FilterInput, GridState, EDGE_SCROLL_TICK_MS};
 use crate::grid::theme::{GridTheme, GridThemePair};
@@ -45,7 +50,8 @@ const CONTEXT_MENU_PRIORITY: usize = 1_000_000;
 const MIN_PIVOT_SIDEBAR_WIDTH: f32 = 180.0;
 const MAX_PIVOT_SIDEBAR_WIDTH: f32 = 480.0;
 
-/// Which view of the data is active when the pivot tab is enabled.
+/// Which view of the data is active when the pivot and/or chart tabs are
+/// enabled.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GridTab {
     /// The flat data grid.
@@ -53,6 +59,8 @@ pub enum GridTab {
     Grid,
     /// The pivot view (accordion controls + pivot grid).
     Pivot,
+    /// The chart view (configuration sidebar + canvas plot).
+    Chart,
 }
 
 /// Side of the pivot grid where the control panel is rendered.
@@ -70,6 +78,13 @@ pub(crate) struct PivotParts {
     pub(crate) state: Entity<PivotState>,
     grid: Entity<PivotGrid>,
     sidebar: Entity<PivotSidebar>,
+}
+
+/// The entities backing the chart tab. Created when charting is enabled.
+pub(crate) struct ChartParts {
+    pub(crate) state: Entity<ChartState>,
+    canvas: Entity<ChartCanvas>,
+    sidebar: Entity<ChartSidebar>,
 }
 
 /// Top-level GPUI widget.
@@ -102,6 +117,23 @@ pub struct SqllyDataTable {
     /// one-click clear; cleared by [`SqllyDataTable::clear_drill_filter`] or
     /// replaced by the next drill.
     drill_filter: Option<String>,
+    /// Present when the chart tab is enabled (via
+    /// [`SqllyDataTableBuilder::chart`] or [`SqllyDataTable::enable_chart`]).
+    pub(crate) chart: Option<ChartParts>,
+    /// Prevents opening the chart while a host is still loading its source
+    /// rows. The tab remains visible and may display `chart_status`.
+    chart_locked: bool,
+    chart_status: Option<String>,
+    chart_sidebar_position: PivotSidebarPosition,
+    chart_sidebar_collapsed: bool,
+    chart_sidebar_width: f32,
+    /// Split state for the chart sidebar's resizable panel group; created
+    /// lazily on the first chart render and re-seeded on a side switch (see
+    /// [`Self::pivot_sidebar_resize`] for why).
+    chart_sidebar_resize: Option<Entity<ResizableState>>,
+    /// Set when `set_chart_sidebar_width` is called so the next render pushes
+    /// the programmatic width into the resizable group state.
+    chart_sidebar_width_dirty: bool,
     /// When `true`, the grid swaps between the built-in light/dark
     /// [`GridTheme`] palettes to follow the OS window appearance. Disabled
     /// automatically when the caller supplies an explicit theme override.
@@ -128,6 +160,14 @@ impl SqllyDataTable {
             pivot_sidebar_resize: None,
             pivot_sidebar_width_dirty: false,
             drill_filter: None,
+            chart: None,
+            chart_locked: false,
+            chart_status: None,
+            chart_sidebar_position: PivotSidebarPosition::Left,
+            chart_sidebar_collapsed: false,
+            chart_sidebar_width: DEFAULT_CHART_SIDEBAR_WIDTH,
+            chart_sidebar_resize: None,
+            chart_sidebar_width_dirty: false,
             follow_system_appearance: true,
             appearance_subscription: None,
         }
@@ -147,6 +187,11 @@ impl SqllyDataTable {
             pivot: None,
             pivot_context_menu_provider: None,
             pivot_save_config_handler: None,
+            chart: None,
+            chart_save_config_handler: None,
+            chart_sidebar_position: PivotSidebarPosition::Left,
+            chart_sidebar_collapsed: false,
+            chart_sidebar_width: DEFAULT_CHART_SIDEBAR_WIDTH,
             pivot_sidebar_position: PivotSidebarPosition::Left,
             pivot_sidebar_collapsed: false,
             pivot_sidebar_width: DEFAULT_PIVOT_SIDEBAR_WIDTH,
@@ -162,6 +207,14 @@ impl SqllyDataTable {
     #[must_use]
     pub fn pivot_state(&self) -> Option<&Entity<PivotState>> {
         self.pivot.as_ref().map(|p| &p.state)
+    }
+
+    /// The chart state entity, when the chart tab is enabled. Read it for the
+    /// current [`ChartConfig`]; update it (via [`ChartState::set_config`]) to
+    /// reconfigure the chart programmatically.
+    #[must_use]
+    pub fn chart_state(&self) -> Option<&Entity<ChartState>> {
+        self.chart.as_ref().map(|p| &p.state)
     }
 
     /// The currently active tab.
@@ -196,6 +249,12 @@ impl SqllyDataTable {
     #[must_use]
     pub fn pivot_locked(&self) -> bool {
         self.pivot_locked
+    }
+
+    /// Whether the visible chart tab currently rejects activation.
+    #[must_use]
+    pub fn chart_locked(&self) -> bool {
+        self.chart_locked
     }
 
     /// Side of the pivot grid where the control panel is rendered.
@@ -273,6 +332,18 @@ impl SqllyDataTable {
         }
     }
 
+    /// Lock or unlock the chart tab while keeping it visible. `status` is
+    /// rendered beside the Chart title while locked, for example `Loading`.
+    /// Locking an active chart returns immediately to the flat grid so a host
+    /// can continue streaming rows.
+    pub fn set_chart_locked(&mut self, locked: bool, status: Option<String>) {
+        self.chart_locked = locked;
+        self.chart_status = locked.then_some(status).flatten();
+        if locked {
+            self.active_tab = GridTab::Grid;
+        }
+    }
+
     /// Switch between the flat grid and the pivot view. Switching to the
     /// pivot re-syncs its source snapshot if the grid's data changed (e.g.
     /// rows were appended). No-op when the pivot tab is not enabled and
@@ -283,6 +354,12 @@ impl SqllyDataTable {
                 return;
             }
             self.sync_pivot_source(cx);
+        }
+        if tab == GridTab::Chart {
+            if self.chart.is_none() || self.chart_locked {
+                return;
+            }
+            self.sync_chart_source(cx);
         }
         self.active_tab = tab;
     }
@@ -379,6 +456,151 @@ impl SqllyDataTable {
             }
         });
     }
+
+    // ------------------------------------------------------------------
+    // Chart tab
+    // ------------------------------------------------------------------
+
+    /// Side of the chart canvas where the control panel is rendered.
+    #[must_use]
+    pub fn chart_sidebar_position(&self) -> PivotSidebarPosition {
+        self.chart_sidebar_position
+    }
+
+    /// Move the chart control panel to the left or right of the chart.
+    pub fn set_chart_sidebar_position(&mut self, position: PivotSidebarPosition) {
+        if self.chart_sidebar_position != position {
+            // Panel sizes in the resizable group state are positional, so a
+            // side switch must re-seed the group from
+            // `chart_sidebar_width`.
+            self.chart_sidebar_resize = None;
+        }
+        self.chart_sidebar_position = position;
+    }
+
+    /// Whether the chart control panel is collapsed into its divider.
+    #[must_use]
+    pub fn chart_sidebar_collapsed(&self) -> bool {
+        self.chart_sidebar_collapsed
+    }
+
+    /// Collapse or expand the chart control panel.
+    pub fn set_chart_sidebar_collapsed(&mut self, collapsed: bool) {
+        self.chart_sidebar_collapsed = collapsed;
+    }
+
+    /// Current width of the expanded chart control panel, in pixels.
+    #[must_use]
+    pub fn chart_sidebar_width(&self) -> f32 {
+        self.chart_sidebar_width
+    }
+
+    /// Resize the chart control panel, clamped to its supported range.
+    pub fn set_chart_sidebar_width(&mut self, width: f32) {
+        self.chart_sidebar_width = width.clamp(MIN_PIVOT_SIDEBAR_WIDTH, MAX_PIVOT_SIDEBAR_WIDTH);
+        self.chart_sidebar_width_dirty = true;
+    }
+
+    /// Enable the chart tab at runtime with the given configuration. If
+    /// already enabled, the existing chart state is reconfigured instead
+    /// (legend visibility is preserved).
+    pub fn enable_chart(&mut self, config: ChartConfig, cx: &mut App) {
+        if let Some(parts) = &self.chart {
+            parts.state.update(cx, |s, cx| {
+                s.set_config(config);
+                cx.notify();
+            });
+            return;
+        }
+        self.chart = Some(build_chart_parts(&self.state, config, None, cx));
+    }
+
+    /// Remove the chart tab and return to the flat grid.
+    pub fn disable_chart(&mut self) {
+        self.chart = None;
+        if self.active_tab == GridTab::Chart {
+            self.active_tab = GridTab::Grid;
+        }
+    }
+
+    /// Register (or replace) the chart's save-configuration action at
+    /// runtime. While registered, the chart controls sidebar shows a save
+    /// button next to the Type section that invokes `handler` with the live
+    /// [`ChartConfig`]. No-op when the chart tab is not enabled — enable it
+    /// first (or register via [`SqllyDataTableBuilder::chart_save_config`]).
+    pub fn set_chart_save_config(
+        &mut self,
+        handler: impl Fn(&ChartConfig, &mut App) + 'static,
+        cx: &mut App,
+    ) {
+        if let Some(parts) = &self.chart {
+            parts.state.update(cx, |s, cx| {
+                s.on_save_config(handler);
+                cx.notify();
+            });
+        }
+    }
+
+    /// Remove the chart's save-configuration action; the sidebar's save
+    /// button disappears. No-op when the chart tab is not enabled.
+    pub fn clear_chart_save_config(&mut self, cx: &mut App) {
+        if let Some(parts) = &self.chart {
+            parts.state.update(cx, |s, cx| {
+                s.clear_save_config_handler();
+                cx.notify();
+            });
+        }
+    }
+
+    /// Push the grid's current data snapshot into the chart state when it
+    /// changed (O(1) compare via Arc identity).
+    fn sync_chart_source(&self, cx: &mut App) {
+        let Some(parts) = &self.chart else {
+            return;
+        };
+        let (columns, rows) = {
+            let s = self.state.read(cx);
+            (s.data.columns.clone(), Arc::clone(&s.data_rows))
+        };
+        parts.state.update(cx, |cs, cx| {
+            if cs.source_differs(&rows) {
+                cs.set_source(columns, rows);
+                cx.notify();
+            }
+        });
+    }
+}
+
+/// Create the chart entities over the grid's current data snapshot.
+fn build_chart_parts(
+    grid_state: &Entity<GridState>,
+    config: ChartConfig,
+    save_config_handler: Option<ChartSaveConfigHandler>,
+    cx: &mut App,
+) -> ChartParts {
+    let (columns, rows, theme, animations, font_size) = {
+        let s = grid_state.read(cx);
+        (
+            s.data.columns.clone(),
+            Arc::clone(&s.data_rows),
+            s.theme.clone(),
+            s.config.animations,
+            s.font_size,
+        )
+    };
+    let focus = cx.focus_handle();
+    let state = cx.new(|_| {
+        let mut cs = ChartState::new(columns, rows, config, theme, animations, font_size, focus);
+        cs.save_config_handler = save_config_handler;
+        cs
+    });
+    let canvas = cx.new(|_| ChartCanvas::new(state.clone()));
+    let sidebar = cx.new(|_| ChartSidebar::new(state.clone()));
+    ChartParts {
+        state,
+        canvas,
+        sidebar,
+    }
 }
 
 /// Create the pivot entities over the grid's current data snapshot.
@@ -434,6 +656,11 @@ pub struct SqllyDataTableBuilder {
     pivot: Option<PivotConfig>,
     pivot_context_menu_provider: Option<PivotContextMenuProviderHandle>,
     pivot_save_config_handler: Option<PivotSaveConfigHandler>,
+    chart: Option<ChartConfig>,
+    chart_save_config_handler: Option<ChartSaveConfigHandler>,
+    chart_sidebar_position: PivotSidebarPosition,
+    chart_sidebar_collapsed: bool,
+    chart_sidebar_width: f32,
     pivot_sidebar_position: PivotSidebarPosition,
     pivot_sidebar_collapsed: bool,
     pivot_sidebar_width: f32,
@@ -584,6 +811,50 @@ impl SqllyDataTableBuilder {
         self
     }
 
+    /// Enable the chart tab, preconfigured with `config`. The widget renders
+    /// a "Chart" tab beside Grid/Pivot; the tab shows resizable accordion
+    /// controls next to the canvas plot. Pass [`ChartConfig::default()`] for
+    /// an auto-detected bar chart.
+    #[must_use]
+    pub fn chart(mut self, config: ChartConfig) -> Self {
+        self.chart = Some(config);
+        self
+    }
+
+    /// Place the chart control panel on the left or right side of the plot.
+    #[must_use]
+    pub fn chart_sidebar_position(mut self, position: PivotSidebarPosition) -> Self {
+        self.chart_sidebar_position = position;
+        self
+    }
+
+    /// Build the chart control panel initially collapsed.
+    #[must_use]
+    pub fn chart_sidebar_collapsed(mut self, collapsed: bool) -> Self {
+        self.chart_sidebar_collapsed = collapsed;
+        self
+    }
+
+    /// Set the initial width of the expanded chart control panel.
+    #[must_use]
+    pub fn chart_sidebar_width(mut self, width: f32) -> Self {
+        self.chart_sidebar_width = width.clamp(MIN_PIVOT_SIDEBAR_WIDTH, MAX_PIVOT_SIDEBAR_WIDTH);
+        self
+    }
+
+    /// Register a save-configuration action for the chart view. While
+    /// registered, the chart controls sidebar shows a save button next to
+    /// the Type section that invokes `handler` with the live
+    /// [`ChartConfig`] (persist it and pass it back to
+    /// [`SqllyDataTableBuilder::chart`] on the next launch). Without a
+    /// handler the button is not rendered. Only takes effect together with
+    /// [`SqllyDataTableBuilder::chart`].
+    #[must_use]
+    pub fn chart_save_config(mut self, handler: impl Fn(&ChartConfig, &mut App) + 'static) -> Self {
+        self.chart_save_config_handler = Some(std::rc::Rc::new(handler));
+        self
+    }
+
     /// Build the widget inside the supplied [`gpui::App`].
     pub fn build(self, cx: &mut App) -> SqllyDataTable {
         let focus = cx.focus_handle();
@@ -629,6 +900,13 @@ impl SqllyDataTableBuilder {
                 cx,
             )
         });
+        let chart_config = self.chart;
+        let chart_save_config_handler = self.chart_save_config_handler;
+        let chart_sidebar_position = self.chart_sidebar_position;
+        let chart_sidebar_collapsed = self.chart_sidebar_collapsed;
+        let chart_sidebar_width = self.chart_sidebar_width;
+        let chart =
+            chart_config.map(|cfg| build_chart_parts(&state, cfg, chart_save_config_handler, cx));
         SqllyDataTable {
             state,
             pivot,
@@ -641,6 +919,14 @@ impl SqllyDataTableBuilder {
             pivot_sidebar_resize: None,
             pivot_sidebar_width_dirty: false,
             drill_filter: None,
+            chart,
+            chart_locked: false,
+            chart_status: None,
+            chart_sidebar_position,
+            chart_sidebar_collapsed,
+            chart_sidebar_width,
+            chart_sidebar_resize: None,
+            chart_sidebar_width_dirty: false,
             follow_system_appearance,
             appearance_subscription: None,
         }
@@ -714,6 +1000,27 @@ impl Render for SqllyDataTable {
             });
         }
 
+        // Keep the chart's theme in lockstep with the grid theme, and its
+        // sidebar width in sync with the resizable panel.
+        if let Some(parts) = &self.chart {
+            let grid_theme = self.state.read(cx).theme.clone();
+            let sidebar_width = self.chart_sidebar_width;
+            parts.state.update(cx, |s, cx| {
+                let mut dirty = false;
+                if s.theme != grid_theme {
+                    s.theme = grid_theme;
+                    dirty = true;
+                }
+                if (s.sidebar_width - sidebar_width).abs() > 0.5 {
+                    s.sidebar_width = sidebar_width;
+                    dirty = true;
+                }
+                if dirty {
+                    cx.notify();
+                }
+            });
+        }
+
         // Drill-through: a double-click on a pivot cell (or the built-in
         // "Show source rows" menu action) queued per-column value filters.
         // Apply them to the flat grid and switch to the Grid tab so the user
@@ -754,11 +1061,52 @@ impl Render for SqllyDataTable {
             }
         }
 
+        // Chart click-to-navigate: a click on a chart mark queued the source
+        // rows behind it. Select and reveal those rows on the flat grid and
+        // switch to the Grid tab so the user lands on exactly the rows that
+        // drive the clicked mark.
+        if let Some(parts) = &self.chart {
+            let navigate = parts.state.update(cx, |s, _| s.take_pending_navigate());
+            if let Some(source_rows) = navigate {
+                let mut applied = false;
+                self.state.update(cx, |g, cx| {
+                    // Selection is unsupported in windowed-row mode; the
+                    // navigation is skipped rather than selecting against a
+                    // partially resident window.
+                    if g.window.is_none() {
+                        let mut display_of = std::collections::HashMap::new();
+                        for (display, &source) in g.display_indices.iter().enumerate() {
+                            display_of.insert(source, display);
+                        }
+                        let mut display: Vec<usize> = source_rows
+                            .iter()
+                            .filter_map(|source| display_of.get(source).copied())
+                            .collect();
+                        display.sort_unstable();
+                        display.dedup();
+                        if !display.is_empty() {
+                            let first = display[0];
+                            g.selection = Selection::Rows(display);
+                            g.ensure_visible(Some(first), None);
+                            applied = true;
+                        }
+                    }
+                    cx.notify();
+                });
+                if applied {
+                    self.active_tab = GridTab::Grid;
+                    let focus = self.state.read(cx).focus_handle.clone();
+                    window.focus(&focus, cx);
+                    cx.notify();
+                }
+            }
+        }
+
         let grid_view = self.render_grid_view(cx);
 
-        let Some(parts) = &self.pivot else {
+        if self.pivot.is_none() && self.chart.is_none() {
             return div().size_full().child(grid_view);
-        };
+        }
 
         let theme = self.state.read(cx).theme.clone();
         let tab = |label: String,
@@ -805,6 +1153,12 @@ impl Render for SqllyDataTable {
                                         window.focus(&focus, cx);
                                     }
                                 }
+                                GridTab::Chart => {
+                                    if let Some(c) = &this.chart {
+                                        let focus = c.state.read(cx).focus_handle.clone();
+                                        window.focus(&focus, cx);
+                                    }
+                                }
                             }
                             cx.notify();
                         }),
@@ -816,6 +1170,10 @@ impl Render for SqllyDataTable {
             .pivot_status
             .as_deref()
             .map_or_else(|| "Pivot".to_string(), |status| format!("Pivot  {status}"));
+        let chart_label = self
+            .chart_status
+            .as_deref()
+            .map_or_else(|| "Chart".to_string(), |status| format!("Chart  {status}"));
 
         let tab_bar = div()
             .flex()
@@ -830,14 +1188,29 @@ impl Render for SqllyDataTable {
                 self.active_tab == GridTab::Grid,
                 false,
                 cx,
-            ))
-            .child(tab(
+            ));
+        let tab_bar = if self.pivot.is_some() {
+            tab_bar.child(tab(
                 pivot_label,
                 GridTab::Pivot,
                 self.active_tab == GridTab::Pivot,
                 self.pivot_locked,
                 cx,
-            ));
+            ))
+        } else {
+            tab_bar
+        };
+        let tab_bar = if self.chart.is_some() {
+            tab_bar.child(tab(
+                chart_label,
+                GridTab::Chart,
+                self.active_tab == GridTab::Chart,
+                self.chart_locked,
+                cx,
+            ))
+        } else {
+            tab_bar
+        };
 
         let content: gpui::AnyElement = match self.active_tab {
             GridTab::Grid => {
@@ -899,13 +1272,23 @@ impl Render for SqllyDataTable {
                 }
             }
             GridTab::Pivot => {
+                let Some(parts) = &self.pivot else {
+                    return div().size_full().child(grid_view);
+                };
                 let position = self.pivot_sidebar_position;
                 let collapsed = self.pivot_sidebar_collapsed;
 
                 if collapsed {
                     // Collapsed: a slim labelled rail where the sidebar was;
                     // clicking it expands the sidebar again.
-                    let rail = pivot_collapsed_rail(&theme, position, cx.entity().clone());
+                    let rail = sidebar_collapsed_rail(
+                        &theme,
+                        position,
+                        cx.entity().clone(),
+                        "pivot-sidebar-rail",
+                        "Pivot",
+                        |table| table.set_pivot_sidebar_collapsed(false),
+                    );
                     let pivot_grid = div().flex_1().min_w_0().child(parts.grid.clone());
                     let pivot_view = div().flex().flex_row().size_full();
                     let pivot_view = match position {
@@ -943,7 +1326,13 @@ impl Render for SqllyDataTable {
                         });
                     }
 
-                    let toggle_strip = pivot_toggle_strip(&theme, position, cx.entity().clone());
+                    let toggle_strip = sidebar_toggle_strip(
+                        &theme,
+                        position,
+                        cx.entity().clone(),
+                        "pivot-sidebar-toggle",
+                        |table| table.set_pivot_sidebar_collapsed(true),
+                    );
                     let sidebar_body = div()
                         .flex_1()
                         .min_w_0()
@@ -989,6 +1378,105 @@ impl Render for SqllyDataTable {
                     group.into_any_element()
                 }
             }
+            GridTab::Chart => {
+                let Some(parts) = &self.chart else {
+                    return div().size_full().child(grid_view);
+                };
+                let position = self.chart_sidebar_position;
+                let collapsed = self.chart_sidebar_collapsed;
+
+                if collapsed {
+                    let rail = sidebar_collapsed_rail(
+                        &theme,
+                        position,
+                        cx.entity().clone(),
+                        "chart-sidebar-rail",
+                        "Chart",
+                        |table| table.set_chart_sidebar_collapsed(false),
+                    );
+                    let canvas = div().flex_1().min_w_0().child(parts.canvas.clone());
+                    let chart_view = div().flex().flex_row().size_full();
+                    let chart_view = match position {
+                        PivotSidebarPosition::Left => chart_view.child(rail).child(canvas),
+                        PivotSidebarPosition::Right => chart_view.child(canvas).child(rail),
+                    };
+                    chart_view.into_any_element()
+                } else {
+                    // Same resizable-split layout as the pivot sidebar (see
+                    // the Pivot arm for the reasoning behind each piece).
+                    let sidebar_ix = match position {
+                        PivotSidebarPosition::Left => 0,
+                        PivotSidebarPosition::Right => 1,
+                    };
+                    let resize_state = match self.chart_sidebar_resize.clone() {
+                        Some(state) => state,
+                        None => {
+                            let state = cx.new(|_| ResizableState::default());
+                            self.chart_sidebar_resize = Some(state.clone());
+                            state
+                        }
+                    };
+                    if self.chart_sidebar_width_dirty {
+                        self.chart_sidebar_width_dirty = false;
+                        let width = px(self.chart_sidebar_width);
+                        resize_state.update(cx, |state, cx| {
+                            state.resize_panel(sidebar_ix, width, window, cx);
+                        });
+                    }
+
+                    let toggle_strip = sidebar_toggle_strip(
+                        &theme,
+                        position,
+                        cx.entity().clone(),
+                        "chart-sidebar-toggle",
+                        |table| table.set_chart_sidebar_collapsed(true),
+                    );
+                    let sidebar_body = div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .child(parts.sidebar.clone());
+                    let sidebar_content = div().flex().flex_row().size_full();
+                    let sidebar_content = match position {
+                        PivotSidebarPosition::Left => {
+                            sidebar_content.child(sidebar_body).child(toggle_strip)
+                        }
+                        PivotSidebarPosition::Right => {
+                            sidebar_content.child(toggle_strip).child(sidebar_body)
+                        }
+                    };
+                    let sidebar_panel = resizable_panel()
+                        .size(px(self.chart_sidebar_width))
+                        .size_range(px(MIN_PIVOT_SIDEBAR_WIDTH)..px(MAX_PIVOT_SIDEBAR_WIDTH))
+                        .child(sidebar_content);
+                    let canvas_panel = resizable_panel()
+                        .child(div().size_full().min_w_0().child(parts.canvas.clone()));
+
+                    let table_resize = cx.entity().clone();
+                    let group = h_resizable("chart-sidebar-split")
+                        .with_state(&resize_state)
+                        .on_resize(move |state, _window, cx| {
+                            let Some(width) = state.read(cx).sizes().get(sidebar_ix).copied()
+                            else {
+                                return;
+                            };
+                            table_resize.update(cx, |table, cx| {
+                                table.chart_sidebar_width = f32::from(width)
+                                    .clamp(MIN_PIVOT_SIDEBAR_WIDTH, MAX_PIVOT_SIDEBAR_WIDTH);
+                                cx.notify();
+                            });
+                        });
+                    let group = match position {
+                        PivotSidebarPosition::Left => {
+                            group.child(sidebar_panel).child(canvas_panel)
+                        }
+                        PivotSidebarPosition::Right => {
+                            group.child(canvas_panel).child(sidebar_panel)
+                        }
+                    };
+                    group.into_any_element()
+                }
+            }
         };
 
         div()
@@ -1022,21 +1510,24 @@ fn drill_filter_label(
     parts.join(", ")
 }
 
-/// The slim labelled rail shown in place of the pivot sidebar while it is
+/// The slim labelled rail shown in place of a tab's sidebar while it is
 /// collapsed. Ports the old `gpui-ui-kit` pane-divider collapsed strip:
 /// expand arrows above and below a vertically stacked label; any click
-/// expands the sidebar.
-fn pivot_collapsed_rail(
+/// expands the sidebar via `expand`.
+fn sidebar_collapsed_rail(
     theme: &GridTheme,
     position: PivotSidebarPosition,
     table: Entity<SqllyDataTable>,
+    rail_id: &'static str,
+    label: &'static str,
+    expand: fn(&mut SqllyDataTable),
 ) -> impl IntoElement {
     // Lucide panel-open icons pointing toward where the sidebar reappears.
     let icon_name = match position {
         PivotSidebarPosition::Left => IconName::PanelLeftOpen,
         PivotSidebarPosition::Right => IconName::PanelRightOpen,
     };
-    let label_chars = "Pivot".chars().map({
+    let label_chars = label.chars().map({
         let fg = theme.muted_text;
         move |c| {
             div()
@@ -1054,7 +1545,7 @@ fn pivot_collapsed_rail(
     };
 
     div()
-        .id("pivot-sidebar-rail")
+        .id(rail_id)
         .w(px(24.0))
         .h_full()
         .flex_none()
@@ -1081,20 +1572,22 @@ fn pivot_collapsed_rail(
         .child(arrow_glyph(theme.muted_text))
         .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
             table.update(cx, |table, cx| {
-                table.set_pivot_sidebar_collapsed(false);
+                expand(table);
                 cx.notify();
             });
         })
 }
 
-/// The slim collapse strip on the pivot sidebar's inner edge while expanded.
-/// Clicking it collapses the sidebar into [`pivot_collapsed_rail`]. Sits
+/// The slim collapse strip on a tab sidebar's inner edge while expanded.
+/// Clicking it collapses the sidebar into [`sidebar_collapsed_rail`]. Sits
 /// beside the resizable group's drag handle, replacing the old pane-divider
 /// double-click-to-collapse affordance with a single click.
-fn pivot_toggle_strip(
+fn sidebar_toggle_strip(
     theme: &GridTheme,
     position: PivotSidebarPosition,
     table: Entity<SqllyDataTable>,
+    strip_id: &'static str,
+    collapse: fn(&mut SqllyDataTable),
 ) -> impl IntoElement {
     // Lucide panel-close icon pointing toward where the sidebar collapses.
     let icon_name = match position {
@@ -1104,7 +1597,7 @@ fn pivot_toggle_strip(
     let hover_bg = theme.menu_hover_bg;
 
     div()
-        .id("pivot-sidebar-toggle")
+        .id(strip_id)
         .w(px(16.0))
         .h_full()
         .flex_none()
@@ -1125,7 +1618,7 @@ fn pivot_toggle_strip(
         )
         .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
             table.update(cx, |table, cx| {
-                table.set_pivot_sidebar_collapsed(true);
+                collapse(table);
                 cx.notify();
             });
         })

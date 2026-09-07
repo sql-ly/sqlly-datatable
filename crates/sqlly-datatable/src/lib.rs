@@ -83,6 +83,7 @@
 // `grid::` modules mature. Run clippy with
 // `#![warn(missing_docs)]` in scope when cleaning up a module.
 
+pub mod chart;
 pub mod conditional;
 pub mod config;
 pub mod data;
@@ -107,6 +108,11 @@ pub use gpui_component;
 // (with an error logged per icon).
 pub use gpui_component_assets;
 
+pub use chart::{
+    chart_svg, ChartAggregate, ChartCanvas, ChartConfig, ChartError, ChartKind, ChartOrder,
+    ChartSaveConfigHandler, ChartSidebar, ChartState, DEFAULT_CHART_SIDEBAR_WIDTH, MAX_CATEGORIES,
+    MAX_SERIES, MAX_SOURCE_ROWS, SVG_EXPORT_HEIGHT, SVG_EXPORT_WIDTH,
+};
 pub use conditional::{
     CellEffect, ColumnConditionals, ConditionalCondition, ConditionalKind, ConditionalRule,
     ConditionalStyle, ResolvedConditionals, RgbaColor,
