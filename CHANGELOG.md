@@ -5,7 +5,7 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [5.3.0] - unreleased
+## [5.3.0] - 2026-09-07
 
 ### Added — Chart tab (result-set charting beside Grid and Pivot)
 - A dedicated **Chart** tab on the table, enabled via `SqllyDataTableBuilder::chart(config)` or `SqllyDataTable::enable_chart`, rendering bar / line / area / scatter / histogram / pie / donut views of the grid's own rows with a pivot-style collapsible controls sidebar (type, category, values, aggregate, order, limit, export).
