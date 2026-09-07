@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **External configuration.** `ChartConfig` is plain data read back verbatim from `chart_state()`; `chart_save_config(handler)` renders a save button so hosts can persist and re-supply configurations, mirroring the pivot's contract.
 - **Click-to-navigate.** Clicking a bar, point, or slice selects and reveals the exact source rows behind it on the Grid tab. A checkbox in the sidebar's Behavior section (and `ChartConfig::navigate_on_click`) turns this off.
 - **SVG export.** `Copy SVG` and `Save SVG…` from the sidebar; `sqlly_datatable::chart_svg` is re-exported for programmatic export at a standard 960×540 document size.
+- **Legend and truncation strip.** A clickable legend above the plot toggles per-series (or per-slice) visibility — hidden entries render dimmed and struck — alongside a "by <column>" tag and a "Showing …" note whenever the category, series, or source-row caps trimmed the data. In the sidebar's Values list, auto-selected numeric columns render checked so auto mode never reads as "nothing selected"; toggling materializes the explicit selection.
 - Lockable like the pivot: `set_chart_locked(locked, status)` keeps the tab visible but rejects activation while a host is still loading rows; the sidebar position, collapse, and width are all builder- and runtime-configurable.
 
 ## [5.2.0] - 2026-08-29

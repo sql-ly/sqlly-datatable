@@ -7,7 +7,8 @@ use crate::grid::selection::to_grid_relative;
 
 use gpui::{
     canvas, div, point, px, App, Bounds, Context, Entity, FocusHandle, Focusable, Hsla,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Render, Styled, Window,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Render, SharedString, Styled,
+    Window,
 };
 
 use super::paint::ChartPaint;
@@ -55,16 +56,93 @@ impl Render for ChartCanvas {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state_canvas = self.state.clone();
         let state_down = self.state.clone();
-        let bg = self.state.read(cx).theme.bg;
-        let focus_handle = self.state.read(cx).focus_handle.clone();
+        let (bg, focus_handle, navigate_on_click, legend, label_column, truncation, muted_text) = {
+            let s = self.state.read(cx);
+            (
+                s.theme.bg,
+                s.focus_handle.clone(),
+                s.config.navigate_on_click,
+                s.legend_entries(),
+                s.label_column_name(),
+                s.truncation_note(),
+                s.theme.muted_text,
+            )
+        };
         let focus_down = focus_handle.clone();
-        let navigate_on_click = self.state.read(cx).config.navigate_on_click;
 
-        let element = div()
-            .size_full()
+        // Legend strip above the plot: one clickable row per series (or per
+        // category for radial kinds) toggling that entry's visibility, the
+        // "by <label column>" tag, and the "Showing …" truncation note. Ports
+        // the legend the old in-tree chart pane rendered above its canvas.
+        let strip = (!legend.is_empty() || truncation.is_some()).then(|| {
+            let mut strip = div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(12.0))
+                .px(px(12.0))
+                .py(px(4.0));
+            for (index, (name, color, hidden)) in legend.into_iter().enumerate() {
+                let state_toggle = self.state.clone();
+                let toggle_name = name.clone();
+                let mut label = div()
+                    .text_size(px(12.0))
+                    .text_color(if hidden {
+                        muted_text.opacity(0.6)
+                    } else {
+                        muted_text
+                    })
+                    .child(name);
+                if hidden {
+                    label = label.line_through();
+                }
+                strip = strip.child(
+                    div()
+                        .id(SharedString::from(format!("chart-legend-{index}")))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(5.0))
+                        .cursor_pointer()
+                        .child(
+                            div()
+                                .w(px(10.0))
+                                .h(px(10.0))
+                                .rounded(px(2.0))
+                                .bg(if hidden { color.opacity(0.25) } else { color }),
+                        )
+                        .child(label)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            move |_event: &gpui::MouseDownEvent, _window, cx| {
+                                state_toggle.update(cx, |s, cx| {
+                                    s.toggle_legend_entry(&toggle_name);
+                                    cx.notify();
+                                });
+                            },
+                        ),
+                );
+            }
+            if let Some(label) = label_column {
+                strip = strip.child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(muted_text)
+                        .child(format!("by {label}")),
+                );
+            }
+            if let Some(note) = truncation {
+                strip = strip.child(div().text_size(px(11.0)).text_color(muted_text).child(note));
+            }
+            strip
+        });
+
+        let mut plot = div()
+            .flex_1()
+            .min_h(px(0.0))
             .relative()
-            .track_focus(&focus_handle)
-            .bg(bg)
             .child(
                 canvas(
                     move |bounds, _window, cx| -> CanvasData {
@@ -112,10 +190,17 @@ impl Render for ChartCanvas {
                 },
             );
         if navigate_on_click {
-            element.cursor_pointer()
-        } else {
-            element
+            plot = plot.cursor_pointer();
         }
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .track_focus(&focus_handle)
+            .bg(bg)
+            .children(strip)
+            .child(plot)
     }
 }
 

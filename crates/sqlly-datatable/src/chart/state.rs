@@ -332,6 +332,97 @@ impl ChartState {
             .is_ok_and(|d| d.categories_truncated || d.series_truncated || d.source_truncated)
     }
 
+    /// The "Showing …" note describing every active cap, or `None` when
+    /// nothing was dropped. Rendered above the canvas so a capped chart is
+    /// never mistaken for the whole result set.
+    #[must_use]
+    pub fn truncation_note(&self) -> Option<String> {
+        let data = self.outcome.as_ref().ok()?;
+        let mut parts = Vec::new();
+        if data.categories_truncated {
+            let top_n = self.config.top_n.clamp(1, super::config::MAX_CATEGORIES);
+            parts.push(format!("top {top_n} categories"));
+        }
+        if data.series_truncated {
+            parts.push(format!(
+                "first {} numeric columns",
+                super::config::MAX_SERIES
+            ));
+        }
+        if data.source_truncated {
+            parts.push(format!(
+                "first {} source rows",
+                super::config::MAX_SOURCE_ROWS
+            ));
+        }
+        (!parts.is_empty()).then(|| format!("Showing {}", parts.join(" · ")))
+    }
+
+    /// The value columns the chart actually plots: the configured list, or —
+    /// when it is empty — the auto-selected set (every numeric column, capped
+    /// at [`super::config::MAX_SERIES`]), mirroring extraction. The sidebar
+    /// checks these rows so "auto" never looks like "nothing selected".
+    #[must_use]
+    pub fn effective_value_columns(&self) -> Vec<usize> {
+        if !self.config.value_columns.is_empty() {
+            return self.config.value_columns.clone();
+        }
+        (0..self.source_columns.len())
+            .filter(|&index| super::model::is_numeric_column(index, &self.source_rows))
+            .take(super::config::MAX_SERIES)
+            .collect()
+    }
+
+    /// The legend rows for the current kind: `(label, swatch color, hidden)`
+    /// in display order — categories for radial kinds, series otherwise.
+    /// Hidden entries are included (rendered dimmed/struck) so they can be
+    /// toggled back on. Histograms label their bins on the axis and have no
+    /// legend.
+    #[must_use]
+    pub(crate) fn legend_entries(&self) -> Vec<(String, gpui::Hsla, bool)> {
+        if self.config.kind == ChartKind::Histogram {
+            return Vec::new();
+        }
+        let Ok(data) = &self.outcome else {
+            return Vec::new();
+        };
+        if matches!(self.config.kind, ChartKind::Pie | ChartKind::Donut) {
+            data.categories
+                .iter()
+                .enumerate()
+                .map(|(index, category)| {
+                    (
+                        category.clone(),
+                        series_color(&self.theme, index),
+                        self.hidden.contains(category),
+                    )
+                })
+                .collect()
+        } else {
+            data.series
+                .iter()
+                .enumerate()
+                .map(|(index, series)| {
+                    (
+                        series.name.clone(),
+                        series_color(&self.theme, index),
+                        self.hidden.contains(&series.name),
+                    )
+                })
+                .collect()
+        }
+    }
+
+    /// Name of the column labelling the categories, if extraction found one
+    /// (the legend strip's "by …" tag).
+    #[must_use]
+    pub(crate) fn label_column_name(&self) -> Option<String> {
+        self.outcome
+            .as_ref()
+            .ok()
+            .and_then(|data| data.label_column.clone())
+    }
+
     // ------------------------------------------------------------------
     // Click-to-navigate
     // ------------------------------------------------------------------
@@ -576,6 +667,69 @@ mod tests {
             .expect("the last visible category");
         s.toggle_legend_entry(&last);
         assert_eq!(s.visible_legend_count(), 1, "last entry stays visible");
+    }
+
+    #[gpui::test]
+    fn truncation_note_names_the_active_caps(cx: &mut gpui::TestAppContext) {
+        let mut s = state(cx, ChartConfig::default());
+        assert_eq!(s.truncation_note(), None, "nothing dropped, no note");
+        s.set_config(ChartConfig {
+            top_n: 2,
+            ..ChartConfig::default()
+        });
+        assert_eq!(
+            s.truncation_note().as_deref(),
+            Some("Showing top 2 categories"),
+            "the note reports the configured limit, not the hard cap"
+        );
+    }
+
+    #[gpui::test]
+    fn effective_value_columns_reflect_auto_selection(cx: &mut gpui::TestAppContext) {
+        let mut s = state(cx, ChartConfig::default());
+        assert_eq!(
+            s.effective_value_columns(),
+            vec![1],
+            "auto mode reports the numeric columns the extraction plots"
+        );
+        s.set_config(ChartConfig {
+            value_columns: vec![1],
+            ..ChartConfig::default()
+        });
+        assert_eq!(s.effective_value_columns(), vec![1]);
+    }
+
+    #[gpui::test]
+    fn legend_entries_follow_kind_and_hidden_state(cx: &mut gpui::TestAppContext) {
+        let mut s = state(cx, ChartConfig::default());
+        let entries = s.legend_entries();
+        assert_eq!(entries.len(), 1, "one series → one legend row");
+        assert_eq!(entries[0].0, "score");
+        assert!(!entries[0].2);
+        assert_eq!(s.label_column_name().as_deref(), Some("name"));
+
+        // Radial kinds list categories instead, and hidden entries stay
+        // listed (dimmed) so they can be re-enabled.
+        s.set_config(ChartConfig {
+            kind: ChartKind::Pie,
+            value_columns: vec![1],
+            ..ChartConfig::default()
+        });
+        let entries = s.legend_entries();
+        assert_eq!(entries.len(), 4, "four categories → four legend rows");
+        s.toggle_legend_entry("a");
+        let entries = s.legend_entries();
+        assert_eq!(entries.len(), 4);
+        assert!(entries
+            .iter()
+            .any(|(name, _, hidden)| name == "a" && *hidden));
+
+        // Histograms have no legend — bins label themselves on the axis.
+        s.set_config(ChartConfig {
+            kind: ChartKind::Histogram,
+            ..ChartConfig::default()
+        });
+        assert!(s.legend_entries().is_empty());
     }
 
     #[gpui::test]

@@ -233,7 +233,7 @@ impl ChartSidebar {
 
 impl Render for ChartSidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (theme, columns, config, rows_len, save_handler, animations, numeric_columns) = {
+        let (theme, columns, config, save_handler, animations, numeric_columns, checked_values) = {
             let s = self.state.read(cx);
             let numeric = (0..s.source_columns.len())
                 .filter(|&i| is_numeric_column(i, &s.source_rows))
@@ -242,10 +242,10 @@ impl Render for ChartSidebar {
                 s.theme.clone(),
                 s.source_columns.clone(),
                 s.config.clone(),
-                s.source_rows.len(),
                 s.save_config_handler.clone(),
                 s.animations,
                 numeric,
+                s.effective_value_columns(),
             )
         };
         let histogram = config.kind == ChartKind::Histogram;
@@ -365,7 +365,11 @@ impl Render for ChartSidebar {
             );
         } else {
             for &index in &numeric_columns {
-                let checked = config.value_columns.contains(&index);
+                // Auto mode (no configured value columns) shows the columns
+                // the extraction actually plots as checked, so "auto" never
+                // reads as "nothing selected". A toggle then materializes the
+                // effective set as the explicit configured list.
+                let checked = checked_values.contains(&index);
                 let label: SharedString = columns[index].name.clone().into();
                 data_children.push(Self::pick_row(
                     &theme,
@@ -374,12 +378,20 @@ impl Render for ChartSidebar {
                     checked,
                     move |s, cx| {
                         let mut config = s.config.clone();
+                        let mut values = s.effective_value_columns();
                         if checked {
-                            config.value_columns.retain(|&c| c != index);
+                            // Unchecking the last column would empty the list,
+                            // which means "auto" and re-checks everything —
+                            // refuse instead, like the legend's last entry.
+                            if values.len() <= 1 {
+                                return;
+                            }
+                            values.retain(|&c| c != index);
                         } else {
-                            config.value_columns.push(index);
-                            config.value_columns.sort_unstable();
+                            values.push(index);
+                            values.sort_unstable();
                         }
+                        config.value_columns = values;
                         Self::configure(s, cx, config);
                     },
                     &self.state,
@@ -470,8 +482,7 @@ impl Render for ChartSidebar {
 
         // -- Export section -----------------------------------------------
         let state_copy = self.state.clone();
-        let copy_clipboard = theme.menu_bg;
-        let _ = copy_clipboard;
+        #[cfg(not(target_arch = "wasm32"))]
         let state_save_svg = self.state.clone();
         let export = div().flex().flex_col().gap(px(4.0)).child(Self::action_row(
             &theme,
@@ -576,7 +587,6 @@ impl Render for ChartSidebar {
                 export.into_any_element(),
             ));
 
-        let _ = rows_len;
         div()
             .id("chart-sidebar")
             .h_full()
