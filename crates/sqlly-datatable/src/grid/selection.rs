@@ -76,6 +76,14 @@ pub enum HitResult {
     /// Expandable section header for a grouped flat-grid row set.
     GroupHeader(usize),
     RowHeader(usize),
+    /// The per-row "View" icon in the row-number gutter (carries the DISPLAY
+    /// row index, like [`HitResult::RowHeader`]). Only produced when the host
+    /// registered row actions via
+    /// [`crate::grid::SqllyDataTableBuilder::row_actions`].
+    RowHeaderView(usize),
+    /// The per-row "Edit" icon in the row-number gutter (DISPLAY row index).
+    /// Only produced when row actions are registered AND editing is enabled.
+    RowHeaderEdit(usize),
     Cell(usize, usize),
     Corner,
     ContextMenuItem(usize),

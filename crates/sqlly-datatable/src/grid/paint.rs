@@ -12,7 +12,10 @@ use crate::grid::menu::{self};
 use crate::grid::selection::{
     is_cell_selected, is_column_selected, is_row_selected, HitResult, Selection, SortDirection,
 };
-use crate::grid::state::{state_inner, GridDisplayRow, GridState, RowGroup, SCROLLBAR_SIZE};
+use crate::grid::state::{
+    row_action_edit_x, row_action_view_x, state_inner, GridDisplayRow, GridState, RowGroup,
+    ROW_ACTION_ICON_SIZE, SCROLLBAR_SIZE,
+};
 use crate::grid::theme::GridTheme;
 
 use gpui::{
@@ -90,6 +93,11 @@ pub(crate) struct PaintData {
     pub(crate) char_width: f32,
     pub(crate) drag_rect: Option<(Point<Pixels>, Point<Pixels>)>,
     pub(crate) hover_hit: Option<HitResult>,
+    /// Whether the host registered per-row action icons (paint the View icon,
+    /// and Edit too when `row_actions_edit`). The gutter width is already
+    /// widened on `GridState`, so paint only needs to know whether/what to draw.
+    pub(crate) row_actions_enabled: bool,
+    pub(crate) row_actions_edit: bool,
     /// Hint painted centered in the data area when there are zero rows.
     pub(crate) empty_text: String,
     /// Whether the grid currently holds keyboard focus. Drives the
@@ -136,6 +144,8 @@ impl PaintData {
             char_width: s.char_width,
             drag_rect: s.drag_screen_rect(),
             hover_hit: s.hover_hit,
+            row_actions_enabled: s.row_actions.is_some(),
+            row_actions_edit: s.row_actions.as_ref().is_some_and(|r| r.edit_enabled),
             empty_text: s.config.empty_text.clone(),
             // Overridden by the widget's canvas prepaint, which has the
             // `Window` needed to query focus; `from_state` alone cannot.
@@ -317,6 +327,65 @@ pub(crate) fn paint_funnel(window: &mut Window, x: f32, y: f32, size: f32, color
     b.line_to(pt(0.38, 0.55));
     b.close();
     if let Ok(path) = b.build() {
+        window.paint_path(path, color);
+    }
+}
+
+/// Paint an "eye" icon (the per-row View affordance) inside a `size`-square
+/// box at `(x, y)`. Two mirrored quadratic arcs form the almond outline and a
+/// filled disc is the pupil. Drawn as vector paths rather than a font/emoji
+/// glyph so it renders identically on every backend — the web build embeds no
+/// emoji font (see [`paint_funnel`] / [`paint_caret`]).
+pub(crate) fn paint_eye(window: &mut Window, x: f32, y: f32, size: f32, color: Hsla) {
+    let pt = |fx: f32, fy: f32| point(px(x + fx * size), px(y + fy * size));
+    // Almond outline: from the left corner, arc over the top to the right
+    // corner, then arc back under the bottom to close.
+    let mut outline = gpui::PathBuilder::stroke(px((size * 0.09).max(1.0)));
+    outline.move_to(pt(0.06, 0.5));
+    outline.curve_to(pt(0.94, 0.5), pt(0.5, 0.12));
+    outline.curve_to(pt(0.06, 0.5), pt(0.5, 0.88));
+    if let Ok(path) = outline.build() {
+        window.paint_path(path, color);
+    }
+    // Pupil: a small filled disc at the center, approximated by a diamond of
+    // curves (PathBuilder has no ellipse primitive; a 4-arc blob reads as a
+    // dot at this size).
+    let r = size * 0.16;
+    let cx = x + size * 0.5;
+    let cy = y + size * 0.5;
+    let p = |fx: f32, fy: f32| point(px(fx), px(fy));
+    let mut pupil = gpui::PathBuilder::fill();
+    pupil.move_to(p(cx, cy - r));
+    pupil.curve_to(p(cx + r, cy), p(cx + r, cy - r));
+    pupil.curve_to(p(cx, cy + r), p(cx + r, cy + r));
+    pupil.curve_to(p(cx - r, cy), p(cx - r, cy + r));
+    pupil.curve_to(p(cx, cy - r), p(cx - r, cy - r));
+    if let Ok(path) = pupil.build() {
+        window.paint_path(path, color);
+    }
+}
+
+/// Paint a diagonal "pencil" icon (the per-row Edit affordance) inside a
+/// `size`-square box at `(x, y)`: a stroked barrel running from the lower-left
+/// to the upper-right with a filled triangular tip. Vector-drawn for the same
+/// platform-safety reason as [`paint_eye`].
+pub(crate) fn paint_pencil(window: &mut Window, x: f32, y: f32, size: f32, color: Hsla) {
+    let pt = |fx: f32, fy: f32| point(px(x + fx * size), px(y + fy * size));
+    // Barrel: two parallel strokes from the eraser (bottom-left) toward the
+    // tip (top-right).
+    let mut barrel = gpui::PathBuilder::stroke(px((size * 0.12).max(1.0)));
+    barrel.move_to(pt(0.14, 0.86));
+    barrel.line_to(pt(0.70, 0.30));
+    if let Ok(path) = barrel.build() {
+        window.paint_path(path, color);
+    }
+    // Nib: a small filled triangle at the top-right point of the pencil.
+    let mut nib = gpui::PathBuilder::fill();
+    nib.move_to(pt(0.66, 0.20));
+    nib.line_to(pt(0.86, 0.14));
+    nib.line_to(pt(0.80, 0.34));
+    nib.close();
+    if let Ok(path) = nib.build() {
         window.paint_path(path, color);
     }
 }
@@ -841,6 +910,37 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                 theme.header_fg,
                 None,
             );
+            // Per-row action icons on the LEFT of the gutter (the widened
+            // width was already reserved on `GridState`). Muted at rest, lit to
+            // the accent on hover — mirroring how the column SortButton reveals
+            // itself. Painted as vector paths (no font/emoji dependency).
+            if data.row_actions_enabled {
+                let icon_y = y + (row_h - ROW_ACTION_ICON_SIZE) * 0.5;
+                // A dimmed rest color so the icons read as quiet affordances,
+                // not data; the accent on hover signals they are clickable.
+                let mut rest = theme.header_fg;
+                rest.a *= 0.55;
+                let vx = ox + row_action_view_x();
+                let view_hovered =
+                    matches!(data.hover_hit, Some(HitResult::RowHeaderView(h)) if h == dr);
+                let view_color = if view_hovered {
+                    theme.sort_indicator
+                } else {
+                    rest
+                };
+                paint_eye(window, vx, icon_y, ROW_ACTION_ICON_SIZE, view_color);
+                if data.row_actions_edit {
+                    let ex = ox + row_action_edit_x();
+                    let edit_hovered =
+                        matches!(data.hover_hit, Some(HitResult::RowHeaderEdit(h)) if h == dr);
+                    let edit_color = if edit_hovered {
+                        theme.sort_indicator
+                    } else {
+                        rest
+                    };
+                    paint_pencil(window, ex, icon_y, ROW_ACTION_ICON_SIZE, edit_color);
+                }
+            }
             fill_quad(window, ox, y + row_h, rhw, 1.0, theme.grid_line);
         }
     });

@@ -5,6 +5,14 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.4.0] - 2026-09-08
+
+### Added — Row-header View/Edit action icons
+- Always-visible **View** (eye) and **Edit** (pencil) icons in the row-number gutter, enabled via `SqllyDataTableBuilder::row_actions(edit_enabled, handler)`. Left-clicking an icon invokes `handler(RowAction, source_row_index, &mut Window, &mut App)`; the source index matches what the row-header context menu reports, so it stays correct under sort, filter, grouping, and windowed rows. Clicking elsewhere in the gutter still selects the row.
+- The **Edit** icon is painted (and hit-tested) only when `edit_enabled` is true, so hosts can hide it for non-editable result sets while keeping View available everywhere.
+- Icons are drawn as vector paths (like the filter funnel and sort caret), muted at rest and accented on hover — no font glyphs, so they render identically on every platform including the web build. The gutter widens automatically to fit the icons alongside the row number.
+- New public `RowAction { View, Edit }` enum; new `HitResult::RowHeaderView` / `RowHeaderEdit` variants.
+
 ## [5.3.0] - 2026-09-07
 
 ### Added — Chart tab (result-set charting beside Grid and Pivot)

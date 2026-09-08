@@ -38,6 +38,7 @@ use gpui::{
 };
 use gpui_component::resizable::{h_resizable, resizable_panel, ResizableState};
 use gpui_component::{Icon, IconName};
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// Draw order for the context-menu overlay. Deliberately far above any
@@ -61,6 +62,42 @@ pub enum GridTab {
     Pivot,
     /// The chart view (configuration sidebar + canvas plot).
     Chart,
+}
+
+/// A per-row action surfaced as an always-visible icon button in the
+/// row-number gutter. Registered on
+/// [`SqllyDataTableBuilder::row_actions`]; the grid paints the matching
+/// vector icon (an eye for `View`, a pencil for `Edit`) and reports a
+/// left-click on it to the host handler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowAction {
+    /// The "view this row" affordance (eye icon). Always painted when row
+    /// actions are enabled.
+    View,
+    /// The "edit this row" affordance (pencil icon). Painted only when the
+    /// grid was told it is editable (`edit_enabled = true`).
+    Edit,
+}
+
+/// Stored row-actions registration: the editable flag plus the host callback.
+/// Kept as an `Rc<dyn Fn>` (mirroring the pivot save-config handler) so the
+/// widget's left-mouse closure can cheaply clone the handler out of state and
+/// invoke it with a live `Window` / `App` after the state borrow is released.
+#[derive(Clone)]
+pub(crate) struct RowActionsHandle {
+    /// Whether the grid is editable. When `false`, the Edit icon is neither
+    /// painted nor hit-tested — only View is offered.
+    pub(crate) edit_enabled: bool,
+    #[allow(clippy::type_complexity)]
+    pub(crate) handler: Rc<dyn Fn(RowAction, usize, &mut Window, &mut App)>,
+}
+
+impl std::fmt::Debug for RowActionsHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RowActionsHandle")
+            .field("edit_enabled", &self.edit_enabled)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Side of the pivot grid where the control panel is rendered.
@@ -180,6 +217,7 @@ impl SqllyDataTable {
             data,
             config: GridConfig::default(),
             context_menu_provider: None,
+            row_actions: None,
             theme: None,
             theme_family: None,
             debug_bar: false,
@@ -649,6 +687,7 @@ pub struct SqllyDataTableBuilder {
     data: GridData,
     config: GridConfig,
     context_menu_provider: Option<ContextMenuProviderHandle>,
+    row_actions: Option<RowActionsHandle>,
     theme: Option<GridTheme>,
     theme_family: Option<GridThemePair>,
     debug_bar: bool,
@@ -706,6 +745,37 @@ impl SqllyDataTableBuilder {
     #[must_use]
     pub fn context_menu_provider(mut self, provider: impl ContextMenuProvider + 'static) -> Self {
         self.context_menu_provider = Some(ContextMenuProviderHandle::new(provider));
+        self
+    }
+
+    /// Add always-visible per-row action icons to the left row-number gutter.
+    ///
+    /// When registered, the grid widens the gutter and paints a small vector
+    /// "View" (eye) icon on the left of every data row — plus an "Edit"
+    /// (pencil) icon when `edit_enabled` is `true`. The row number stays
+    /// right-aligned as before. A left-click on an icon does NOT select the
+    /// row; it invokes `handler` with the tapped [`RowAction`] and the
+    /// **source row index** (post sort/filter/grouping — the same index a
+    /// row-header right-click reports via
+    /// [`crate::grid::ContextMenuTarget::RowHeader`]), so the host can look the
+    /// row up in its own data model regardless of the current display order.
+    ///
+    /// The icons are painted as platform-safe vector paths (not font/emoji
+    /// glyphs) so they render identically on every backend, including the web
+    /// build, which embeds no emoji font.
+    ///
+    /// If this is never called the gutter is unchanged: no icons, just the row
+    /// number as today.
+    #[must_use]
+    pub fn row_actions(
+        mut self,
+        edit_enabled: bool,
+        handler: impl Fn(RowAction, usize, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.row_actions = Some(RowActionsHandle {
+            edit_enabled,
+            handler: Rc::new(handler),
+        });
         self
     }
 
@@ -859,6 +929,7 @@ impl SqllyDataTableBuilder {
     pub fn build(self, cx: &mut App) -> SqllyDataTable {
         let focus = cx.focus_handle();
         let provider = self.context_menu_provider;
+        let row_actions = self.row_actions;
         let theme_override = self.theme;
         let theme_family = self.theme_family;
         let debug_bar = self.debug_bar;
@@ -874,6 +945,7 @@ impl SqllyDataTableBuilder {
         let state = cx.new(|cx| {
             let mut s = GridState::new(self.data, self.config, focus.clone());
             s.context_menu_provider = provider;
+            s.set_row_actions(row_actions);
             s.debug_bar_enabled = debug_bar;
             s.set_grouped_column(grouped_column);
             s.set_frozen_columns(frozen_columns);
@@ -1779,6 +1851,22 @@ impl SqllyDataTable {
                 MouseButton::Left,
                 move |event: &MouseDownEvent, window, cx| {
                     window.focus(&focus_left, cx);
+                    // A left-click on a per-row action icon dispatches to the
+                    // host handler and is consumed — it must NOT fall through to
+                    // row selection. Resolve the hit (and clone the handler out)
+                    // under the state borrow, then invoke it with the live
+                    // `Window` / `App` once that borrow is released.
+                    let row_action = state_mouse.update(cx, |s, _cx| {
+                        if s.busy.is_some() {
+                            return None;
+                        }
+                        let rel = state_inner::to_grid_relative(event.position, s.bounds.origin);
+                        s.row_action_dispatch(s.hit_test(rel))
+                    });
+                    if let Some((action, source_row, handler)) = row_action {
+                        handler(action, source_row, window, cx);
+                        return;
+                    }
                     state_mouse.update(cx, |s, cx| {
                         // Ignore grid input while a background task is running;
                         // the busy overlay is shown and occludes interaction.

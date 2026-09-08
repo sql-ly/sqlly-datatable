@@ -33,6 +33,7 @@ use crate::grid::context_menu::{
     ColumnContext, ContextMenuItem, ContextMenuProviderHandle, ContextMenuRequest,
     ContextMenuSelection, ContextMenuTarget, PendingCustomContextMenuAction,
 };
+use crate::grid::widget::{RowAction, RowActionsHandle};
 
 /// Inline constructor / state mutators used by the widget's render loop.
 /// Kept in its own submodule so this module remains the public surface while
@@ -178,6 +179,42 @@ pub const SCROLLBAR_SIZE: f32 = 20.0;
 /// Polling interval used to drive auto-scroll during drag.
 pub const EDGE_SCROLL_TICK_MS: u64 = 16;
 
+/// Row-number gutter width, in pixels, when no row-action icons are shown.
+pub(crate) const DEFAULT_ROW_HEADER_WIDTH: f32 = 50.0;
+/// Painted (and hit-tested) size of each row-action gutter icon.
+pub(crate) const ROW_ACTION_ICON_SIZE: f32 = 14.0;
+/// Left inset from the gutter's left edge to the View icon.
+pub(crate) const ROW_ACTION_LEFT_PAD: f32 = 4.0;
+/// Horizontal gap between the View and Edit icons.
+pub(crate) const ROW_ACTION_GAP: f32 = 2.0;
+
+/// Extra gutter width, in pixels, reserved on the LEFT for the row-action
+/// icons so they never overlap the right-aligned row number. View-only fits
+/// one icon (`+18`); an editable grid fits both View and Edit (`+34`). Paint
+/// and hit-test both derive the icon x-positions from the same constants, so
+/// widening here keeps the whole grid layout (columns, scrollbars, hit-test)
+/// consistent — every consumer already reads the single `row_header_width`.
+#[must_use]
+pub(crate) fn row_actions_gutter_extra(edit_enabled: bool) -> f32 {
+    if edit_enabled {
+        ROW_ACTION_LEFT_PAD + ROW_ACTION_ICON_SIZE + ROW_ACTION_GAP + ROW_ACTION_ICON_SIZE
+    } else {
+        ROW_ACTION_LEFT_PAD + ROW_ACTION_ICON_SIZE
+    }
+}
+
+/// Left x of the View icon, relative to the gutter's left edge.
+#[must_use]
+pub(crate) fn row_action_view_x() -> f32 {
+    ROW_ACTION_LEFT_PAD
+}
+
+/// Left x of the Edit icon, relative to the gutter's left edge.
+#[must_use]
+pub(crate) fn row_action_edit_x() -> f32 {
+    ROW_ACTION_LEFT_PAD + ROW_ACTION_ICON_SIZE + ROW_ACTION_GAP
+}
+
 /// Read-only description of one section in a grouped flat grid.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RowGroup {
@@ -298,6 +335,10 @@ pub struct GridState {
     pub pending_action: Option<(MenuAction, usize)>,
     pub(crate) pending_custom_context_menu_action: Option<PendingCustomContextMenuAction>,
     pub(crate) context_menu_provider: Option<ContextMenuProviderHandle>,
+    /// Optional per-row action icons (View / Edit) painted in the gutter.
+    /// Registered via [`crate::grid::SqllyDataTableBuilder::row_actions`].
+    /// `None` leaves the gutter unchanged (number only, default width).
+    pub(crate) row_actions: Option<RowActionsHandle>,
     pub scrollbar_drag: Option<ScrollbarAxis>,
     pub scrollbar_drag_start_offset: f32,
     pub scrollbar_drag_start_pos: f32,
@@ -774,7 +815,7 @@ impl GridState {
             bounds: Bounds::default(),
             row_height: 24.0,
             header_height: 32.0,
-            row_header_width: 50.0,
+            row_header_width: DEFAULT_ROW_HEADER_WIDTH,
             font_size: 14.0,
             char_width: crate::grid::paint::default_char_width(14.0),
             theme: GridTheme::default(),
@@ -797,6 +838,7 @@ impl GridState {
             pending_action: None,
             pending_custom_context_menu_action: None,
             context_menu_provider: None,
+            row_actions: None,
             scrollbar_drag: None,
             scrollbar_drag_start_offset: 0.0,
             scrollbar_drag_start_pos: 0.0,
@@ -1748,6 +1790,13 @@ impl GridState {
                 self.start_drag(pos);
                 self.drag_start_hit = Some(HitResult::Cell(row, col));
             }
+            HitResult::RowHeaderView(_) | HitResult::RowHeaderEdit(_) => {
+                // Row-action icon clicks are dispatched to the host handler —
+                // and consumed — by the widget's left-mouse handler before this
+                // runs, so they normally never reach selection. Handle them
+                // defensively as a no-op that leaves the selection untouched.
+                self.clear_drag();
+            }
             HitResult::Corner | HitResult::None => {
                 self.selection = Selection::None;
                 self.range_anchor = None;
@@ -1769,6 +1818,47 @@ impl GridState {
     pub(crate) fn open_context_menu(&mut self, col: usize, anchor: Point<Pixels>) {
         self.context_menu = Some(menu_mod::ContextMenu::standard(col, anchor));
         self.filter_panel = None;
+    }
+
+    /// Install (or clear) the per-row action icons and widen the row-number
+    /// gutter to fit them. Widening `row_header_width` here — rather than
+    /// computing an effective width at every call site — is what keeps the
+    /// whole grid layout (columns, scrollbars, hit-test) shifted consistently,
+    /// since every consumer already reads the single `row_header_width` field.
+    /// Idempotent: the width is reset to the default before re-applying.
+    pub(crate) fn set_row_actions(&mut self, handle: Option<RowActionsHandle>) {
+        self.row_header_width = DEFAULT_ROW_HEADER_WIDTH;
+        if let Some(h) = &handle {
+            self.row_header_width += row_actions_gutter_extra(h.edit_enabled);
+        }
+        self.row_actions = handle;
+    }
+
+    /// Resolve a hit into a row-action dispatch: the tapped [`RowAction`], the
+    /// **source** row index (mapped through the display order, matching the
+    /// row-header context-menu target), and a cheap clone of the host handler.
+    /// Returns `None` unless row actions are registered and the hit landed on
+    /// an icon (Edit is gated on `edit_enabled`). The handler is cloned out so
+    /// the caller can invoke it after releasing the `&self` borrow.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn row_action_dispatch(
+        &self,
+        hit: HitResult,
+    ) -> Option<(
+        RowAction,
+        usize,
+        std::rc::Rc<dyn Fn(RowAction, usize, &mut gpui::Window, &mut App)>,
+    )> {
+        let handle = self.row_actions.as_ref()?;
+        let (action, display_row) = match hit {
+            HitResult::RowHeaderView(dr) => (RowAction::View, dr),
+            HitResult::RowHeaderEdit(dr) if handle.edit_enabled => (RowAction::Edit, dr),
+            _ => return None,
+        };
+        let source_row = self
+            .resident_row_for_display(display_row)
+            .unwrap_or(display_row);
+        Some((action, source_row, handle.handler.clone()))
     }
 
     /// Convert a hit-test result to a context-menu target. Returns `None`
@@ -2960,6 +3050,28 @@ impl GridState {
                 if let Some(GridDisplayRow::GroupHeader { group }) = self.display_rows.get(row_idx)
                 {
                     return HitResult::GroupHeader(*group);
+                }
+                // When row actions are enabled, the left of the gutter carries
+                // the View (and, if editable, Edit) icons. Test those icon
+                // rects first — matching exactly where `paint_grid` draws them
+                // (same x offsets, same vertical centering, same size) — and
+                // fall back to `RowHeader` so a click anywhere else in the
+                // gutter still selects the row as before.
+                if let Some(handle) = &self.row_actions {
+                    let within_y = row_y - (row_idx as f32) * self.row_height;
+                    let icon_top = (self.row_height - ROW_ACTION_ICON_SIZE) * 0.5;
+                    if within_y >= icon_top && within_y <= icon_top + ROW_ACTION_ICON_SIZE {
+                        let vx = row_action_view_x();
+                        if x >= vx && x <= vx + ROW_ACTION_ICON_SIZE {
+                            return HitResult::RowHeaderView(row_idx);
+                        }
+                        if handle.edit_enabled {
+                            let ex = row_action_edit_x();
+                            if x >= ex && x <= ex + ROW_ACTION_ICON_SIZE {
+                                return HitResult::RowHeaderEdit(row_idx);
+                            }
+                        }
+                    }
                 }
                 return HitResult::RowHeader(row_idx);
             }

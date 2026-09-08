@@ -129,9 +129,9 @@ pub use filter::{ColumnFilter, FilterPredicate, NumberOp, TextOp};
 pub use grid::{
     BusyState, ColumnContext, ContextMenu, ContextMenuItem, ContextMenuProvider,
     ContextMenuRequest, ContextMenuSelection, ContextMenuTarget, FilterPanel, GridState, GridTab,
-    GridTheme, GridThemePair, HitResult, MenuAction, MenuItem, PivotSidebarPosition, RowGroup,
-    RowWindow, ScrollbarAxis, SelectedCellContext, SelectedRowContext, Selection, SortDirection,
-    SqllyDataTable, SqllyDataTableBuilder,
+    GridTheme, GridThemePair, HitResult, MenuAction, MenuItem, PivotSidebarPosition, RowAction,
+    RowGroup, RowWindow, ScrollbarAxis, SelectedCellContext, SelectedRowContext, Selection,
+    SortDirection, SqllyDataTable, SqllyDataTableBuilder,
 };
 pub use pivot::{
     AggregationFn, PivotCellContext, PivotConfig, PivotContextMenuProvider,
