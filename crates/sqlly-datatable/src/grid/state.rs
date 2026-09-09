@@ -186,7 +186,11 @@ pub(crate) const ROW_ACTION_ICON_SIZE: f32 = 14.0;
 /// Left inset from the gutter's left edge to the View icon.
 pub(crate) const ROW_ACTION_LEFT_PAD: f32 = 4.0;
 /// Horizontal gap between the View and Edit icons.
-pub(crate) const ROW_ACTION_GAP: f32 = 2.0;
+pub(crate) const ROW_ACTION_GAP: f32 = 6.0;
+/// Width reclaimed from the blank space between Edit and the row number when
+/// both actions are present. This keeps the widened icon pair balanced within
+/// the existing gutter width instead of pushing the data columns right.
+pub(crate) const ROW_ACTION_NUMBER_GAP_RECLAIM: f32 = 4.0;
 
 /// Extra gutter width, in pixels, reserved on the LEFT for the row-action
 /// icons so they never overlap the right-aligned row number. View-only fits
@@ -198,6 +202,7 @@ pub(crate) const ROW_ACTION_GAP: f32 = 2.0;
 pub(crate) fn row_actions_gutter_extra(edit_enabled: bool) -> f32 {
     if edit_enabled {
         ROW_ACTION_LEFT_PAD + ROW_ACTION_ICON_SIZE + ROW_ACTION_GAP + ROW_ACTION_ICON_SIZE
+            - ROW_ACTION_NUMBER_GAP_RECLAIM
     } else {
         ROW_ACTION_LEFT_PAD + ROW_ACTION_ICON_SIZE
     }
@@ -3993,5 +3998,12 @@ mod tests {
 
             cx.quit();
         });
+    }
+
+    #[test]
+    fn editable_row_actions_balance_icon_and_row_number_spacing() {
+        assert_eq!(ROW_ACTION_GAP, 6.0);
+        assert_eq!(row_action_edit_x() - row_action_view_x(), 20.0);
+        assert_eq!(row_actions_gutter_extra(true), 34.0);
     }
 }
