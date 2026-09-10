@@ -5,6 +5,12 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.5.0] - 2026-09-10
+
+### Added — Host control over tooltip timing and context-menu visibility
+- `set_tooltip_show_delay(Duration)` / `tooltip_show_delay()` set how long the pointer must rest before the table's own hover chips (truncated pivot chips, the sidebar's save button) appear. Defaults to gpui's 500ms, so hosts that never call it see no change; hosts with their own dwell time can now make the table agree with the rest of their UI.
+- `SqllyDataTableBuilder::context_menu_visibility(handler)` reports `true` when the grid's right-click menu appears and `false` when it goes away, however it was dismissed. The widget watches the menu once per frame and reports edges rather than announcing from each of the dozen places that clear it, so no dismissal path can forget to report and a host's suppression can never be left stuck on. Hosts use it to stand down tooltips and hover cards that would otherwise paint on top of the menu.
+
 ## [5.4.0] - 2026-09-08
 
 ### Added — Row-header View/Edit action icons

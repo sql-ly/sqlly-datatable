@@ -91,6 +91,7 @@ pub mod filter;
 pub mod format;
 pub mod grid;
 pub mod pivot;
+pub mod tooltip;
 
 // Re-exported so hosts can call `gpui_component` APIs (theme switching,
 // `Root`, other widgets) against the exact version this crate links,
@@ -133,6 +134,8 @@ pub use grid::{
     RowGroup, RowWindow, ScrollbarAxis, SelectedCellContext, SelectedRowContext, Selection,
     SortDirection, SqllyDataTable, SqllyDataTableBuilder,
 };
+pub use tooltip::{set_tooltip_show_delay, tooltip_show_delay};
+
 pub use pivot::{
     AggregationFn, PivotCellContext, PivotConfig, PivotContextMenuProvider,
     PivotContextMenuRequest, PivotFormatDialog, PivotGrid, PivotMenuItem, PivotMenuTarget,

@@ -33,7 +33,7 @@ use crate::grid::context_menu::{
     ColumnContext, ContextMenuItem, ContextMenuProviderHandle, ContextMenuRequest,
     ContextMenuSelection, ContextMenuTarget, PendingCustomContextMenuAction,
 };
-use crate::grid::widget::{RowAction, RowActionsHandle};
+use crate::grid::widget::{ContextMenuVisibilityHandler, RowAction, RowActionsHandle};
 
 /// Inline constructor / state mutators used by the widget's render loop.
 /// Kept in its own submodule so this module remains the public surface while
@@ -340,6 +340,12 @@ pub struct GridState {
     pub pending_action: Option<(MenuAction, usize)>,
     pub(crate) pending_custom_context_menu_action: Option<PendingCustomContextMenuAction>,
     pub(crate) context_menu_provider: Option<ContextMenuProviderHandle>,
+    /// Host callback for context-menu open/close, registered via
+    /// [`crate::grid::SqllyDataTableBuilder::context_menu_visibility`].
+    pub(crate) context_menu_visibility: Option<ContextMenuVisibilityHandler>,
+    /// What the widget last reported to `context_menu_visibility`, so it can
+    /// report edges rather than every frame.
+    pub(crate) context_menu_reported_visible: bool,
     /// Optional per-row action icons (View / Edit) painted in the gutter.
     /// Registered via [`crate::grid::SqllyDataTableBuilder::row_actions`].
     /// `None` leaves the gutter unchanged (number only, default width).
@@ -843,6 +849,8 @@ impl GridState {
             pending_action: None,
             pending_custom_context_menu_action: None,
             context_menu_provider: None,
+            context_menu_visibility: None,
+            context_menu_reported_visible: false,
             row_actions: None,
             scrollbar_drag: None,
             scrollbar_drag_start_offset: 0.0,

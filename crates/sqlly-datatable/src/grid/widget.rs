@@ -92,6 +92,33 @@ pub(crate) struct RowActionsHandle {
     pub(crate) handler: Rc<dyn Fn(RowAction, usize, &mut Window, &mut App)>,
 }
 
+/// Stored context-menu visibility registration: a host callback invoked with
+/// `true` when the grid's right-click menu appears and `false` when it goes
+/// away. Kept as an `Rc<dyn Fn>` so the widget's render can clone it out of
+/// state and call it once the state borrow is released.
+///
+/// The grid clears `context_menu` from a dozen places (escape, a menu action,
+/// a click elsewhere, opening the filter panel), so rather than notify from
+/// each one the widget watches the field and reports edges. That also means a
+/// host can never miss a close.
+#[derive(Clone)]
+pub(crate) struct ContextMenuVisibilityHandler(
+    #[allow(clippy::type_complexity)] Rc<dyn Fn(bool, &mut App)>,
+);
+
+impl ContextMenuVisibilityHandler {
+    fn call(&self, visible: bool, cx: &mut App) {
+        (self.0)(visible, cx);
+    }
+}
+
+impl std::fmt::Debug for ContextMenuVisibilityHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContextMenuVisibilityHandler")
+            .finish_non_exhaustive()
+    }
+}
+
 impl std::fmt::Debug for RowActionsHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RowActionsHandle")
@@ -218,6 +245,7 @@ impl SqllyDataTable {
             config: GridConfig::default(),
             context_menu_provider: None,
             row_actions: None,
+            context_menu_visibility: None,
             theme: None,
             theme_family: None,
             debug_bar: false,
@@ -688,6 +716,7 @@ pub struct SqllyDataTableBuilder {
     config: GridConfig,
     context_menu_provider: Option<ContextMenuProviderHandle>,
     row_actions: Option<RowActionsHandle>,
+    context_menu_visibility: Option<ContextMenuVisibilityHandler>,
     theme: Option<GridTheme>,
     theme_family: Option<GridThemePair>,
     debug_bar: bool,
@@ -776,6 +805,18 @@ impl SqllyDataTableBuilder {
             edit_enabled,
             handler: Rc::new(handler),
         });
+        self
+    }
+
+    /// Be told when the grid's right-click menu opens and closes.
+    ///
+    /// `handler(true, cx)` fires on the frame the menu appears, `handler(false,
+    /// cx)` on the frame it goes away — however it was dismissed. Hosts use it
+    /// to stand down hover UI of their own (tooltips, hover cards) that would
+    /// otherwise paint on top of the menu.
+    #[must_use]
+    pub fn context_menu_visibility(mut self, handler: impl Fn(bool, &mut App) + 'static) -> Self {
+        self.context_menu_visibility = Some(ContextMenuVisibilityHandler(Rc::new(handler)));
         self
     }
 
@@ -930,6 +971,7 @@ impl SqllyDataTableBuilder {
         let focus = cx.focus_handle();
         let provider = self.context_menu_provider;
         let row_actions = self.row_actions;
+        let context_menu_visibility = self.context_menu_visibility;
         let theme_override = self.theme;
         let theme_family = self.theme_family;
         let debug_bar = self.debug_bar;
@@ -946,6 +988,7 @@ impl SqllyDataTableBuilder {
             let mut s = GridState::new(self.data, self.config, focus.clone());
             s.context_menu_provider = provider;
             s.set_row_actions(row_actions);
+            s.context_menu_visibility = context_menu_visibility;
             s.debug_bar_enabled = debug_bar;
             s.set_grouped_column(grouped_column);
             s.set_frozen_columns(frozen_columns);
@@ -1011,6 +1054,34 @@ impl Focusable for SqllyDataTable {
     }
 }
 
+impl SqllyDataTable {
+    /// Tell the host when the right-click menu appears or goes away.
+    ///
+    /// Watched here, once per frame, rather than announced from the dozen
+    /// places that clear `context_menu` — escape, a chosen action, a click
+    /// elsewhere, opening the filter panel — so no dismissal path can forget to
+    /// report, and a host's suppression can never be left stuck on.
+    fn report_context_menu_visibility(&mut self, cx: &mut Context<Self>) {
+        let (visible, reported, handler) = {
+            let state = self.state.read(cx);
+            (
+                state.context_menu.is_some(),
+                state.context_menu_reported_visible,
+                state.context_menu_visibility.clone(),
+            )
+        };
+        if visible == reported {
+            return;
+        }
+        self.state.update(cx, |s, _cx| {
+            s.context_menu_reported_visible = visible;
+        });
+        if let Some(handler) = handler {
+            handler.call(visible, cx);
+        }
+    }
+}
+
 impl Render for SqllyDataTable {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         // Follow the OS light/dark appearance. An observer swaps the theme
@@ -1048,6 +1119,8 @@ impl Render for SqllyDataTable {
                     }));
             }
         }
+
+        self.report_context_menu_visibility(cx);
 
         // Keep the pivot's theme in lockstep with the grid theme (which may
         // have just changed via the appearance observer), and its sidebar

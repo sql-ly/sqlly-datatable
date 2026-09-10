@@ -364,15 +364,17 @@ impl PivotSidebar {
             let tip_bg = theme.menu_bg;
             let tip_fg = theme.menu_fg;
             let tip_border = theme.grid_line;
-            chip = chip.tooltip(move |_window, cx| {
-                cx.new(|_| ChipTooltip {
-                    label: tip_label.clone(),
-                    bg: tip_bg,
-                    fg: tip_fg,
-                    border: tip_border,
-                })
-                .into()
-            });
+            chip = chip
+                .tooltip_show_delay(crate::tooltip::tooltip_show_delay())
+                .tooltip(move |_window, cx| {
+                    cx.new(|_| ChipTooltip {
+                        label: tip_label.clone(),
+                        bg: tip_bg,
+                        fg: tip_fg,
+                        border: tip_border,
+                    })
+                    .into()
+                });
         }
 
         if let Some(marker) = marker {
@@ -689,15 +691,17 @@ impl PivotSidebar {
             let tip_bg = theme.menu_bg;
             let tip_fg = theme.menu_fg;
             let tip_border = theme.grid_line;
-            chip = chip.tooltip(move |_window, cx| {
-                cx.new(|_| ChipTooltip {
-                    label: tip_label.clone(),
-                    bg: tip_bg,
-                    fg: tip_fg,
-                    border: tip_border,
-                })
-                .into()
-            });
+            chip = chip
+                .tooltip_show_delay(crate::tooltip::tooltip_show_delay())
+                .tooltip(move |_window, cx| {
+                    cx.new(|_| ChipTooltip {
+                        label: tip_label.clone(),
+                        bg: tip_bg,
+                        fg: tip_fg,
+                        border: tip_border,
+                    })
+                    .into()
+                });
         }
 
         let state_dialog = state.clone();
@@ -1465,6 +1469,7 @@ impl Render for PivotSidebar {
                 .cursor_pointer()
                 .hover(move |style| style.bg(hover_bg))
                 .child(disk_icon(icon_color))
+                .tooltip_show_delay(crate::tooltip::tooltip_show_delay())
                 .tooltip(move |_window, cx| {
                     cx.new(|_| ChipTooltip {
                         label: "Save configuration".into(),
