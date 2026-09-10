@@ -5,6 +5,11 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.5.1] - 2026-09-10
+
+### Changed — Row action gutter spacing
+- Widened the gap between the View and Edit icons from 2px to 6px and reclaimed 4px of the blank space between Edit and the row number, so the icon pair reads as two distinct targets while the gutter stays the same overall width and the data columns don't shift right.
+
 ## [5.5.0] - 2026-09-10
 
 ### Added — Host control over tooltip timing and context-menu visibility
