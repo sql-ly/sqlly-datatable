@@ -19,7 +19,13 @@ use gpui::{
     TouchPhase,
 };
 use std::collections::{HashMap, HashSet};
+// The wall clock: `std::time::Instant` panics on wasm32-unknown-unknown, so
+// the web build swaps in `web_time` (same API) — mirroring scroll_physics.
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 // Pull selection / menu types into scope unqualified for this module's impl.
 use crate::grid::menu as menu_mod;
@@ -332,6 +338,13 @@ pub struct GridState {
     pub click_pos: Option<Point<Pixels>>,
     pub click_hit: Option<HitResult>,
     pub hover_hit: Option<HitResult>,
+    /// Header hover dwell: the hovered header's source column index and when
+    /// the pointer began resting on it. Drives the header tooltip overlay
+    /// once [`crate::tooltip::tooltip_show_delay`] elapses.
+    pub header_hover: Option<(usize, Instant)>,
+    /// Single-loop guard for the header-tooltip dwell timer (same pattern as
+    /// `edge_scroll_active`).
+    pub header_tooltip_timer_active: bool,
     pub resizing_col: Option<usize>,
     pub resize_start_x: f32,
     pub resize_start_width: f32,
@@ -841,6 +854,8 @@ impl GridState {
             click_pos: None,
             click_hit: None,
             hover_hit: None,
+            header_hover: None,
+            header_tooltip_timer_active: false,
             resizing_col: None,
             resize_start_x: 0.0,
             resize_start_width: 0.0,
@@ -2552,10 +2567,56 @@ impl GridState {
             return;
         }
         self.hover_hit = Some(self.hit_test(pos));
+        // Track how long the pointer has rested on one header: entering a
+        // header starts the dwell clock, moving to another header restarts
+        // it, leaving the header row clears it.
+        let header_col = match self.hover_hit {
+            Some(HitResult::ColumnHeader(col) | HitResult::SortButton(col)) => Some(col),
+            _ => None,
+        };
+        match (header_col, self.header_hover) {
+            (Some(col), Some((prev, _))) if prev == col => {}
+            (Some(col), _) => self.header_hover = Some((col, scroll_now())),
+            (None, _) => self.header_hover = None,
+        }
         if self.drag_start.is_none() {
             return;
         }
         self.update_drag();
+    }
+
+    /// The host-configured header tooltip for `col`, when non-empty.
+    fn header_tooltip_text(&self, col: usize) -> Option<&str> {
+        let text = self
+            .config
+            .column_overrides
+            .get(col)?
+            .header_tooltip
+            .as_deref()?;
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// The hovered header's tooltip, once the pointer has rested on it for
+    /// the process-wide tooltip delay and the host configured text for that
+    /// column. `None` while the dwell clock is still running.
+    pub fn header_tooltip_ready(&self) -> Option<(usize, &str)> {
+        let (col, since) = self.header_hover?;
+        if since.elapsed() < crate::tooltip::tooltip_show_delay() {
+            return None;
+        }
+        Some((col, self.header_tooltip_text(col)?))
+    }
+
+    /// Whether the header-tooltip dwell timer has work: a header with
+    /// configured tooltip text is hovered but the delay has not elapsed yet.
+    pub fn header_tooltip_pending(&self) -> bool {
+        match self.header_hover {
+            Some((col, since)) => {
+                self.header_tooltip_text(col).is_some()
+                    && since.elapsed() < crate::tooltip::tooltip_show_delay()
+            }
+            None => false,
+        }
     }
 
     pub fn handle_scroll_drag(&mut self) {

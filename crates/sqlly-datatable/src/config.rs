@@ -226,6 +226,12 @@ pub struct ColumnOverride {
     /// Optional per-cell display labels keyed by the formatted raw cell text.
     pub value_labels: Option<Arc<HashMap<String, String>>>,
     pub label_mode: Option<LabelMode>,
+    /// Optional tooltip shown after the pointer rests on this column's
+    /// header for the process-wide tooltip delay (see
+    /// [`crate::tooltip::set_tooltip_show_delay`]). Hosts use it for
+    /// column-level facts the header itself cannot carry — e.g. which source
+    /// column produced a result column.
+    pub header_tooltip: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

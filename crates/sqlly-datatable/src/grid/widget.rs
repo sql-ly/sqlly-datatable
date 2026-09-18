@@ -1869,6 +1869,36 @@ impl SqllyDataTable {
             .detach();
         }
 
+        // Header-tooltip dwell timer: same guarded single-loop pattern as the
+        // two timers above. While a hovered header with tooltip text waits
+        // out the dwell delay, tick until it is ready (or the hover moved
+        // off), then notify once so the overlay appears.
+        if self.state.read(cx).header_tooltip_pending()
+            && !self.state.read(cx).header_tooltip_timer_active
+        {
+            self.state
+                .update(cx, |s, _cx| s.header_tooltip_timer_active = true);
+            let state_tt = self.state.clone();
+            cx.spawn(async move |_weak, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(50))
+                        .await;
+                    let pending = cx.update(|cx| state_tt.read(cx).header_tooltip_pending());
+                    if !pending {
+                        break;
+                    }
+                }
+                cx.update(|cx| {
+                    state_tt.update(cx, |s, cx| {
+                        s.header_tooltip_timer_active = false;
+                        cx.notify();
+                    })
+                });
+            })
+            .detach();
+        }
+
         div()
             .flex()
             .flex_col()
@@ -1919,6 +1949,7 @@ impl SqllyDataTable {
             }))
             .children(render_context_menu_overlay(&self.state, cx))
             .children(render_filter_panel_overlay(&self.state, cx))
+            .children(render_header_tooltip_overlay(&self.state, cx))
             .children(render_busy_overlay(&self.state, cx))
             .on_mouse_down(
                 MouseButton::Left,
@@ -2638,6 +2669,44 @@ fn render_filter_panel_overlay(
     )
     .with_priority(CONTEXT_MENU_PRIORITY);
 
+    Some(overlay)
+}
+
+/// Build the header-tooltip overlay: a small `deferred` + `anchored` card
+/// just below the header row at the pointer's x, shown once the pointer has
+/// rested on a header for the process-wide tooltip delay and the host
+/// configured `ColumnOverride::header_tooltip` text for that column. Hidden
+/// while a context menu, filter popover, or busy scrim owns the surface.
+fn render_header_tooltip_overlay(
+    state: &Entity<GridState>,
+    cx: &mut Context<SqllyDataTable>,
+) -> Option<impl IntoElement> {
+    let s = state.read(cx);
+    if s.context_menu.is_some() || s.filter_panel.is_some() || s.busy.is_some() {
+        return None;
+    }
+    let (_col, text) = s.header_tooltip_ready()?;
+    let text = text.to_string();
+    let theme = s.theme.clone();
+    let pos = s.last_mouse_pos?;
+    let x = f32::from(pos.x) + 6.0;
+    let y = f32::from(s.bounds.origin.y) + s.header_height + 4.0;
+
+    let overlay = deferred(
+        anchored().position(point(px(x), px(y))).child(
+            div()
+                .px(px(8.0))
+                .py(px(5.0))
+                .max_w(px(420.0))
+                .rounded(px(4.0))
+                .bg(theme.menu_bg)
+                .border_1()
+                .border_color(theme.grid_line)
+                .text_color(theme.menu_fg)
+                .text_size(px(12.0))
+                .child(text),
+        ),
+    );
     Some(overlay)
 }
 
