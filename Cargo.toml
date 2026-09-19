@@ -6,7 +6,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "5.6.0"
+version = "6.0.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.96.0"
@@ -25,38 +25,21 @@ expect_used = "warn"
 # nitpicks via `cargo clippy --workspace --all-targets -- -W clippy::pedantic`
 # when cleaning up an area, but don't block the build on it.
 
-# Registry releases: `gpui` 0.2 and `gpui-component` 0.5 now ship compatible
-# crates.io versions (the 4.0.x git pins resolved to gpui 0.2.2 /
-# gpui-component 0.5.x, i.e. the same lines), which restores `cargo package`
-# / `cargo publish` — crates.io rejects git dependencies. The registry `gpui`
-# bundles the OS windowing backends directly (`gpui::Application`), so the
-# zed-main-only `gpui_platform` shim is gone; it has no registry release. The
-# sample's experimental web (wasm) build went with it — gpui's web backend
-# exists only on zed's git `main`. Reinstate from git history if/when a gpui
-# release ships the web backend.
+# GPUI Kit (the renamed/reorganized longbridge/gpui-component distribution):
+# `gpui-component` 0.6.x on crates.io builds against `gpui-pre` 0.3.x — a
+# registry publication of the zed git `main` gpui API (the API this source
+# was already ported to: Anchor, focus(window, cx), TextAlign paint). The
+# rename trick (`gpui = { package = "gpui-pre" }`) keeps our code importing
+# `gpui::…` unchanged while the whole graph unifies on gpui-pre. Everything
+# now resolves from the registry — no [patch.crates-io] section — which also
+# restores `cargo package` / `cargo publish` for the member crate. Icon SVGs
+# moved from the retired `gpui-component-assets` (last release 0.5.1) to
+# `gpui-kit-assets`.
 [workspace.dependencies]
-gpui = "0.2"
-gpui-component = "0.5"
+gpui = { package = "gpui-pre", version = "0.3.5" }
+gpui-component = "0.6.4"
 # Lucide icon SVGs for `gpui_component::Icon`, embedded in the binary.
-gpui-component-assets = "0.5"
-
-# The source is ported to the zed git gpui API (Anchor, focus(window, cx),
-# TextAlign paint — see the v4.1.1 port commit), which registry gpui 0.2.2
-# does not ship yet. Mirror the SQLLY workspace's patches so this repo builds
-# and tests standalone; deliberately rev-less because gpui-component's own
-# gpui dependency is declared without a rev and patch sources must be
-# textually identical to unify — the build is pinned by Cargo.lock instead
-# (gpui-component main plus the zed rev its own lockfile is tested against;
-# the SQLLY client workspace must bump its lockfile to at least these revs,
-# since `ResizableState::resize_panel` only exists upstream from here on).
-# This root manifest is not
-# packaged, so `cargo publish` of the member crate is unaffected; a crates.io
-# release stays blocked until gpui ships the git API in a registry version.
-[patch.crates-io]
-# `version` disambiguates: the zed tree also carries a 0.0.0 `gpui` fixture.
-gpui = { git = "https://github.com/zed-industries/zed", version = "=0.2.2" }
-gpui-component = { git = "https://github.com/longbridge/gpui-component" }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
+gpui-kit-assets = "0.6.4"
 
 [profile.dev]
 opt-level = 1

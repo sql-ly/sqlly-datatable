@@ -15,13 +15,13 @@ Given that this may or may not be total AI slop and my name is attached to it, d
 
 ## What
 
-A configurable data grid component for GPUI, built for the needs of [sqlly.app](https://sqlly.app). The library targets Rust 1.96+ and links against the crates.io releases of [`gpui`](https://crates.io/crates/gpui) and [`gpui-component`](https://crates.io/crates/gpui-component) (whose resizable panels power the pivot sidebar split, and whose theme system the grid can mirror — see Theming). Everything comes from the registry, so consuming the crate is one line:
+A configurable data grid component for GPUI, built for the needs of [sqlly.app](https://sqlly.app). The library targets Rust 1.96+ and links against the crates.io releases of GPUI Kit: [`gpui-component`](https://crates.io/crates/gpui-component) 0.6 (whose resizable panels power the pivot sidebar split, and whose theme system the grid can mirror — see Theming) and the [`gpui-pre`](https://crates.io/crates/gpui-pre) publication of the current gpui API, consumed under the name `gpui` via a package rename. Everything comes from the registry:
 
 ```toml
 [dependencies]
-gpui = "0.2"
-gpui-component = "0.5"
-sqlly-datatable = "4.1"
+gpui = { package = "gpui-pre", version = "0.3" }
+gpui-component = "0.6"
+sqlly-datatable = "6.0"
 ```
 
 Call `sqlly_datatable::init(cx)` once at startup (it forwards to `gpui_component::init`, installing the toolkit theme the embedded widgets read). Hosts that already initialize `gpui-component` themselves can skip it.

@@ -101,13 +101,13 @@ pub use gpui_component;
 // renders (chevrons, close buttons, panel toggles, checkmarks):
 //
 // ```no_run
-// gpui::Application::new().with_assets(sqlly_datatable::gpui_component_assets::Assets)
+// gpui::Application::new().with_assets(sqlly_datatable::gpui_kit_assets::Assets)
 // # ;
 // ```
 //
 // Without an asset source providing `icons/*.svg`, those icons render empty
 // (with an error logged per icon).
-pub use gpui_component_assets;
+pub use gpui_kit_assets;
 
 pub use chart::{
     chart_svg, ChartAggregate, ChartCanvas, ChartConfig, ChartError, ChartKind, ChartOrder,

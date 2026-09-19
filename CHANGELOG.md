@@ -5,6 +5,35 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.0.0] - 2026-09-19
+
+### Changed
+- **Migrated to GPUI Kit (registry-only dependencies).** The toolkit line
+  moved from the git-patched gpui 0.2.2 / gpui-component 0.5.2 pins to the
+  crates.io releases of the reorganized distribution: `gpui-component` 0.6.4
+  plus `gpui-pre` 0.3.5 — the registry publication of the current gpui API,
+  consumed under the name `gpui` via a package rename. Icon SVGs now come
+  from `gpui-kit-assets` (re-exported as `sqlly_datatable::gpui_kit_assets`)
+  instead of the retired `gpui-component-assets`. This is the breaking
+  change: consumers must link the same `gpui-pre`-based graph (declare
+  `gpui = { package = "gpui-pre", version = "0.3" }` and `gpui-component =
+  "0.6"`); a crate still on registry `gpui` 0.2 or the zed/longbridge git
+  patches will not unify. The `[patch.crates-io]` section is gone — every
+  dependency resolves from the registry, which also restores `cargo package`
+  / `cargo publish` for this crate. No grid API or behavior changes; all 339
+  tests pass unchanged.
+- The sample's platform facade moved from the zed git `gpui_platform` shim to
+  the registry `gpui-pre-platform` 0.3.5 (same `application()` entry point,
+  same x11/wayland/font-kit/runtime_shaders features).
+
+## [5.6.0] - 2026-09-18
+
+### Added — Per-column header tooltips
+- Hosts set `ColumnOverride::header_tooltip`; the grid tracks how long the
+  pointer rests on a header, waits out the process-wide tooltip delay, and
+  shows the text as a deferred anchored card under the header. Used by the
+  app to show a result column's source-column provenance.
+
 ## [5.5.1] - 2026-09-10
 
 ### Changed — Row action gutter spacing

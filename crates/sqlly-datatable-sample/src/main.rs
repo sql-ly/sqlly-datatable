@@ -7,6 +7,6 @@ fn main() {
     // zed git tree splits them into per-platform crates behind this facade.
     gpui_platform::application()
         // Lucide icon SVGs for the grid's chrome (embedded in the binary).
-        .with_assets(gpui_component_assets::Assets)
+        .with_assets(gpui_kit_assets::Assets)
         .run(sqlly_datatable_sample::init_and_open);
 }
