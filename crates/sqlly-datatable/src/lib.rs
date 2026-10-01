@@ -88,6 +88,7 @@ pub mod conditional;
 pub mod config;
 pub mod data;
 pub mod filter;
+pub mod font;
 pub mod format;
 pub mod grid;
 pub mod pivot;
@@ -127,6 +128,7 @@ pub use data::{
     compare_cells, sample_data, CellValue, Column, ColumnKind, GridData, GridDataError,
 };
 pub use filter::{ColumnFilter, FilterPredicate, NumberOp, TextOp};
+pub use font::{grid_font_family, set_grid_font_family};
 pub use grid::{
     BusyState, ColumnContext, ContextMenu, ContextMenuItem, ContextMenuProvider,
     ContextMenuRequest, ContextMenuSelection, ContextMenuTarget, FilterPanel, GridState, GridTab,

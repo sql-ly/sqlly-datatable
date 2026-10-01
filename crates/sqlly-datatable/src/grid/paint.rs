@@ -28,20 +28,22 @@ const fn hsla_const(h: f32, s: f32, l: f32, a: f32) -> Hsla {
     Hsla { h, s, l, a }
 }
 
-/// The monospace face used for all canvas-painted text (cells, headers,
-/// pivot, status bar). The generic `"monospace"` request resolves to a
-/// single-face family on macOS, which silently drops the bold and italic
-/// variants the painters ask for — so name a real family per platform and
-/// carry the others as fallbacks.
+/// The face used for all canvas-painted text (cells, headers, pivot, status
+/// bar): the host's [`crate::set_grid_font_family`] choice, else the platform
+/// monospace. The generic `"monospace"` request resolves to a single-face
+/// family on macOS, which silently drops the bold and italic variants the
+/// painters ask for — so name a real family per platform and carry the others
+/// as fallbacks.
 pub(crate) fn grid_font() -> gpui::Font {
     #[cfg(target_os = "macos")]
-    let family = "Menlo";
+    let platform = "Menlo";
     #[cfg(target_os = "windows")]
-    let family = "Consolas";
+    let platform = "Consolas";
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let family = "DejaVu Sans Mono";
+    let platform = "DejaVu Sans Mono";
+    let family = crate::font::grid_font_family().unwrap_or_else(|| platform.into());
     gpui::Font {
-        family: family.into(),
+        family,
         features: gpui::FontFeatures::default(),
         weight: gpui::FontWeight::NORMAL,
         style: gpui::FontStyle::Normal,
