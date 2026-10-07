@@ -6,9 +6,9 @@
 //! clipboard-copy; tests below document the public behavior.
 
 use crate::config::{
-    DateFormat, LabelMode, NumberFormat, RelativeDateFormat, RelativeUnit, ReplacementRule,
-    ReplacementTiming, ResolvedColumnFormat, StringFormat, TextAlignment, TextCase,
-    TruncationBehavior,
+    DateFormat, LabelMode, MetricReduction, NumberFormat, RelativeDateFormat, RelativeUnit,
+    ReplacementRule, ReplacementTiming, ResolvedColumnFormat, StringFormat, TextAlignment,
+    TextCase, TruncationBehavior,
 };
 use crate::data::{CellValue, ColumnKind};
 
@@ -64,21 +64,21 @@ pub fn format_cell(value: &CellValue, fmt: &ResolvedColumnFormat) -> (String, bo
 #[must_use]
 pub fn format_integer(value: i64, fmt: &NumberFormat) -> String {
     if fmt.decimals == 0 {
-        let raw = value.unsigned_abs().to_string();
-        let with_sep = if fmt.thousands_separator {
-            add_thousands_separator(&raw)
-        } else {
-            raw
-        };
-        if value < 0 {
-            if fmt.negative_parentheses {
-                format!("({with_sep})")
-            } else {
-                format!("-{with_sep}")
-            }
-        } else {
-            with_sep
-        }
+        let magnitude = value.unsigned_abs();
+        let body = fmt
+            .metric
+            .as_ref()
+            .filter(|metric| magnitude >= metric.threshold)
+            .and_then(|metric| metric_body(magnitude as f64, metric, fmt))
+            .unwrap_or_else(|| {
+                let raw = magnitude.to_string();
+                if fmt.thousands_separator {
+                    group_digits(&raw, fmt.thousands_char)
+                } else {
+                    raw
+                }
+            });
+        with_sign(body, value < 0, fmt)
     } else {
         // Decimals require a fractional part; route through `format_number`.
         // We accept the f64 round-trip because the user explicitly asked for
@@ -96,43 +96,90 @@ fn format_integer_as_decimal(value: i64, fmt: &NumberFormat) -> String {
 }
 
 /// Format a `f64` against a [`NumberFormat`]. Negative formatting
-/// (parentheses vs leading minus) and thousands separators are driven by the
-/// format options.
+/// (parentheses vs leading minus), thousands grouping and its character, the
+/// decimal character, and metric reduction are driven by the format options.
 #[must_use]
 pub fn format_number(value: f64, fmt: &NumberFormat) -> String {
     let abs = value.abs();
-    let num_str = format!("{abs:.*}", fmt.decimals);
-    let with_sep = if fmt.thousands_separator {
-        add_thousands_separator(&num_str)
+    let reduced = fmt
+        .metric
+        .as_ref()
+        .filter(|metric| abs.is_finite() && abs >= metric.threshold as f64)
+        .and_then(|metric| metric_body(abs, metric, fmt));
+    let body = reduced.unwrap_or_else(|| {
+        let num_str = format!("{abs:.*}", fmt.decimals);
+        localize_digits(&num_str, fmt)
+    });
+    with_sign(body, value < 0.0, fmt)
+}
+
+fn with_sign(body: String, negative: bool, fmt: &NumberFormat) -> String {
+    if !negative {
+        body
+    } else if fmt.negative_parentheses {
+        format!("({body})")
     } else {
-        num_str
-    };
-    if value < 0.0 {
-        if fmt.negative_parentheses {
-            format!("({with_sep})")
-        } else {
-            format!("-{with_sep}")
-        }
-    } else {
-        with_sep
+        format!("-{body}")
     }
 }
 
-fn add_thousands_separator(s: &str) -> String {
-    let (int_part, dec_part) = match s.split_once('.') {
-        Some((i, d)) => (i, format!(".{d}")),
-        None => (s, String::new()),
+/// Re-spell a plain `1234567.89` digit string with the format's grouping and
+/// decimal characters.
+fn localize_digits(plain: &str, fmt: &NumberFormat) -> String {
+    let (int_part, frac_part) = match plain.split_once('.') {
+        Some((i, d)) => (i, Some(d)),
+        None => (plain, None),
     };
-    let chars: Vec<char> = int_part.chars().collect();
-    let mut result = String::new();
-    let len = chars.len();
-    for (i, c) in chars.iter().enumerate() {
-        if i > 0 && (len - i).is_multiple_of(3) {
-            result.push(',');
-        }
-        result.push(*c);
+    let mut out = if fmt.thousands_separator {
+        group_digits(int_part, fmt.thousands_char)
+    } else {
+        int_part.to_owned()
+    };
+    if let Some(frac) = frac_part {
+        out.push(fmt.decimal_char);
+        out.push_str(frac);
     }
-    format!("{result}{dec_part}")
+    out
+}
+
+/// The unsigned body of a metric-reduced magnitude (`1.50K`), or `None`
+/// when the magnitude is under 1000 and so has no suffix to take.
+fn metric_body(abs: f64, metric: &MetricReduction, fmt: &NumberFormat) -> Option<String> {
+    let mut scaled = abs;
+    let mut unit = 0usize;
+    while scaled >= 1000.0 && unit < metric.labels.len() {
+        scaled /= 1000.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        return None;
+    }
+    let label = metric.labels[unit - 1].as_str();
+    let digits = if metric.decimals > 0 {
+        format!("{scaled:.*}", metric.decimals)
+    } else {
+        let whole = scaled.floor();
+        let step_up = f64::from(metric.step_up_permille) / 1000.0;
+        let rounded = if scaled - whole >= step_up {
+            whole + 1.0
+        } else {
+            whole
+        };
+        format!("{rounded:.0}")
+    };
+    Some(format!("{}{label}", localize_digits(&digits, fmt)))
+}
+
+fn group_digits(int_part: &str, sep: char) -> String {
+    let len = int_part.chars().count();
+    let mut result = String::with_capacity(int_part.len() + len / 3);
+    for (i, c) in int_part.chars().enumerate() {
+        if i > 0 && (len - i).is_multiple_of(3) {
+            result.push(sep);
+        }
+        result.push(c);
+    }
+    result
 }
 
 /// Format a Unix timestamp (seconds). When `fmt.relative` is set, the result
@@ -467,7 +514,7 @@ pub fn value_label_paint(raw: &str, fmt: &ResolvedColumnFormat) -> ValueLabelPai
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{BooleanFormat, StringFormat};
+    use crate::config::{BooleanFormat, MetricLabel, StringFormat};
     use crate::data::{Column, ColumnKind};
     use std::cell::Cell;
 
@@ -559,6 +606,187 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn chars_fmt(decimals: usize, thousands_char: char, decimal_char: char) -> NumberFormat {
+        NumberFormat {
+            decimals,
+            thousands_char,
+            decimal_char,
+            ..NumberFormat::default()
+        }
+    }
+
+    #[test]
+    fn format_number_uses_configured_grouping_and_decimal_chars() {
+        assert_eq!(
+            format_number(1_234_567.891, &chars_fmt(2, '.', ',')),
+            "1.234.567,89"
+        );
+        assert_eq!(
+            format_number(1_234_567.891, &chars_fmt(2, ' ', ',')),
+            "1 234 567,89"
+        );
+        assert_eq!(
+            format_number(-1_234_567.891, &chars_fmt(3, '\'', '.')),
+            "-1'234'567.891"
+        );
+        let ungrouped = NumberFormat {
+            thousands_separator: false,
+            ..chars_fmt(2, '.', ',')
+        };
+        assert_eq!(format_number(1_234_567.891, &ungrouped), "1234567,89");
+        // No fraction digits: the decimal character never appears.
+        assert_eq!(format_number(1_234.5, &chars_fmt(0, '.', ',')), "1.234");
+    }
+
+    #[test]
+    fn format_integer_uses_configured_grouping_char() {
+        let fmt = NumberFormat {
+            decimals: 0,
+            thousands_char: '.',
+            ..NumberFormat::default()
+        };
+        assert_eq!(format_integer(1_234_567, &fmt), "1.234.567");
+        assert_eq!(format_integer(-1_234_567, &fmt), "-1.234.567");
+    }
+
+    fn metric_fmt(decimals: usize, metric: MetricReduction) -> NumberFormat {
+        NumberFormat {
+            decimals,
+            metric: Some(metric),
+            ..NumberFormat::default()
+        }
+    }
+
+    #[test]
+    fn format_integer_metric_reduction() {
+        let fmt = metric_fmt(0, MetricReduction::default());
+        assert_eq!(format_integer(999, &fmt), "999");
+        assert_eq!(format_integer(1_000, &fmt), "1.00K");
+        assert_eq!(format_integer(1_500, &fmt), "1.50K");
+        assert_eq!(format_integer(1_234_567, &fmt), "1.23M");
+        assert_eq!(format_integer(1_500_000_000, &fmt), "1.50G");
+        assert_eq!(format_integer(2_000_000_000_000, &fmt), "2.00T");
+        assert_eq!(format_integer(3_000_000_000_000_000, &fmt), "3.00P");
+        // Past P there is no larger suffix: the P value keeps growing.
+        assert_eq!(format_integer(i64::MAX, &fmt), "9,223.37P");
+        assert_eq!(format_integer(-1_500, &fmt), "-1.50K");
+        let parens = NumberFormat {
+            negative_parentheses: true,
+            ..fmt
+        };
+        assert_eq!(format_integer(-1_500, &parens), "(1.50K)");
+        assert_eq!(format_integer(i64::MIN, &parens), "(9,223.37P)");
+    }
+
+    #[test]
+    fn metric_reduction_rounds_whole_units_at_the_step_up_ratio() {
+        let half = metric_fmt(
+            0,
+            MetricReduction {
+                decimals: 0,
+                ..MetricReduction::default()
+            },
+        );
+        assert_eq!(format_integer(1_499, &half), "1K");
+        assert_eq!(format_integer(1_500, &half), "2K");
+        let never = metric_fmt(
+            0,
+            MetricReduction {
+                decimals: 0,
+                step_up_permille: 1000,
+                ..MetricReduction::default()
+            },
+        );
+        assert_eq!(format_integer(1_999, &never), "1K");
+    }
+
+    #[test]
+    fn metric_threshold_is_the_trigger_not_the_divisor() {
+        let fmt = metric_fmt(
+            0,
+            MetricReduction {
+                threshold: 10_000,
+                ..MetricReduction::default()
+            },
+        );
+        assert_eq!(format_integer(5_000, &fmt), "5,000");
+        assert_eq!(format_integer(15_000, &fmt), "15.00K");
+        // A threshold under 1000 cannot reduce a value that has no suffix.
+        let low = metric_fmt(
+            0,
+            MetricReduction {
+                threshold: 5,
+                ..MetricReduction::default()
+            },
+        );
+        assert_eq!(format_integer(7, &low), "7");
+        assert_eq!(format_integer(7_000, &low), "7.00K");
+        let zero = metric_fmt(
+            0,
+            MetricReduction {
+                threshold: 0,
+                ..MetricReduction::default()
+            },
+        );
+        assert_eq!(format_integer(0, &zero), "0");
+    }
+
+    #[test]
+    fn metric_reduction_uses_custom_labels_and_decimal_char() {
+        let fmt = NumberFormat {
+            decimal_char: ',',
+            thousands_char: '.',
+            ..metric_fmt(
+                2,
+                MetricReduction {
+                    decimals: 1,
+                    labels: [
+                        "k".into(),
+                        " Mn".into(),
+                        " Bn".into(),
+                        "T".into(),
+                        "P".into(),
+                    ],
+                    ..MetricReduction::default()
+                },
+            )
+        };
+        assert_eq!(format_number(1_500.0, &fmt), "1,5k");
+        assert_eq!(format_number(2_340_000.0, &fmt), "2,3 Mn");
+        assert_eq!(format_number(-7_800_000_000.0, &fmt), "-7,8 Bn");
+        // Under the threshold: full number with the configured characters.
+        assert_eq!(format_number(999.5, &fmt), "999,50");
+    }
+
+    #[test]
+    fn format_number_metric_reduction_leaves_non_finite_values_alone() {
+        let fmt = metric_fmt(2, MetricReduction::default());
+        assert_eq!(format_number(1_234_567.89, &fmt), "1.23M");
+        assert_eq!(format_number(f64::NAN, &fmt), "NaN");
+        assert_eq!(format_number(f64::INFINITY, &fmt), "inf");
+    }
+
+    #[test]
+    fn metric_label_truncates_on_a_char_boundary() {
+        assert_eq!(MetricLabel::new("Mn").as_str(), "Mn");
+        // 8 two-byte chars = 16 bytes; only 7 whole chars fit in 15.
+        assert_eq!(MetricLabel::new("éééééééé").as_str(), "ééééééé");
+        assert_eq!(MetricLabel::default().as_str(), "");
+    }
+
+    #[test]
+    fn metric_display_is_filterable_but_sort_uses_the_raw_number() {
+        let mut fmt = plain_resolved(ColumnKind::Integer);
+        fmt.number = metric_fmt(0, MetricReduction::default());
+        let big = CellValue::Integer(1_500);
+        assert_eq!(format_cell(&big, &fmt).0, "1.50K");
+        assert!(cell_matches_filter(&big, &fmt, "1.50k"));
+        assert_eq!(
+            crate::data::compare_cells(&CellValue::Integer(2_000), &CellValue::Integer(10_000)),
+            std::cmp::Ordering::Less
+        );
     }
 
     #[test]

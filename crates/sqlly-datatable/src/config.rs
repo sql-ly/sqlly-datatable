@@ -87,6 +87,16 @@ pub struct NumberFormat {
     pub thousands_separator: bool,
     /// Horizontal alignment of the value within its cell.
     pub alignment: TextAlignment,
+    /// Character placed between digit groups when `thousands_separator` is
+    /// on (`,` → `1,234,567`; `.` → `1.234.567`; `'` → `1'234'567`).
+    pub thousands_char: char,
+    /// Character between the integer and fractional digits (`.` → `3.14`;
+    /// `,` → `3,14`). Also used inside a metric-reduced value (`1,50K`).
+    pub decimal_char: char,
+    /// Reduce large magnitudes to a metric suffix (`1.50K`, `2.3M`). `None`
+    /// (the default) always renders the full number. Display-only: sorting,
+    /// numeric filters, and the cell value keep the exact number.
+    pub metric: Option<MetricReduction>,
 }
 
 impl Default for NumberFormat {
@@ -97,6 +107,96 @@ impl Default for NumberFormat {
             negative_parentheses: false,
             thousands_separator: true,
             alignment: TextAlignment::Right,
+            thousands_char: ',',
+            decimal_char: '.',
+            metric: None,
+        }
+    }
+}
+
+/// A short metric suffix (`K`, `M`, `Mn`, …) for [`MetricReduction`].
+///
+/// Stored inline (up to [`MetricLabel::MAX_BYTES`] bytes of UTF-8) so
+/// [`NumberFormat`] stays `Copy`. Longer input is cut at the last char
+/// boundary that fits.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct MetricLabel {
+    bytes: [u8; MetricLabel::MAX_BYTES],
+    len: u8,
+}
+
+impl MetricLabel {
+    /// Longest label kept, in UTF-8 bytes.
+    pub const MAX_BYTES: usize = 15;
+
+    /// Build a label from `text`, truncating at a char boundary when it is
+    /// longer than [`Self::MAX_BYTES`].
+    #[must_use]
+    pub fn new(text: &str) -> Self {
+        let mut end = text.len().min(Self::MAX_BYTES);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut bytes = [0u8; Self::MAX_BYTES];
+        bytes[..end].copy_from_slice(&text.as_bytes()[..end]);
+        Self {
+            bytes,
+            len: end as u8,
+        }
+    }
+
+    /// The label text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        // `new` only ever stores a whole-char prefix of a `&str`.
+        std::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or_default()
+    }
+}
+
+impl std::fmt::Debug for MetricLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl From<&str> for MetricLabel {
+    fn from(text: &str) -> Self {
+        Self::new(text)
+    }
+}
+
+/// Metric reduction for [`NumberFormat::metric`]: a magnitude at or above
+/// `threshold` is divided by 1000 until it drops below 1000 (at most five
+/// times, through `P`) and shown with the matching suffix — `1234567` →
+/// `1.23M` at two decimals. A value that is over the threshold but under
+/// 1000 (a threshold below 1000) has no suffix to take and renders in full.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MetricReduction {
+    /// Smallest magnitude that is reduced; smaller values render in full.
+    pub threshold: u64,
+    /// Fraction digits on a reduced value (`1.50K` at 2, `1.5K` at 1).
+    pub decimals: usize,
+    /// With `decimals == 0`, the fractional remainder (in thousandths) at
+    /// which the reduced value rounds up instead of down: `500` rounds
+    /// `1.5K` to `2K`, `1000` always rounds down.
+    pub step_up_permille: u16,
+    /// Suffixes for thousands, millions, billions, trillions, quadrillions.
+    pub labels: [MetricLabel; 5],
+}
+
+impl Default for MetricReduction {
+    fn default() -> Self {
+        Self {
+            threshold: 1000,
+            decimals: 2,
+            step_up_permille: 500,
+            labels: [
+                MetricLabel::new("K"),
+                MetricLabel::new("M"),
+                MetricLabel::new("G"),
+                MetricLabel::new("T"),
+                MetricLabel::new("P"),
+            ],
         }
     }
 }

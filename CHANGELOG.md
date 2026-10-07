@@ -5,6 +5,16 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.0.0] - 2026-10-07
+
+### Added — Number grouping/decimal characters and metric reduction
+- `NumberFormat::thousands_char` (default `,`) and `NumberFormat::decimal_char` (default `.`) choose the characters numbers are grouped and split with, so hosts can render `1.234.567,89`, `1 234 567,89`, or `1'234'567.89`.
+- `NumberFormat::metric: Option<MetricReduction>` abbreviates large magnitudes to K / M / G / T / P (`1.50K`, `2.34M`). `MetricReduction` carries the threshold (the smallest magnitude reduced; units are always powers of 1000), the fraction digits, the whole-unit step-up ratio, and five `MetricLabel` suffixes. Display only: sorting and numeric filters keep using the exact cell value.
+- `MetricLabel` stores a short suffix inline so `NumberFormat` stays `Copy`.
+
+### Changed
+- `NumberFormat` gains three public fields. Code that builds it with `..NumberFormat::default()` is unaffected; an exhaustive struct literal must add the new fields, so this is a breaking change for such callers.
+
 ## [6.1.0] - 2026-09-29
 
 ### Added — Host-selectable font family

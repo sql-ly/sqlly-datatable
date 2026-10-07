@@ -121,8 +121,9 @@ pub use conditional::{
 };
 pub use config::{
     BooleanFormat, ColumnOverride, DateFormat, GridConfig, KeyBinding, KeyBindings, LabelMode,
-    NullFormat, NumberFormat, RelativeDateFormat, RelativeUnit, ReplacementRule, ReplacementTiming,
-    ResolvedColumnFormat, StringFormat, TextAlignment, TextCase, TruncationBehavior,
+    MetricLabel, MetricReduction, NullFormat, NumberFormat, RelativeDateFormat, RelativeUnit,
+    ReplacementRule, ReplacementTiming, ResolvedColumnFormat, StringFormat, TextAlignment,
+    TextCase, TruncationBehavior,
 };
 pub use data::{
     compare_cells, sample_data, CellValue, Column, ColumnKind, GridData, GridDataError,
