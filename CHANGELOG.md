@@ -5,6 +5,13 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.0.0] - 2026-10-14
+
+### Changed
+- **Moved to GPUI Kit 0.7.** The toolkit line moves from `gpui-component` 0.6.4 / `gpui-pre` 0.3.5 / `gpui-kit-assets` 0.6.4 to `gpui-component` 0.7.3 / `gpui-pre` 0.3.9 / `gpui-kit-assets` 0.7.3. No grid, pivot, chart, or theming API changed and the crate's source needed no edits; the major bump is because consumers must link the same graph. `gpui-component` 0.7.x pins `gpui-pre` with an exact `=0.3.x`, so hosts must declare `gpui = { package = "gpui-pre", version = "0.3.9" }` and `gpui-component = "0.7.3"` (and `gpui-pre-platform` 0.3.9 where they use it) to share one gpui with this crate.
+- Hosts upgrading to `gpui-component` 0.7 should note that its `Root` now renders the sheet, dialog, and notification layers itself (the 0.6 `Root::render_*_layer` helpers are gone), and that `DatePickerEvent::Change` now carries a date-time. Neither affects this crate.
+- The sample app's `gpui-pre-platform` requirement moves to 0.3.9 to match.
+
 ## [7.0.0] - 2026-10-07
 
 ### Added — Number grouping/decimal characters and metric reduction
