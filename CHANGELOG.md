@@ -5,6 +5,11 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.1.0] - 2026-10-21
+
+### Changed
+- **Cut-off cells and headers end in an ellipsis.** When a value or column header is wider than its column, the painted text is now trimmed to leave room for a trailing `…` so a cut-off cell always reads as cut off, instead of stopping on a character boundary with nothing to show for it. The ellipsis is measured in the cell's own font and run, so right- and center-aligned text still lands correctly; when the column is too narrow even for the mark, the text is cut as before.
+
 ## [8.0.0] - 2026-10-14
 
 ### Changed

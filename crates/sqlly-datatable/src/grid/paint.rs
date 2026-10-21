@@ -533,8 +533,9 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
         f.weight = gpui::FontWeight::BOLD;
         f
     };
-    // Shape a line and fit it to `max_w` (truncating on a char boundary when
-    // it overflows), returning the final `ShapedLine` — or `None` when the box
+    // Shape a line and fit it to `max_w` (truncating on a char boundary and
+    // ending in an ellipsis when it overflows, so a cut-off value or header
+    // always reads as cut off), returning the final `ShapedLine` — or `None` when the box
     // is too narrow to paint anything. Callers read `shaped.width` for the
     // *true* laid-out width (double-width CJK/emoji included) and position by
     // it, so right/center alignment lands correctly rather than relying on a
@@ -566,12 +567,30 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
         match max_w {
             Some(mw) if mw <= 0.0 => None,
             Some(mw) if f32::from(shaped.width) > mw => {
-                let byte_idx = shaped.index_for_x(px(mw)).unwrap_or(0);
-                let truncated = &text[..floor_char_boundary(text, byte_idx)];
+                const ELLIPSIS: &str = "\u{2026}";
+                let ellipsis_w = f32::from(
+                    text_system
+                        .shape_line(ELLIPSIS.into(), font_size, &[mk_run(ELLIPSIS)], None)
+                        .width,
+                );
+                if mw <= ellipsis_w {
+                    // No room for the mark: cut as before.
+                    let byte_idx = shaped.index_for_x(px(mw)).unwrap_or(0);
+                    let truncated = &text[..floor_char_boundary(text, byte_idx)];
+                    return Some(text_system.shape_line(
+                        truncated.to_owned().into(),
+                        font_size,
+                        &[mk_run(truncated)],
+                        None,
+                    ));
+                }
+                let byte_idx = shaped.index_for_x(px(mw - ellipsis_w)).unwrap_or(0);
+                let kept = text[..floor_char_boundary(text, byte_idx)].trim_end();
+                let fitted = format!("{kept}{ELLIPSIS}");
                 Some(text_system.shape_line(
-                    truncated.to_owned().into(),
+                    fitted.clone().into(),
                     font_size,
-                    &[mk_run(truncated)],
+                    &[mk_run(&fitted)],
                     None,
                 ))
             }
