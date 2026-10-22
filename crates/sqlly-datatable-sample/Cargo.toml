@@ -33,4 +33,4 @@ gpui_platform = { package = "gpui-pre-platform", version = "0.3.9", features = [
     "wayland",
     "runtime_shaders",
 ] }
-sqlly-datatable = { version = "8.1.0", path = "../sqlly-datatable" }
+sqlly-datatable = { version = "8.2.0", path = "../sqlly-datatable" }

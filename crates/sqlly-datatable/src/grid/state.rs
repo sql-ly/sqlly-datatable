@@ -2171,15 +2171,44 @@ impl GridState {
 
     /// Convert public [`ContextMenuItem`]s to internal `MenuItem`s for the
     /// rendering pipeline.
+    /// Submenus convert recursively, and the result is tidied (empty
+    /// submenus dropped, stray separators removed).
     pub(crate) fn convert_context_menu_items(items: Vec<ContextMenuItem>) -> Vec<MenuItem> {
-        items
-            .into_iter()
-            .map(|item| match item {
-                ContextMenuItem::BuiltIn(action) => MenuItem::Action(action),
-                ContextMenuItem::Action { id, label } => MenuItem::Custom { id, label },
-                ContextMenuItem::Separator => MenuItem::Separator,
-            })
-            .collect()
+        fn convert(items: Vec<ContextMenuItem>) -> Vec<MenuItem> {
+            items
+                .into_iter()
+                .map(|item| match item {
+                    ContextMenuItem::BuiltIn(action) => MenuItem::Action(action),
+                    ContextMenuItem::Action { id, label } => MenuItem::Custom { id, label },
+                    ContextMenuItem::Separator => MenuItem::Separator,
+                    ContextMenuItem::Submenu { label, items } => MenuItem::Submenu {
+                        label,
+                        items: convert(items),
+                    },
+                })
+                .collect()
+        }
+        menu_mod::normalize_items(convert(items))
+    }
+
+    /// Run a row chosen in the context menu (by click or Enter) the same way
+    /// at every menu level, then close the menu. The work is deferred to the
+    /// next render, which has the `App` access clipboard actions need.
+    pub(crate) fn activate_context_menu(&mut self, activation: menu_mod::MenuActivation) {
+        let Some(menu) = self.context_menu.take() else {
+            return;
+        };
+        match activation {
+            menu_mod::MenuActivation::Builtin(action) => {
+                self.pending_action = Some((action, menu.col));
+            }
+            menu_mod::MenuActivation::Custom(id) => {
+                if let Some(request) = menu.request {
+                    self.pending_custom_context_menu_action =
+                        Some(PendingCustomContextMenuAction { id, request });
+                }
+            }
+        }
     }
 
     pub fn execute_action(&mut self, action: MenuAction, col: usize, cx: &mut App) {
@@ -2810,9 +2839,13 @@ impl GridState {
             }
             return;
         }
-        if self.context_menu.is_some() {
-            if keystroke.key.as_str() == "escape" {
-                self.context_menu = None;
+        if let Some(menu) = self.context_menu.as_mut() {
+            match menu.key(keystroke.key.as_str()) {
+                menu_mod::MenuKeyOutcome::Close => self.context_menu = None,
+                menu_mod::MenuKeyOutcome::Activate(activation) => {
+                    self.activate_context_menu(activation);
+                }
+                menu_mod::MenuKeyOutcome::Handled | menu_mod::MenuKeyOutcome::Ignored => {}
             }
             return;
         }
@@ -3752,18 +3785,155 @@ mod tests {
 
         let items = vec![
             ContextMenuItem::BuiltIn(MenuAction::SortAscending),
-            ContextMenuItem::action("copy", "Copy value"),
             ContextMenuItem::separator(),
+            ContextMenuItem::action("copy", "Copy value"),
         ];
         let internal = GridState::convert_context_menu_items(items);
         assert!(matches!(
             internal[0],
             MenuItem::Action(MenuAction::SortAscending)
         ));
+        assert!(matches!(internal[1], MenuItem::Separator));
         assert!(
-            matches!(&internal[1], MenuItem::Custom { id, label } if id == "copy" && label == "Copy value")
+            matches!(&internal[2], MenuItem::Custom { id, label } if id == "copy" && label == "Copy value")
         );
-        assert!(matches!(internal[2], MenuItem::Separator));
+    }
+
+    #[allow(clippy::expect_used, clippy::unwrap_used)]
+    #[test]
+    fn convert_context_menu_items_nests_and_tidies_submenus() {
+        use crate::grid::context_menu::ContextMenuItem;
+
+        let items = vec![
+            ContextMenuItem::separator(),
+            ContextMenuItem::action("copy", "Copy"),
+            ContextMenuItem::submenu(
+                "Copy As",
+                vec![
+                    ContextMenuItem::separator(),
+                    ContextMenuItem::action("csv", "CSV"),
+                    ContextMenuItem::separator(),
+                    ContextMenuItem::separator(),
+                    ContextMenuItem::submenu(
+                        "More",
+                        vec![ContextMenuItem::BuiltIn(MenuAction::CopyColumn)],
+                    ),
+                    ContextMenuItem::separator(),
+                ],
+            ),
+            ContextMenuItem::separator(),
+            ContextMenuItem::submenu("Empty", vec![ContextMenuItem::separator()]),
+            ContextMenuItem::separator(),
+        ];
+        let internal = GridState::convert_context_menu_items(items);
+        assert_eq!(internal.len(), 2, "{internal:?}");
+        let MenuItem::Submenu { label, items } = &internal[1] else {
+            panic!("expected a submenu: {internal:?}");
+        };
+        assert_eq!(label, "Copy As");
+        assert_eq!(items.len(), 3, "{items:?}");
+        assert!(matches!(&items[0], MenuItem::Custom { id, .. } if id == "csv"));
+        assert!(matches!(items[1], MenuItem::Separator));
+        assert!(matches!(
+            items[2].submenu_items(),
+            Some([MenuItem::Action(MenuAction::CopyColumn)])
+        ));
+    }
+
+    /// A custom item two submenus deep, chosen with the keyboard, reaches the
+    /// provider exactly like a top-level click.
+    #[allow(clippy::expect_used, clippy::unwrap_used)]
+    #[test]
+    fn enter_inside_a_nested_submenu_dispatches_to_the_provider() {
+        use crate::grid::context_menu::{
+            ContextMenuProvider, ContextMenuProviderHandle, ContextMenuRequest,
+        };
+        use std::sync::{Arc, Mutex};
+
+        struct TestProvider {
+            last_action: Arc<Mutex<Option<String>>>,
+        }
+        impl ContextMenuProvider for TestProvider {
+            fn menu_items(&self, _request: &ContextMenuRequest) -> Vec<ContextMenuItem> {
+                Vec::new()
+            }
+            fn on_action(
+                &self,
+                action_id: &str,
+                _request: &ContextMenuRequest,
+                _state: &mut GridState,
+                _cx: &mut gpui::App,
+            ) {
+                *self.last_action.lock().unwrap() = Some(action_id.to_string());
+            }
+        }
+
+        fn key(name: &str) -> Keystroke {
+            Keystroke::parse(name).expect("keystroke")
+        }
+
+        gpui::TestAppContext::single().update(|cx| {
+            let focus = cx.focus_handle();
+            let mut state = GridState::new(
+                GridData::new(
+                    vec![Column::new("a", ColumnKind::Integer, 80.0)],
+                    vec![vec![CellValue::Integer(1)]],
+                )
+                .expect("rectangular"),
+                crate::config::GridConfig::default(),
+                focus,
+            );
+            let last = Arc::new(Mutex::new(None));
+            state.context_menu_provider = Some(ContextMenuProviderHandle::new(TestProvider {
+                last_action: last.clone(),
+            }));
+            let target = ContextMenuTarget::Cell {
+                display_row_index: 0,
+                source_row_index: 0,
+                column_index: 0,
+            };
+            let request = state.build_context_menu_request(target, &Selection::Cell(0, 0));
+            let items = GridState::convert_context_menu_items(vec![
+                ContextMenuItem::action("top", "Top"),
+                ContextMenuItem::submenu(
+                    "Outer",
+                    vec![
+                        ContextMenuItem::action("outer-1", "Outer one"),
+                        ContextMenuItem::submenu(
+                            "Inner",
+                            vec![ContextMenuItem::action("deep", "Deep")],
+                        ),
+                    ],
+                ),
+            ]);
+            state.context_menu = Some(menu_mod::ContextMenu::custom(
+                0,
+                Point {
+                    x: px(0.0),
+                    y: px(0.0),
+                },
+                items,
+                request,
+            ));
+
+            // Down to "Outer", Right into it, Down to "Inner", Enter opens it
+            // (its first row highlighted), Enter again chooses "Deep".
+            for k in ["down", "down", "right", "down", "enter"] {
+                state.handle_key(&key(k));
+            }
+            assert_eq!(state.context_menu.as_ref().map(|m| m.open.len()), Some(2));
+            state.handle_key(&key("enter"));
+            assert!(state.context_menu.is_none());
+            let pending = state
+                .pending_custom_context_menu_action
+                .take()
+                .expect("a pending custom action");
+            assert_eq!(pending.id, "deep");
+            state.execute_custom_context_menu_action(pending, cx);
+            assert_eq!(*last.lock().unwrap(), Some("deep".to_string()));
+
+            cx.quit();
+        });
     }
 
     #[allow(clippy::expect_used, clippy::unwrap_used)]

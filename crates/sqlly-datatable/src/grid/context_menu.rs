@@ -389,6 +389,14 @@ pub enum ContextMenuItem {
     Action { id: String, label: String },
     /// A visual separator.
     Separator,
+    /// A row that opens a nested menu beside it (marked `▸`). Choosing an
+    /// item inside dispatches exactly as it would at the top level. A
+    /// submenu that ends up with nothing to choose is not shown, and
+    /// separators inside one are tidied the same way as at the top level.
+    Submenu {
+        label: String,
+        items: Vec<ContextMenuItem>,
+    },
 }
 
 impl ContextMenuItem {
@@ -405,6 +413,15 @@ impl ContextMenuItem {
     #[must_use]
     pub fn separator() -> Self {
         Self::Separator
+    }
+
+    /// Convenience constructor for a submenu.
+    #[must_use]
+    pub fn submenu(label: impl Into<String>, items: Vec<ContextMenuItem>) -> Self {
+        Self::Submenu {
+            label: label.into(),
+            items,
+        }
     }
 
     /// The standard built-in column-header menu items, in the same order

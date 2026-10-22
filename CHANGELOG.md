@@ -5,6 +5,18 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.2.0] - 2026-10-22
+
+### Added
+- **Submenus in the grid's context menu.** `ContextMenuItem::Submenu { label, items }` (and the `ContextMenuItem::submenu(label, items)` constructor) puts a row marked `▸` in a provider's menu that opens a nested menu beside it, to any depth. The child lines its first row up with the parent row, opens to the right, and flips to the left of its parent or moves up when it would run past the window edge.
+- Pointer: hovering a submenu row opens it at once when nothing else is open; with another submenu open, switching or closing waits 200 ms so the pointer can cross sibling rows on its way into the open child without it collapsing. Clicking a submenu row opens it. A press outside every open level closes the menu.
+- Keyboard: Up/Down move through the deepest open level (skipping separators, wrapping), Right or Enter opens a submenu with its first row highlighted, Enter runs an action, Left closes the deepest submenu, and Escape closes the deepest submenu or, with none open, the menu.
+- An item chosen inside a submenu dispatches exactly like a top-level one (`ContextMenuProvider::on_action` for custom items, the built-in handler for `BuiltIn`), so hosts only build `Submenu` items.
+
+### Changed
+- Provider menus are now tidied before they are shown: a submenu left with nothing to choose is dropped, and separators never lead, trail, or sit next to each other, at every level. Hosts that already collapsed separators see no difference.
+- `ContextMenuItem` gains a variant, so a host that matches it exhaustively must add a `Submenu` arm. `ContextMenu` gains the public `open` and `hover_gen` fields; code that builds it with a struct literal must set them (the `standard` and `custom` constructors do).
+
 ## [8.1.0] - 2026-10-21
 
 ### Changed

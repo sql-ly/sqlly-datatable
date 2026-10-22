@@ -17,6 +17,17 @@ pub const MENU_INNER_PAD: f32 = 4.0;
 /// Gap kept between the menu and the window edge when it must be nudged
 /// on-screen. Small so the menu still visually hugs the pointer.
 pub const MENU_SCREEN_MARGIN: f32 = 4.0;
+/// How far a submenu overlaps its parent's edge, so the pointer crosses
+/// straight from the parent row into the child with no gap.
+pub const SUBMENU_OVERLAP: f32 = 2.0;
+/// Room kept at the right of a menu that has submenus, for the `▸` mark.
+pub const SUBMENU_ARROW_WIDTH: f32 = 18.0;
+/// How long the pointer must rest on another row before an open submenu
+/// switches or closes. Long enough to cross a sibling row on the way into
+/// the open child without it collapsing; short enough to feel immediate.
+pub const SUBMENU_HOVER_DELAY_MS: u64 = 200;
+/// The mark painted at the end of a submenu row.
+pub const SUBMENU_ARROW: &str = "\u{25B8}";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAction {
@@ -41,8 +52,16 @@ pub enum MenuAction {
 #[derive(Clone, Debug)]
 pub enum MenuItem {
     Action(MenuAction),
-    Custom { id: String, label: String },
+    Custom {
+        id: String,
+        label: String,
+    },
     Separator,
+    /// A row that opens a nested menu beside it.
+    Submenu {
+        label: String,
+        items: Vec<MenuItem>,
+    },
 }
 
 impl MenuItem {
@@ -51,16 +70,134 @@ impl MenuItem {
     pub fn label(&self) -> Option<&str> {
         match self {
             Self::Action(a) => Some(label(*a)),
-            Self::Custom { label, .. } => Some(label.as_str()),
+            Self::Custom { label, .. } | Self::Submenu { label, .. } => Some(label.as_str()),
             Self::Separator => None,
         }
     }
 
-    /// `true` for action/custom items that participate in hover/click.
+    /// `true` for action/custom/submenu items that participate in hover/click.
     #[must_use]
     pub fn is_selectable(&self) -> bool {
         !matches!(self, Self::Separator)
     }
+
+    /// `true` for a row that opens a nested menu.
+    #[must_use]
+    pub fn is_submenu(&self) -> bool {
+        matches!(self, Self::Submenu { .. })
+    }
+
+    /// The nested items of a submenu row, or `None` for any other item.
+    #[must_use]
+    pub fn submenu_items(&self) -> Option<&[MenuItem]> {
+        match self {
+            Self::Submenu { items, .. } => Some(items),
+            _ => None,
+        }
+    }
+}
+
+/// Tidy a menu level for display, recursively:
+/// - every submenu is tidied first, and a submenu left with nothing to choose
+///   is dropped (an empty submenu is never shown);
+/// - separators never lead, trail, or sit next to another separator.
+#[must_use]
+pub fn normalize_items(items: Vec<MenuItem>) -> Vec<MenuItem> {
+    let mut out: Vec<MenuItem> = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            MenuItem::Separator => {
+                if out.last().is_some_and(MenuItem::is_selectable) {
+                    out.push(MenuItem::Separator);
+                }
+            }
+            MenuItem::Submenu { label, items } => {
+                let items = normalize_items(items);
+                if items.iter().any(MenuItem::is_selectable) {
+                    out.push(MenuItem::Submenu { label, items });
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    while matches!(out.last(), Some(MenuItem::Separator)) {
+        out.pop();
+    }
+    out
+}
+
+/// Width needed to fit the longest label of one menu level (plus the `▸`
+/// mark when the level holds a submenu), bounded below by [`MENU_MIN_WIDTH`].
+#[must_use]
+pub fn level_width(items: &[MenuItem], char_width: f32) -> f32 {
+    let mut max_label_w = 0.0_f32;
+    let mut has_submenu = false;
+    for item in items {
+        has_submenu |= item.is_submenu();
+        if let Some(text) = item.label() {
+            max_label_w = max_label_w.max(text.chars().count() as f32 * char_width);
+        }
+    }
+    let arrow = if has_submenu {
+        SUBMENU_ARROW_WIDTH
+    } else {
+        0.0
+    };
+    MENU_MIN_WIDTH.max(max_label_w + arrow + MENU_PADDING_X * 2.0)
+}
+
+/// Height of one menu level, including inner padding. Separators take a full
+/// row, as they are painted.
+#[must_use]
+pub fn level_height(items: &[MenuItem]) -> f32 {
+    items.len() as f32 * MENU_ITEM_HEIGHT + MENU_INNER_PAD * 2.0
+}
+
+/// A submenu that is open, recorded per level below the top one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpenSubmenu {
+    /// Row (item index, separators included) of the submenu item in its
+    /// parent level.
+    pub row: usize,
+    /// Highlighted row inside this submenu, if any.
+    pub hovered: Option<usize>,
+}
+
+/// A menu level's on-screen rectangle, in absolute window coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MenuRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl MenuRect {
+    /// `true` when the window point `(x, y)` falls inside this rectangle.
+    #[must_use]
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.x && x <= self.x + self.w && y >= self.y && y <= self.y + self.h
+    }
+}
+
+/// What choosing a menu row (by click or Enter) asks the grid to do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MenuActivation {
+    Builtin(MenuAction),
+    Custom(String),
+}
+
+/// The result of a key press while the menu is open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MenuKeyOutcome {
+    /// The key moved the highlight or opened/closed a submenu.
+    Handled,
+    /// Escape with no submenu open: close the whole menu.
+    Close,
+    /// Enter on an action row: run it and close the menu.
+    Activate(MenuActivation),
+    /// The key means nothing to the menu.
+    Ignored,
 }
 
 #[derive(Clone, Debug)]
@@ -68,8 +205,15 @@ pub struct ContextMenu {
     pub col: usize,
     pub anchor: Point<Pixels>,
     pub items: Vec<MenuItem>,
+    /// Highlighted top-level item, counted among selectable items only
+    /// (separators skipped), as [`hover_at`] reports it.
     pub hovered: Option<usize>,
     pub request: Option<ContextMenuRequest>,
+    /// Open submenus, outermost first. Empty when only the top level shows.
+    pub open: Vec<OpenSubmenu>,
+    /// Bumped on every hover change, so a delayed submenu switch scheduled
+    /// for an earlier hover can tell it is stale.
+    pub hover_gen: u64,
 }
 
 impl ContextMenu {
@@ -104,6 +248,8 @@ impl ContextMenu {
             ],
             hovered: None,
             request: None,
+            open: Vec::new(),
+            hover_gen: 0,
         }
     }
 
@@ -120,29 +266,234 @@ impl ContextMenu {
         Self {
             col,
             anchor,
-            items,
+            items: normalize_items(items),
             hovered: None,
             request: Some(request),
+            open: Vec::new(),
+            hover_gen: 0,
         }
     }
 
-    /// Width needed to fit the longest label, with padding, bounded below by
-    /// [`MENU_MIN_WIDTH`].
+    /// Width needed to fit the longest top-level label, with padding,
+    /// bounded below by [`MENU_MIN_WIDTH`].
     #[must_use]
     pub fn width_for(&self, char_width: f32) -> f32 {
-        let mut max_label_w = 0.0_f32;
-        for item in &self.items {
-            if let Some(text) = item.label() {
-                max_label_w = max_label_w.max(text.chars().count() as f32 * char_width);
-            }
-        }
-        MENU_MIN_WIDTH.max(max_label_w + MENU_PADDING_X * 2.0)
+        level_width(&self.items, char_width)
     }
 
-    /// Total height including inner padding.
+    /// Total height of the top level including inner padding.
     #[must_use]
     pub fn total_height(&self) -> f32 {
-        self.items.len() as f32 * MENU_ITEM_HEIGHT + MENU_INNER_PAD * 2.0
+        level_height(&self.items)
+    }
+
+    /// The items shown at `level`: 0 is the top menu, 1 the first open
+    /// submenu, and so on. `None` past the deepest open submenu.
+    #[must_use]
+    pub fn level_items(&self, level: usize) -> Option<&[MenuItem]> {
+        let mut items: &[MenuItem] = &self.items;
+        for open in self.open.iter().take(level) {
+            items = items.get(open.row)?.submenu_items()?;
+        }
+        if level > self.open.len() {
+            return None;
+        }
+        Some(items)
+    }
+
+    /// Number of levels on screen (the top menu plus every open submenu).
+    #[must_use]
+    pub fn level_count(&self) -> usize {
+        self.open.len() + 1
+    }
+
+    /// The highlighted row (item index, separators included) at `level`.
+    #[must_use]
+    pub fn highlighted_row(&self, level: usize) -> Option<usize> {
+        if level == 0 {
+            let selectable = self.hovered?;
+            return self
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| item.is_selectable())
+                .nth(selectable)
+                .map(|(row, _)| row);
+        }
+        self.open.get(level - 1)?.hovered
+    }
+
+    /// Highlight `row` at `level`. Ignored for separators and rows that don't
+    /// exist.
+    pub fn set_highlight(&mut self, level: usize, row: usize) {
+        let Some(items) = self.level_items(level) else {
+            return;
+        };
+        if !items.get(row).is_some_and(MenuItem::is_selectable) {
+            return;
+        }
+        if level == 0 {
+            self.hovered = Some(action_index(items, row).unwrap_or(0));
+        } else if let Some(open) = self.open.get_mut(level - 1) {
+            open.hovered = Some(row);
+        }
+    }
+
+    /// Open the submenu at `row` of `level`, closing anything deeper first.
+    /// Highlights the row; does nothing more when it is not a submenu.
+    pub fn open_submenu(&mut self, level: usize, row: usize) {
+        if level > self.open.len() {
+            return;
+        }
+        self.open.truncate(level);
+        self.set_highlight(level, row);
+        let is_submenu = self
+            .level_items(level)
+            .and_then(|items| items.get(row))
+            .is_some_and(MenuItem::is_submenu);
+        if is_submenu {
+            self.open.push(OpenSubmenu { row, hovered: None });
+        }
+    }
+
+    /// Close every submenu deeper than `level`.
+    pub fn close_below(&mut self, level: usize) {
+        self.open.truncate(level);
+    }
+
+    /// What choosing `row` at `level` does: an activation for an action row,
+    /// `None` for a submenu row (which opens instead) or a separator.
+    #[must_use]
+    pub fn activation_at(&self, level: usize, row: usize) -> Option<MenuActivation> {
+        match self.level_items(level)?.get(row)? {
+            MenuItem::Action(action) => Some(MenuActivation::Builtin(*action)),
+            MenuItem::Custom { id, .. } => Some(MenuActivation::Custom(id.clone())),
+            MenuItem::Separator | MenuItem::Submenu { .. } => None,
+        }
+    }
+
+    /// Keyboard navigation. Keys act on the deepest open level: Up/Down move
+    /// the highlight among choosable rows (wrapping), Right or Enter on a
+    /// submenu row opens it with its first row highlighted, Enter on an action
+    /// row activates it, Left closes the deepest submenu, and Escape closes
+    /// the deepest submenu or, with none open, the whole menu.
+    pub fn key(&mut self, key: &str) -> MenuKeyOutcome {
+        let level = self.open.len();
+        match key {
+            "up" | "down" => {
+                let Some(items) = self.level_items(level) else {
+                    return MenuKeyOutcome::Ignored;
+                };
+                let rows: Vec<usize> = items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| item.is_selectable())
+                    .map(|(row, _)| row)
+                    .collect();
+                if rows.is_empty() {
+                    return MenuKeyOutcome::Handled;
+                }
+                let current = self
+                    .highlighted_row(level)
+                    .and_then(|row| rows.iter().position(|r| *r == row));
+                let next = match (key, current) {
+                    ("down", Some(i)) => rows[(i + 1) % rows.len()],
+                    ("up", Some(i)) => rows[(i + rows.len() - 1) % rows.len()],
+                    ("down", None) => rows[0],
+                    _ => rows[rows.len() - 1],
+                };
+                self.set_highlight(level, next);
+                self.hover_gen += 1;
+                MenuKeyOutcome::Handled
+            }
+            "right" | "enter" => {
+                let Some(row) = self.highlighted_row(level) else {
+                    return if key == "enter" {
+                        MenuKeyOutcome::Handled
+                    } else {
+                        MenuKeyOutcome::Ignored
+                    };
+                };
+                if let Some(activation) = self.activation_at(level, row) {
+                    return if key == "enter" {
+                        MenuKeyOutcome::Activate(activation)
+                    } else {
+                        MenuKeyOutcome::Ignored
+                    };
+                }
+                self.open_submenu(level, row);
+                if self.open.len() > level {
+                    let first = self
+                        .level_items(level + 1)
+                        .and_then(|items| items.iter().position(MenuItem::is_selectable));
+                    if let Some(first) = first {
+                        self.set_highlight(level + 1, first);
+                    }
+                }
+                self.hover_gen += 1;
+                MenuKeyOutcome::Handled
+            }
+            "left" => {
+                if self.open.pop().is_some() {
+                    self.hover_gen += 1;
+                    MenuKeyOutcome::Handled
+                } else {
+                    MenuKeyOutcome::Ignored
+                }
+            }
+            "escape" => {
+                if self.open.pop().is_some() {
+                    self.hover_gen += 1;
+                    MenuKeyOutcome::Handled
+                } else {
+                    MenuKeyOutcome::Close
+                }
+            }
+            _ => MenuKeyOutcome::Ignored,
+        }
+    }
+
+    /// Every level's on-screen rectangle, in absolute window coordinates,
+    /// top level first. A submenu opens beside its row, to the right, and
+    /// flips to the left of its parent when it would run past the window's
+    /// right edge; it lines its first row up with the parent row and moves
+    /// up when it would run past the bottom.
+    #[must_use]
+    pub fn level_rects(
+        &self,
+        grid_ox: f32,
+        grid_oy: f32,
+        vw: f32,
+        vh: f32,
+        char_width: f32,
+    ) -> Vec<MenuRect> {
+        let top = self.resolved_position(grid_ox, grid_oy, vw, vh, char_width);
+        let mut rects = vec![MenuRect {
+            x: grid_ox + f32::from(top.x),
+            y: grid_oy + f32::from(top.y),
+            w: self.width_for(char_width),
+            h: self.total_height(),
+        }];
+        for (i, open) in self.open.iter().enumerate() {
+            let Some(items) = self.level_items(i + 1) else {
+                break;
+            };
+            let parent = rects[i];
+            let w = level_width(items, char_width);
+            let h = level_height(items);
+            let mut x = parent.x + parent.w - SUBMENU_OVERLAP;
+            if x + w > vw - MENU_SCREEN_MARGIN {
+                x = parent.x - w + SUBMENU_OVERLAP;
+            }
+            x = x.max(MENU_SCREEN_MARGIN);
+            let mut y = parent.y + open.row as f32 * MENU_ITEM_HEIGHT;
+            if y + h > vh - MENU_SCREEN_MARGIN {
+                y = vh - h - MENU_SCREEN_MARGIN;
+            }
+            y = y.max(MENU_SCREEN_MARGIN);
+            rects.push(MenuRect { x, y, w, h });
+        }
+        rects
     }
 
     /// Resolve the menu's final top-left corner in **grid-relative** space,
@@ -272,7 +623,9 @@ pub fn hover_at_anchor(
     for (cur_row, item) in menu.items.iter().enumerate() {
         if cur_row == idx {
             return match item {
-                MenuItem::Action(_) | MenuItem::Custom { .. } => action_index(&menu.items, idx),
+                MenuItem::Action(_) | MenuItem::Custom { .. } | MenuItem::Submenu { .. } => {
+                    action_index(&menu.items, idx)
+                }
                 MenuItem::Separator => None,
             };
         }
@@ -354,6 +707,7 @@ mod tests {
                 MenuItem::Action(MenuAction::FilterPrompt) => "FilterPrompt",
                 MenuItem::Action(MenuAction::ClearFilter) => "ClearFilter",
                 MenuItem::Custom { .. } => "Custom",
+                MenuItem::Submenu { .. } => "Submenu",
             })
             .collect();
         assert_eq!(
@@ -481,6 +835,8 @@ mod tests {
             items,
             hovered: None,
             request: None,
+            open: Vec::new(),
+            hover_gen: 0,
         }
     }
 
@@ -604,6 +960,189 @@ mod tests {
         let right = f32::from(p.x) + w;
         assert!(right <= vw, "menu right edge {right} must stay within {vw}");
         assert_eq!(f32::from(p.x), vw - w - MENU_SCREEN_MARGIN);
+    }
+
+    // --- submenus ------------------------------------------------------------
+
+    fn custom(id: &str) -> MenuItem {
+        MenuItem::Custom {
+            id: id.into(),
+            label: id.into(),
+        }
+    }
+
+    fn sub(label: &str, items: Vec<MenuItem>) -> MenuItem {
+        MenuItem::Submenu {
+            label: label.into(),
+            items,
+        }
+    }
+
+    fn nested_menu() -> ContextMenu {
+        // 0 a | 1 sep | 2 More ▸ [0 b | 1 sep | 2 Deeper ▸ [0 c | 1 d]] | 3 e
+        custom_menu_with_items(
+            100.0,
+            100.0,
+            vec![
+                custom("a"),
+                MenuItem::Separator,
+                sub(
+                    "More",
+                    vec![
+                        custom("b"),
+                        MenuItem::Separator,
+                        sub("Deeper", vec![custom("c"), custom("d")]),
+                    ],
+                ),
+                custom("e"),
+            ],
+        )
+    }
+
+    #[test]
+    fn normalize_drops_empty_submenus_and_stray_separators() {
+        let tidy = normalize_items(vec![
+            MenuItem::Separator,
+            custom("a"),
+            MenuItem::Separator,
+            MenuItem::Separator,
+            sub(
+                "Empty",
+                vec![MenuItem::Separator, sub("Also empty", vec![])],
+            ),
+            MenuItem::Separator,
+            sub(
+                "Kept",
+                vec![MenuItem::Separator, custom("b"), MenuItem::Separator],
+            ),
+            MenuItem::Separator,
+        ]);
+        let shape: Vec<String> = tidy
+            .iter()
+            .map(|i| match i {
+                MenuItem::Separator => "-".to_string(),
+                MenuItem::Submenu { label, items } => format!("{label}:{}", items.len()),
+                other => other.label().unwrap_or_default().to_string(),
+            })
+            .collect();
+        assert_eq!(shape, ["a", "-", "Kept:1"]);
+    }
+
+    #[test]
+    fn submenu_rows_are_hoverable_and_widen_the_level() {
+        let m = nested_menu();
+        // Row 2 ("More") is the second choosable row.
+        let y = anchor_y(&m) + MENU_INNER_PAD + 2.0 * MENU_ITEM_HEIGHT;
+        assert_eq!(hover_at(&m, 110.0, y, 8.0), Some(1));
+        // Wide enough characters that the labels, not the minimum width,
+        // decide the width.
+        let plain = level_width(&[custom("More")], 60.0);
+        assert_eq!(level_width(&m.items, 60.0), plain + SUBMENU_ARROW_WIDTH);
+    }
+
+    #[test]
+    fn open_submenu_walks_levels_and_closes_deeper_ones() {
+        let mut m = nested_menu();
+        m.open_submenu(0, 2);
+        assert_eq!(m.level_count(), 2);
+        assert_eq!(m.level_items(1).map(<[MenuItem]>::len), Some(3));
+        m.open_submenu(1, 2);
+        assert_eq!(m.level_count(), 3);
+        assert_eq!(m.level_items(2).map(<[MenuItem]>::len), Some(2));
+        // Re-opening at the top closes both and reopens one level.
+        m.open_submenu(0, 2);
+        assert_eq!(m.level_count(), 2);
+        // An action row closes everything below its level.
+        m.open_submenu(0, 0);
+        assert_eq!(m.level_count(), 1);
+        assert_eq!(m.highlighted_row(0), Some(0));
+        assert!(m.level_items(1).is_none());
+    }
+
+    #[test]
+    fn activation_is_the_same_at_every_level() {
+        let mut m = nested_menu();
+        m.open_submenu(0, 2);
+        m.open_submenu(1, 2);
+        assert_eq!(
+            m.activation_at(2, 1),
+            Some(MenuActivation::Custom("d".into()))
+        );
+        assert_eq!(
+            m.activation_at(0, 3),
+            Some(MenuActivation::Custom("e".into()))
+        );
+        assert_eq!(m.activation_at(0, 2), None, "a submenu row opens instead");
+        assert_eq!(m.activation_at(0, 1), None, "a separator does nothing");
+    }
+
+    #[test]
+    fn keyboard_walks_into_and_out_of_submenus() {
+        let mut m = nested_menu();
+        assert_eq!(m.key("down"), MenuKeyOutcome::Handled);
+        assert_eq!(m.highlighted_row(0), Some(0));
+        m.key("down");
+        assert_eq!(m.highlighted_row(0), Some(2), "skips the separator");
+        assert_eq!(m.key("right"), MenuKeyOutcome::Handled);
+        assert_eq!(m.level_count(), 2);
+        assert_eq!(m.highlighted_row(1), Some(0), "first row of the child");
+        m.key("up");
+        assert_eq!(m.highlighted_row(1), Some(2), "wraps, skipping separators");
+        assert_eq!(m.key("enter"), MenuKeyOutcome::Handled);
+        assert_eq!(m.level_count(), 3);
+        m.key("down");
+        assert_eq!(
+            m.key("enter"),
+            MenuKeyOutcome::Activate(MenuActivation::Custom("d".into()))
+        );
+        assert_eq!(m.key("left"), MenuKeyOutcome::Handled);
+        assert_eq!(m.level_count(), 2);
+        assert_eq!(m.key("escape"), MenuKeyOutcome::Handled);
+        assert_eq!(m.level_count(), 1);
+        assert_eq!(
+            m.highlighted_row(0),
+            Some(2),
+            "parent row stays highlighted"
+        );
+        assert_eq!(m.key("left"), MenuKeyOutcome::Ignored);
+        assert_eq!(m.key("right"), MenuKeyOutcome::Handled, "reopens");
+        m.key("escape");
+        assert_eq!(m.key("escape"), MenuKeyOutcome::Close);
+        assert_eq!(m.key("x"), MenuKeyOutcome::Ignored);
+    }
+
+    #[test]
+    fn right_on_an_action_row_does_nothing() {
+        let mut m = nested_menu();
+        m.key("down");
+        assert_eq!(m.key("right"), MenuKeyOutcome::Ignored);
+        assert_eq!(m.level_count(), 1);
+    }
+
+    #[test]
+    fn submenu_opens_beside_its_row_and_flips_at_window_edges() {
+        let mut m = nested_menu();
+        m.open_submenu(0, 2);
+        let rects = m.level_rects(0.0, 0.0, 2000.0, 2000.0, 8.0);
+        assert_eq!(rects.len(), 2);
+        let (parent, child) = (rects[0], rects[1]);
+        assert_eq!(child.x, parent.x + parent.w - SUBMENU_OVERLAP);
+        assert_eq!(child.y, parent.y + 2.0 * MENU_ITEM_HEIGHT);
+
+        // Near the right edge the child flips to the parent's left.
+        let mut m = custom_menu_with_items(1700.0, 100.0, nested_menu().items);
+        m.open_submenu(0, 2);
+        let vw = 1700.0 + m.width_for(8.0) + 20.0;
+        let rects = m.level_rects(0.0, 0.0, vw, 2000.0, 8.0);
+        assert_eq!(rects[1].x, rects[0].x - rects[1].w + SUBMENU_OVERLAP);
+
+        // Near the bottom the child moves up to stay inside the window.
+        let mut m = custom_menu_with_items(100.0, 100.0, nested_menu().items);
+        m.open_submenu(0, 2);
+        let vh = 100.0 + m.total_height() + 10.0;
+        let rects = m.level_rects(0.0, 0.0, 2000.0, vh, 8.0);
+        assert!(rects[1].y + rects[1].h <= vh - MENU_SCREEN_MARGIN + 0.01);
+        assert!(rects.iter().all(|r| r.contains(r.x + 1.0, r.y + 1.0)));
     }
 
     /// The grid origin offset is honored: a grid placed at a window offset

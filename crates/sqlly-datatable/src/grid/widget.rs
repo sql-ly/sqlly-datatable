@@ -10,9 +10,7 @@ use crate::chart::widget::{ChartCanvas, DEFAULT_CHART_SIDEBAR_WIDTH};
 use crate::config::GridConfig;
 use crate::data::GridData;
 use crate::filter::{ColumnFilter, FilterPredicate};
-use crate::grid::context_menu::{
-    ContextMenuProvider, ContextMenuProviderHandle, PendingCustomContextMenuAction,
-};
+use crate::grid::context_menu::{ContextMenuProvider, ContextMenuProviderHandle};
 use crate::grid::paint::{paint_grid, paint_status_bar, PaintData, StatusBarData};
 use crate::grid::selection::Selection;
 use crate::grid::state::state_inner;
@@ -2125,9 +2123,11 @@ impl SqllyDataTable {
 fn render_context_menu_overlay(
     state: &Entity<GridState>,
     cx: &mut Context<SqllyDataTable>,
-) -> Option<impl IntoElement> {
+) -> Vec<gpui::AnyElement> {
     let s = state.read(cx);
-    let menu = s.context_menu.clone()?;
+    let Some(menu) = s.context_menu.clone() else {
+        return Vec::new();
+    };
     let theme = s.theme.clone();
     let animations = s.config.animations;
     let cw = s.char_width;
@@ -2137,18 +2137,17 @@ fn render_context_menu_overlay(
     let vw = f32::from(viewport.width);
     let vh = f32::from(viewport.height);
 
-    let resolved = menu.resolved_position(grid_ox, grid_oy, vw, vh, cw);
-    let abs_x = grid_ox + f32::from(resolved.x);
-    let abs_y = grid_oy + f32::from(resolved.y);
-    let menu_w = menu.width_for(cw);
-
-    // Build one row per item. `selectable_idx` counts only Action/Custom items
-    // so it matches the `hovered` index convention used elsewhere.
-    let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(menu.items.len());
-    let mut selectable_idx = 0usize;
-    for item in &menu.items {
-        match item {
-            MenuItem::Separator => {
+    let rects = menu.level_rects(grid_ox, grid_oy, vw, vh, cw);
+    let mut panels: Vec<gpui::AnyElement> = Vec::with_capacity(rects.len());
+    for (level, rect) in rects.iter().enumerate() {
+        let Some(items) = menu.level_items(level) else {
+            break;
+        };
+        let highlighted = menu.highlighted_row(level);
+        let open_row = menu.open.get(level).map(|o| o.row);
+        let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(items.len());
+        for (row_idx, item) in items.iter().enumerate() {
+            if matches!(item, MenuItem::Separator) {
                 rows.push(
                     div()
                         .h(px(menu::MENU_ITEM_HEIGHT))
@@ -2157,111 +2156,165 @@ fn render_context_menu_overlay(
                         .child(div().mx(px(4.0)).h(px(1.0)).w_full().bg(theme.grid_line))
                         .into_any_element(),
                 );
+                continue;
             }
-            MenuItem::Action(_) | MenuItem::Custom { .. } => {
-                let this_idx = selectable_idx;
-                selectable_idx += 1;
-                let label = item.label().unwrap_or("").to_owned();
-                let hovered = menu.hovered == Some(this_idx);
+            let label = item.label().unwrap_or("").to_owned();
+            let is_submenu = item.is_submenu();
+            let lit = highlighted == Some(row_idx) || open_row == Some(row_idx);
 
-                // Dispatch: set the pending action and close the menu. The
-                // pending fields are drained at the top of `render` (they need
-                // App access for clipboard).
-                let action = match item {
-                    MenuItem::Action(a) => MenuDispatch::Builtin(*a, menu.col),
-                    MenuItem::Custom { id, .. } => {
-                        MenuDispatch::Custom(id.clone(), menu.request.clone())
-                    }
-                    MenuItem::Separator => unreachable!(),
-                };
-
-                let state_click = state.clone();
-                let state_hover = state.clone();
-                let mut row = div()
-                    .h(px(menu::MENU_ITEM_HEIGHT))
-                    .px(px(menu::MENU_PADDING_X))
-                    .flex()
-                    .items_center()
-                    .text_color(theme.menu_fg)
-                    .text_size(px(menu::MENU_FONT_SIZE))
-                    .child(label)
-                    .on_mouse_move(move |_e: &MouseMoveEvent, _window, cx| {
-                        state_hover.update(cx, |s, cx| {
-                            if let Some(m) = s.context_menu.as_mut() {
-                                if m.hovered != Some(this_idx) {
-                                    m.hovered = Some(this_idx);
-                                    cx.notify();
+            let state_click = state.clone();
+            let state_hover = state.clone();
+            let mut row = div()
+                .h(px(menu::MENU_ITEM_HEIGHT))
+                .px(px(menu::MENU_PADDING_X))
+                .flex()
+                .items_center()
+                .text_color(theme.menu_fg)
+                .text_size(px(menu::MENU_FONT_SIZE))
+                .child(div().flex_1().child(label))
+                .on_mouse_move(move |_e: &MouseMoveEvent, _window, cx| {
+                    state_hover.update(cx, |s, cx| {
+                        hover_context_menu_row(s, level, row_idx, is_submenu, cx);
+                    });
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    move |_e: &MouseDownEvent, _window, cx| {
+                        state_click.update(cx, |s, cx| {
+                            let activation = s
+                                .context_menu
+                                .as_ref()
+                                .and_then(|m| m.activation_at(level, row_idx));
+                            match activation {
+                                Some(activation) => s.activate_context_menu(activation),
+                                None => {
+                                    if let Some(m) = s.context_menu.as_mut() {
+                                        m.open_submenu(level, row_idx);
+                                        m.hover_gen += 1;
+                                    }
                                 }
                             }
-                        });
-                    })
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        move |_e: &MouseDownEvent, _window, cx| {
-                            state_click.update(cx, |s, cx| {
-                                match &action {
-                                    MenuDispatch::Builtin(a, col) => {
-                                        s.pending_action = Some((*a, *col));
-                                    }
-                                    MenuDispatch::Custom(id, request) => {
-                                        if let Some(request) = request {
-                                            s.pending_custom_context_menu_action =
-                                                Some(PendingCustomContextMenuAction {
-                                                    id: id.clone(),
-                                                    request: request.clone(),
-                                                });
-                                        }
-                                    }
-                                }
-                                s.context_menu = None;
-                                cx.notify();
-                            });
-                        },
-                    );
-                if hovered {
-                    row = row.bg(theme.menu_hover_bg);
-                }
-                rows.push(row.into_any_element());
-            }
-        }
-    }
-
-    let menu_body = div()
-        .flex()
-        .flex_col()
-        .w(px(menu_w))
-        .py(px(menu::MENU_INNER_PAD))
-        .bg(theme.menu_bg)
-        .border_1()
-        .border_color(theme.grid_line)
-        .children(rows);
-
-    // Full-window transparent backdrop: catches clicks outside the menu to
-    // dismiss it. Placed behind the menu within the same anchored overlay.
-    let state_backdrop = state.clone();
-    let overlay = deferred(
-        anchored().position(point(px(abs_x), px(abs_y))).child(
-            div()
-                .occlude()
-                .child(crate::grid::motion::pop_in(
-                    menu_body,
-                    "grid-context-menu",
-                    animations,
-                ))
-                .on_mouse_down_out(move |_e: &MouseDownEvent, _window, cx| {
-                    state_backdrop.update(cx, |s, cx| {
-                        if s.context_menu.is_some() {
-                            s.context_menu = None;
-                            s.filter_panel = None;
                             cx.notify();
-                        }
-                    });
-                }),
-        ),
-    )
-    .with_priority(CONTEXT_MENU_PRIORITY);
+                        });
+                    },
+                );
+            if is_submenu {
+                row = row.child(
+                    div()
+                        .pl(px(8.0))
+                        .text_color(theme.menu_fg)
+                        .child(menu::SUBMENU_ARROW),
+                );
+            }
+            if lit {
+                row = row.bg(theme.menu_hover_bg);
+            }
+            rows.push(row.into_any_element());
+        }
 
-    Some(overlay)
+        let menu_body = div()
+            .flex()
+            .flex_col()
+            .w(px(rect.w))
+            .py(px(menu::MENU_INNER_PAD))
+            .bg(theme.menu_bg)
+            .border_1()
+            .border_color(theme.grid_line)
+            .children(rows);
+
+        let mut panel = div().occlude().child(if level == 0 {
+            crate::grid::motion::pop_in(menu_body, "grid-context-menu", animations)
+                .into_any_element()
+        } else {
+            menu_body.into_any_element()
+        });
+        if level == 0 {
+            // A press outside every open level dismisses the menu. Submenus
+            // are separate overlays, so a press inside one is "outside" the
+            // top level and must be checked against all of them.
+            let state_backdrop = state.clone();
+            let all_rects = rects.clone();
+            panel = panel.on_mouse_down_out(move |e: &MouseDownEvent, _window, cx| {
+                let (x, y) = (f32::from(e.position.x), f32::from(e.position.y));
+                if all_rects.iter().any(|r| r.contains(x, y)) {
+                    return;
+                }
+                state_backdrop.update(cx, |s, cx| {
+                    if s.context_menu.is_some() {
+                        s.context_menu = None;
+                        s.filter_panel = None;
+                        cx.notify();
+                    }
+                });
+            });
+        }
+        panels.push(
+            deferred(
+                anchored()
+                    .position(point(px(rect.x), px(rect.y)))
+                    .child(panel),
+            )
+            .with_priority(CONTEXT_MENU_PRIORITY + level)
+            .into_any_element(),
+        );
+    }
+    panels
+}
+
+/// Pointer moved onto `row` at menu `level`. Highlights it. A submenu row
+/// opens its submenu at once when nothing deeper is open; when another
+/// submenu is open, switching to this row (or closing it, for an action row)
+/// waits [`menu::SUBMENU_HOVER_DELAY_MS`] so the pointer can cut across
+/// sibling rows on its way into the open child without it collapsing.
+fn hover_context_menu_row(
+    s: &mut GridState,
+    level: usize,
+    row: usize,
+    is_submenu: bool,
+    cx: &mut Context<GridState>,
+) {
+    let Some(m) = s.context_menu.as_mut() else {
+        return;
+    };
+    if m.highlighted_row(level) == Some(row) && m.open.len() <= level + 1 {
+        return;
+    }
+    m.set_highlight(level, row);
+    m.hover_gen += 1;
+    let gen = m.hover_gen;
+    let child_open = m.open.len() > level;
+    let this_open = m.open.get(level).map(|o| o.row) == Some(row);
+    if this_open {
+        // Back on the row whose submenu is showing: keep it, close anything
+        // deeper that a sibling inside it had opened.
+        m.close_below(level + 1);
+    } else if is_submenu && !child_open {
+        m.open_submenu(level, row);
+    } else if child_open {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(
+                    menu::SUBMENU_HOVER_DELAY_MS,
+                ))
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                let Some(m) = s.context_menu.as_mut() else {
+                    return;
+                };
+                if m.hover_gen != gen {
+                    return;
+                }
+                if is_submenu {
+                    m.open_submenu(level, row);
+                } else {
+                    m.close_below(level);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+    cx.notify();
 }
 
 /// Fixed width of the filter popover, in pixels.
@@ -2793,14 +2846,4 @@ fn render_busy_overlay(
         crate::grid::motion::SCRIM_ENTER_MS,
         animations,
     ))
-}
-
-/// What a menu row dispatches when clicked. Captured per-row so the click
-/// handler owns its data without borrowing the menu snapshot.
-enum MenuDispatch {
-    Builtin(menu::MenuAction, usize),
-    Custom(
-        String,
-        Option<crate::grid::context_menu::ContextMenuRequest>,
-    ),
 }
