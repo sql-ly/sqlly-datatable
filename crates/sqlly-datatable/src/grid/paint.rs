@@ -121,6 +121,7 @@ pub(crate) struct PaintData {
     pub(crate) display_columns: Vec<usize>,
     pub(crate) frozen_columns: usize,
     pub(crate) row_backgrounds: Arc<Vec<Option<Hsla>>>,
+    pub(crate) reference_highlights: Arc<super::state::ReferenceHighlights>,
 }
 
 impl PaintData {
@@ -158,6 +159,7 @@ impl PaintData {
             display_columns: s.display_columns.clone(),
             frozen_columns: s.frozen_columns.min(s.display_columns.len()),
             row_backgrounds: Arc::clone(&s.row_backgrounds),
+            reference_highlights: Arc::clone(&s.reference_highlights),
         }
     }
 
@@ -815,6 +817,30 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                         fill_quad(window, x, y, w, row_h, gpui::hsla(0.14, 0.90, 0.55, 0.38));
                     }
                 }
+                // Formula references: a faint column tint, and a colored
+                // outline on each referenced cell (drawn over the selection).
+                if !data.reference_highlights.is_empty() {
+                    if let Some(tint) = data.reference_highlights.columns.get(&ci) {
+                        fill_quad(window, x, y, w, row_h, Hsla { a: 0.10, ..*tint });
+                    }
+                    if let Some(outline) = data.reference_highlights.cells.get(&(row_idx, ci)) {
+                        fill_quad(
+                            window,
+                            x,
+                            y,
+                            w,
+                            row_h,
+                            Hsla {
+                                a: 0.16,
+                                ..*outline
+                            },
+                        );
+                        fill_quad(window, x, y, w, 2.0, *outline);
+                        fill_quad(window, x, y + row_h - 2.0, w, 2.0, *outline);
+                        fill_quad(window, x, y, 2.0, row_h, *outline);
+                        fill_quad(window, x + w - 2.0, y, 2.0, row_h, *outline);
+                    }
+                }
                 let (text, is_neg) = if is_null {
                     (fmt.null.text.clone(), false)
                 } else {
@@ -988,6 +1014,10 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
             }
             if data.grouped_column == Some(ci) {
                 fill_quad(window, x, oy + hdr_h - 3.0, w, 3.0, theme.sort_indicator);
+            }
+            if let Some(tint) = data.reference_highlights.columns.get(&ci) {
+                fill_quad(window, x, oy, w, hdr_h, Hsla { a: 0.16, ..*tint });
+                fill_quad(window, x, oy + hdr_h - 3.0, w, 3.0, *tint);
             }
             // Column headers echo their column's data alignment, so a numeric
             // column's label sits over its right-aligned values instead of

@@ -23,7 +23,8 @@ pub use context_menu::{
 pub use menu::{ContextMenu, MenuAction, MenuItem};
 pub use selection::{HitResult, ScrollbarAxis, Selection, SortDirection};
 pub use state::{
-    BusyState, FilterInput, FilterPanel, FilterValueRow, GridState, RowGroup, RowWindow,
+    BusyState, FilterInput, FilterPanel, FilterValueRow, GridState, ReferenceHighlights, RowGroup,
+    RowWindow,
 };
 pub use theme::{GridTheme, GridThemePair};
 pub use widget::{GridTab, PivotSidebarPosition, RowAction, SqllyDataTable, SqllyDataTableBuilder};

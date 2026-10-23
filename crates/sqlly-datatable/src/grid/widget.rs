@@ -504,8 +504,10 @@ impl SqllyDataTable {
     }
 
     /// Push the grid's current data snapshot into the pivot state when it
-    /// changed (O(1) compare via Arc identity).
-    fn sync_pivot_source(&self, cx: &mut App) {
+    /// changed (O(1) compare via Arc identity). Runs on render; call it
+    /// before reading the pivot of a grid whose Pivot tab may never have
+    /// been shown (an export, for one).
+    pub fn sync_pivot_source(&self, cx: &mut App) {
         let Some(parts) = &self.pivot else {
             return;
         };

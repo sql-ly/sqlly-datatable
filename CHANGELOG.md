@@ -5,6 +5,12 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.3.0] - 2026-10-23
+
+### Added
+- **Formula-reference highlights.** `GridState::set_reference_highlights(ReferenceHighlights { cells, columns })` outlines cells (keyed by source row and column) and tints whole columns in caller-chosen colors, the way a spreadsheet shows the inputs of a formula being edited. Each outlined cell gets a 2 px border and a faint fill in its color, drawn over selection, conditional fills, and find highlights; a tinted column gets a faint wash and a colored header underline. Pass `ReferenceHighlights::default()` to clear. Nothing is painted, and nothing costs anything, while it is empty.
+- `SqllyDataTable::sync_pivot_source` is now public. The grid pushes its rows into the pivot on render; hosts that read the pivot of a grid whose Pivot tab was never shown (for an export, say) call it first.
+
 ## [8.2.0] - 2026-10-22
 
 ### Added

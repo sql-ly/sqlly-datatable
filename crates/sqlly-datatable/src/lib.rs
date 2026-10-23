@@ -133,9 +133,9 @@ pub use font::{grid_font_family, set_grid_font_family};
 pub use grid::{
     BusyState, ColumnContext, ContextMenu, ContextMenuItem, ContextMenuProvider,
     ContextMenuRequest, ContextMenuSelection, ContextMenuTarget, FilterPanel, GridState, GridTab,
-    GridTheme, GridThemePair, HitResult, MenuAction, MenuItem, PivotSidebarPosition, RowAction,
-    RowGroup, RowWindow, ScrollbarAxis, SelectedCellContext, SelectedRowContext, Selection,
-    SortDirection, SqllyDataTable, SqllyDataTableBuilder,
+    GridTheme, GridThemePair, HitResult, MenuAction, MenuItem, PivotSidebarPosition,
+    ReferenceHighlights, RowAction, RowGroup, RowWindow, ScrollbarAxis, SelectedCellContext,
+    SelectedRowContext, Selection, SortDirection, SqllyDataTable, SqllyDataTableBuilder,
 };
 pub use tooltip::{set_tooltip_show_delay, tooltip_show_delay};
 

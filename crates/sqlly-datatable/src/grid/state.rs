@@ -260,6 +260,24 @@ pub struct RowWindow {
     pub offset: usize,
 }
 
+/// Cells and columns a formula being edited refers to, each in the color of
+/// its part of the formula. See [`GridState::set_reference_highlights`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReferenceHighlights {
+    /// `(source row, column)` → outline color.
+    pub cells: std::collections::HashMap<(usize, usize), Hsla>,
+    /// Column → tint color (painted faintly behind the column, and as a
+    /// header underline).
+    pub columns: std::collections::HashMap<usize, Hsla>,
+}
+
+impl ReferenceHighlights {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty() && self.columns.is_empty()
+    }
+}
+
 /// Complete grid state owned by a GPUI `Entity<GridState>`.
 #[derive(Debug)]
 pub struct GridState {
@@ -309,6 +327,10 @@ pub struct GridState {
     /// Optional per-source-row background, painted after the zebra stripe
     /// and skipped on a selected cell. Empty means no override.
     pub row_backgrounds: Arc<Vec<Option<Hsla>>>,
+    /// Formula-reference highlights, Excel style: `(source row, column)`
+    /// cells outlined in a color, and whole columns tinted (with a colored
+    /// header underline). Empty when nothing is highlighted.
+    pub reference_highlights: Arc<ReferenceHighlights>,
     pub scroll_handle: ScrollHandle,
     pub focus_handle: FocusHandle,
     pub bounds: Bounds<Pixels>,
@@ -834,6 +856,7 @@ impl GridState {
             frozen_columns: 0,
             display_columns: (0..col_count).collect(),
             row_backgrounds: Arc::new(Vec::new()),
+            reference_highlights: Arc::new(ReferenceHighlights::default()),
             scroll_handle: ScrollHandle::new(),
             focus_handle,
             bounds: Bounds::default(),
@@ -1006,6 +1029,13 @@ impl GridState {
     /// leave later rows on the default zebra stripe.
     pub fn set_row_backgrounds(&mut self, backgrounds: Vec<Option<Hsla>>) {
         self.row_backgrounds = Arc::new(backgrounds);
+    }
+
+    /// Outline cells and tint columns in the colors of the formula parts
+    /// that reference them (the way a spreadsheet shows a formula's inputs
+    /// while you edit it). Pass the default to clear.
+    pub fn set_reference_highlights(&mut self, highlights: ReferenceHighlights) {
+        self.reference_highlights = Arc::new(highlights);
     }
 
     pub fn set_config(&mut self, config: GridConfig) {
