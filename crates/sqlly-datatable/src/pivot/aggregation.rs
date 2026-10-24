@@ -118,11 +118,11 @@ impl Accumulator {
                         }
                     }
                 }
-                CellValue::Decimal(v) => {
+                CellValue::Decimal(_) | CellValue::ExactDecimal(_) => {
                     if !self.promoted {
                         self.promote();
                     }
-                    self.float_sum += *v;
+                    self.float_sum += value.as_f64().unwrap_or_default();
                 }
                 // Text/Date/Boolean cells do not participate in numeric sums;
                 // they still count toward the row having values so an
@@ -349,5 +349,22 @@ mod tests {
     #[test]
     fn first_caption_reads_naturally() {
         assert_eq!(AggregationFn::First.caption("Name"), "First of Name");
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn exact_decimals_sum_and_keep_exact_extremes() {
+        let wide = CellValue::from_decimal_text("12345678901234567890002").expect("decimal");
+        let vals = vec![
+            CellValue::from_decimal_text("12345678901234567890001").expect("decimal"),
+            wide.clone(),
+            Integer(1),
+        ];
+        match aggregate(&vals, AggregationFn::Sum) {
+            Decimal(v) => assert!((v - 2.4691357802469135e22).abs() < 1e7),
+            other => panic!("expected Decimal, got {other:?}"),
+        }
+        assert_eq!(aggregate(&vals, AggregationFn::Max), wide);
+        assert_eq!(aggregate(&vals, AggregationFn::Min), Integer(1));
     }
 }

@@ -5,6 +5,17 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.4.0] - 2026-10-23
+
+### Added
+- **Exact decimals.** `CellValue::ExactDecimal(ExactDecimal)` holds a decimal whose digits would not survive `f64`: more than 15 significant digits, or an integer past `i64` such as a `numeric(38,0)` key. It paints its own digits in number columns (rounded half away from zero to the column's decimals, with the configured grouping, decimal character, and negative style) and shows its canonical digits elsewhere. It sorts exactly against other exact decimals and integers, and by its nearest `f64` against `Decimal`. Filters, conditional formatting, pivot Sum/Avg, and charts read that nearest `f64`; pivot Min/Max return the exact cell.
+- `CellValue::from_decimal_text(&str)` turns a database's decimal text into `Integer` when it fits `i64`, `Decimal` when `f64` keeps every digit, and `ExactDecimal` otherwise; anything that is not a plain decimal (exponents included) returns `None`.
+- `CellValue::as_f64()` is the numeric reading of `Integer`, `Decimal`, and `ExactDecimal` cells.
+- `ExactDecimal::parse`, `as_str`, `to_f64`, `is_negative`, `fits_f64`, `cmp_exact`, `rounded_magnitude`, and `format::format_exact_decimal` for hosts that render or compare these values themselves.
+
+### Changed
+- `CellValue` gains a variant, so a host that matches it exhaustively must add an `ExactDecimal` arm.
+
 ## [8.3.0] - 2026-10-23
 
 ### Added

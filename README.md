@@ -30,7 +30,7 @@ Call `sqlly_datatable::init(cx)` once at startup (it forwards to `gpui_component
 
 - **Virtualized cell selection** — large datasets render only the visible rows; cell / row / column / rectangular drag selection still works on rows that are currently offscreen.
 - **Cell selection** — single cells, row ranges, column ranges, and click-drag rectangle selection. Shift extends the existing selection.
-- **Sorting** — click column headers or sort buttons to cycle ascending / descending / off. Uses a deterministic total ordering across `Integer`, `Decimal`, `Text`, `Date`, `Boolean`, and `None`.
+- **Sorting** — click column headers or sort buttons to cycle ascending / descending / off. Uses a deterministic total ordering across `Integer`, `Decimal`, `ExactDecimal`, `Text`, `Date`, `Boolean`, and `None`; decimals too wide for `f64` keep their exact digits for display and ordering.
 - **Filtering** — per-column filter prompt via the right-click context menu. The filter is compared against the formatted value, case-insensitively.
 - **Column resizing** — drag column borders to resize; the cell `[r1..r2]` predicate normalizes reversed drag directions.
 - **Scrollbars** — horizontal and vertical, with scroll clamping and edge-scroll during drag selection. Auto-scroll is on-demand (only while a drag is active), so it isn't a 60 fps loop.

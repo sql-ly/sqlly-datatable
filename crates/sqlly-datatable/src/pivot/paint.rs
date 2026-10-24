@@ -192,6 +192,7 @@ fn cell_is_negative(cell: &CellValue) -> bool {
     match cell {
         CellValue::Integer(v) => *v < 0,
         CellValue::Decimal(v) => *v < 0.0,
+        CellValue::ExactDecimal(d) => d.is_negative(),
         _ => false,
     }
 }

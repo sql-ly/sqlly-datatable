@@ -343,12 +343,14 @@ impl ResolvedConditionals {
 }
 
 /// The numeric reading of a cell for conditions, scales, and bars: typed
-/// [`CellValue::Integer`] / finite [`CellValue::Decimal`] only. Text is never
+/// [`CellValue::Integer`] / finite [`CellValue::Decimal`] or
+/// [`CellValue::ExactDecimal`] only. Text is never
 /// parsed; dates and booleans do not participate.
 fn numeric_value(cell: &CellValue) -> Option<f64> {
     match cell {
         CellValue::Integer(v) => Some(*v as f64),
         CellValue::Decimal(v) if v.is_finite() => Some(*v),
+        CellValue::ExactDecimal(d) if d.to_f64().is_finite() => Some(d.to_f64()),
         _ => None,
     }
 }

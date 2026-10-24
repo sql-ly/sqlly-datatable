@@ -87,6 +87,7 @@ pub mod chart;
 pub mod conditional;
 pub mod config;
 pub mod data;
+pub mod decimal;
 pub mod filter;
 pub mod font;
 pub mod format;
@@ -128,6 +129,7 @@ pub use config::{
 pub use data::{
     compare_cells, sample_data, CellValue, Column, ColumnKind, GridData, GridDataError,
 };
+pub use decimal::ExactDecimal;
 pub use filter::{ColumnFilter, FilterPredicate, NumberOp, TextOp};
 pub use font::{grid_font_family, set_grid_font_family};
 pub use grid::{

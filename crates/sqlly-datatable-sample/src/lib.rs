@@ -1349,6 +1349,7 @@ fn cell_value_kind(value: &sqlly_datatable::CellValue) -> &'static str {
         CellValue::Text(_) => "Text",
         CellValue::Integer(_) => "Integer",
         CellValue::Decimal(_) => "Decimal",
+        CellValue::ExactDecimal(_) => "ExactDecimal",
         CellValue::Date(_) => "Date",
         CellValue::Boolean(_) => "Boolean",
         CellValue::None => "None",
@@ -1362,6 +1363,7 @@ fn cell_display(value: &sqlly_datatable::CellValue) -> String {
         CellValue::Text(s) => s.clone(),
         CellValue::Integer(i) => i.to_string(),
         CellValue::Decimal(d) => d.to_string(),
+        CellValue::ExactDecimal(d) => d.to_string(),
         CellValue::Date(d) => d.to_string(),
         CellValue::Boolean(b) => b.to_string(),
         CellValue::None => String::new(),
@@ -1374,6 +1376,7 @@ fn sql_literal(value: &sqlly_datatable::CellValue) -> String {
     match value {
         CellValue::Integer(i) => i.to_string(),
         CellValue::Decimal(d) => d.to_string(),
+        CellValue::ExactDecimal(d) => d.to_string(),
         CellValue::Boolean(b) => b.to_string(),
         CellValue::None => "NULL".to_string(),
         CellValue::Date(d) => d.to_string(),
@@ -1383,12 +1386,7 @@ fn sql_literal(value: &sqlly_datatable::CellValue) -> String {
 
 /// Numeric projection of a cell value; `None` for non-numeric variants.
 fn numeric_value(value: &sqlly_datatable::CellValue) -> Option<f64> {
-    use sqlly_datatable::CellValue;
-    match value {
-        CellValue::Integer(i) => Some(*i as f64),
-        CellValue::Decimal(d) => Some(*d),
-        _ => None,
-    }
+    value.as_f64()
 }
 
 /// Sum the numeric cells in an iterator of values.

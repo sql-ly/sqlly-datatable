@@ -199,6 +199,7 @@ fn cell_number(value: &CellValue) -> Option<f64> {
     match value {
         CellValue::Integer(i) => Some(*i as f64),
         CellValue::Decimal(d) => Some(*d),
+        CellValue::ExactDecimal(d) => Some(d.to_f64()),
         CellValue::Date(t) => Some(*t as f64),
         CellValue::Text(_) | CellValue::Boolean(_) | CellValue::None => None,
     }

@@ -14,10 +14,14 @@
 
 use std::cmp::Ordering;
 
+use crate::decimal::ExactDecimal;
+
 /// A single cell value.
 ///
-/// Decimal values are stored as `f64`; for very large integers that exceed
-/// `2^53`, route them through [`CellValue::Text`] instead.
+/// Decimal values are stored as `f64` when that keeps every digit; wider
+/// decimals and integers past `i64` use [`CellValue::ExactDecimal`]. Build
+/// numeric cells from database text with [`CellValue::from_decimal_text`],
+/// which picks the right variant.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum CellValue {
     /// Free-form text. The grid will case-fold, truncate, and align it per
@@ -28,6 +32,10 @@ pub enum CellValue {
     /// 64-bit floating point. `NaN` is permitted; [`compare_cells`] places it
     /// after all finite numbers so sorting remains stable.
     Decimal(f64),
+    /// A decimal whose digits would not survive `f64`. It displays and sorts
+    /// by its exact digits; filters, conditional formatting, aggregation, and
+    /// charts read [`ExactDecimal::to_f64`].
+    ExactDecimal(ExactDecimal),
     /// Unix timestamp in seconds. Formatting is driven by
     /// [`crate::config::DateFormat`].
     Date(i64),
@@ -186,6 +194,38 @@ impl GridData {
     }
 }
 
+impl CellValue {
+    /// The numeric cell for a database's decimal text: [`CellValue::Integer`]
+    /// for an integer that fits `i64`, [`CellValue::Decimal`] when `f64` keeps
+    /// every digit, and [`CellValue::ExactDecimal`] otherwise. `None` when the
+    /// text is not a plain decimal (exponents included).
+    #[must_use]
+    pub fn from_decimal_text(text: &str) -> Option<Self> {
+        let trimmed = text.trim();
+        if let Ok(v) = trimmed.parse::<i64>() {
+            return Some(CellValue::Integer(v));
+        }
+        let exact = ExactDecimal::parse(trimmed)?;
+        Some(if exact.fits_f64() {
+            CellValue::Decimal(exact.to_f64())
+        } else {
+            CellValue::ExactDecimal(exact)
+        })
+    }
+
+    /// The numeric reading of a number cell: `Integer`, `Decimal`, or
+    /// `ExactDecimal` (nearest `f64`). Other variants return `None`.
+    #[must_use]
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            CellValue::Integer(v) => Some(*v as f64),
+            CellValue::Decimal(v) => Some(*v),
+            CellValue::ExactDecimal(d) => Some(d.to_f64()),
+            _ => None,
+        }
+    }
+}
+
 impl From<&str> for CellValue {
     fn from(s: &str) -> Self {
         CellValue::Text(s.to_owned())
@@ -237,6 +277,8 @@ impl From<Option<CellValue>> for CellValue {
 ///   values, and `0.0` before `-0.0` is reversed by `total_cmp` semantics —
 ///   we keep that contract).
 /// * Mixed `Integer` / `Decimal` pairs compare numerically.
+/// * `ExactDecimal` compares exactly with `ExactDecimal` and `Integer`, and
+///   by its nearest `f64` with `Decimal`.
 /// * `None` always sorts before every other variant.
 /// * Cross-type non-numeric pairs fall back to a stable type-rank order so
 ///   the return value is never `Equal` for genuinely different values.
@@ -254,6 +296,11 @@ pub fn compare_cells(a: &CellValue, b: &CellValue) -> Ordering {
         (CellValue::Decimal(x), CellValue::Decimal(y)) => x.total_cmp(y),
         (CellValue::Integer(x), CellValue::Decimal(y)) => (*x as f64).total_cmp(y),
         (CellValue::Decimal(x), CellValue::Integer(y)) => x.total_cmp(&(*y as f64)),
+        (CellValue::ExactDecimal(x), CellValue::ExactDecimal(y)) => x.cmp_exact(y),
+        (CellValue::ExactDecimal(x), CellValue::Integer(y)) => x.cmp_exact(&ExactDecimal::from(*y)),
+        (CellValue::Integer(x), CellValue::ExactDecimal(y)) => ExactDecimal::from(*x).cmp_exact(y),
+        (CellValue::ExactDecimal(x), CellValue::Decimal(y)) => x.to_f64().total_cmp(y),
+        (CellValue::Decimal(x), CellValue::ExactDecimal(y)) => x.total_cmp(&y.to_f64()),
 
         (CellValue::Text(x), CellValue::Text(y)) => x.cmp(y),
         (CellValue::Date(x), CellValue::Date(y)) => x.cmp(y),
@@ -269,7 +316,7 @@ fn type_rank(value: &CellValue) -> u8 {
     match value {
         CellValue::None => 0,
         CellValue::Boolean(_) => 1,
-        CellValue::Integer(_) | CellValue::Decimal(_) => 2,
+        CellValue::Integer(_) | CellValue::Decimal(_) | CellValue::ExactDecimal(_) => 2,
         CellValue::Date(_) => 3,
         CellValue::Text(_) => 4,
     }
@@ -1041,5 +1088,55 @@ mod tests {
     fn column_index_empty_data_returns_none() {
         let data = GridData::new(vec![], vec![]).expect("empty");
         assert_eq!(data.column_index("anything"), None);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn from_decimal_text_picks_the_lossless_variant() {
+        assert_eq!(
+            CellValue::from_decimal_text(" 42 "),
+            Some(CellValue::Integer(42))
+        );
+        assert_eq!(
+            CellValue::from_decimal_text("-3790.62"),
+            Some(CellValue::Decimal(-3790.62))
+        );
+        assert!(matches!(
+            CellValue::from_decimal_text("99999999999999999999"),
+            Some(CellValue::ExactDecimal(_))
+        ));
+        assert!(matches!(
+            CellValue::from_decimal_text("1234567890.1234567891"),
+            Some(CellValue::ExactDecimal(_))
+        ));
+        assert_eq!(CellValue::from_decimal_text("1e5"), None);
+        assert_eq!(CellValue::from_decimal_text("n/a"), None);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn compare_exact_decimal_orders_by_digits_among_numbers() {
+        let exact = |s: &str| CellValue::from_decimal_text(s).expect("decimal");
+        let a = exact("12345678901234567890001");
+        let b = exact("12345678901234567890002");
+        assert_eq!(compare_cells(&a, &b), Ordering::Less);
+        assert_eq!(
+            compare_cells(&CellValue::Integer(i64::MAX), &a),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_cells(&a, &CellValue::Decimal(1.0)),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_cells(&exact("-99999999999999999999"), &CellValue::Integer(-1)),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_cells(&a, &CellValue::Text("0".into())),
+            Ordering::Less
+        );
+        assert_eq!(compare_cells(&CellValue::None, &a), Ordering::Less);
+        assert_eq!(a.as_f64(), Some(1.2345678901234568e22));
     }
 }

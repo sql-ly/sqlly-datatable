@@ -11,6 +11,7 @@ use crate::config::{
     TextCase, TruncationBehavior,
 };
 use crate::data::{CellValue, ColumnKind};
+use crate::decimal::ExactDecimal;
 
 // `std::time::SystemTime::now()` is unimplemented on wasm32-unknown-unknown
 // (it panics), so the web build reads the clock through `web-time`, which has
@@ -39,12 +40,16 @@ pub fn format_cell(value: &CellValue, fmt: &ResolvedColumnFormat) -> (String, bo
             (format_integer_as_decimal(*v, &fmt.number), *v < 0)
         }
         (CellValue::Decimal(v), ColumnKind::Integer) => (format_number(*v, &fmt.number), *v < 0.0),
+        (CellValue::ExactDecimal(d), ColumnKind::Decimal | ColumnKind::Integer) => {
+            (format_exact_decimal(d, &fmt.number), d.is_negative())
+        }
         (CellValue::Date(ts), ColumnKind::Date) => (format_date(*ts, &fmt.date), false),
         (CellValue::Boolean(b), ColumnKind::Boolean) => (format_boolean(*b, &fmt.boolean), false),
         (CellValue::None, _) => (String::new(), false),
         (CellValue::Text(s), _) => (s.clone(), false),
         (CellValue::Integer(v), _) => (v.to_string(), *v < 0),
         (CellValue::Decimal(v), _) => (v.to_string(), *v < 0.0),
+        (CellValue::ExactDecimal(d), _) => (d.as_str().to_owned(), d.is_negative()),
         (CellValue::Date(ts), _) => (format_date(*ts, &fmt.date), false),
         (CellValue::Boolean(b), _) => (format_boolean(*b, &fmt.boolean), false),
     };
@@ -111,6 +116,22 @@ pub fn format_number(value: f64, fmt: &NumberFormat) -> String {
         localize_digits(&num_str, fmt)
     });
     with_sign(body, value < 0.0, fmt)
+}
+
+/// Format a [`CellValue::ExactDecimal`] against a [`NumberFormat`] from its
+/// digits, so a value wider than `f64` paints exactly. Rounds half away from
+/// zero. Metric reduction is approximate by design and uses the nearest `f64`.
+#[must_use]
+pub fn format_exact_decimal(value: &ExactDecimal, fmt: &NumberFormat) -> String {
+    let abs = value.to_f64().abs();
+    let reduced = fmt
+        .metric
+        .as_ref()
+        .filter(|metric| abs.is_finite() && abs >= metric.threshold as f64)
+        .and_then(|metric| metric_body(abs, metric, fmt));
+    let body =
+        reduced.unwrap_or_else(|| localize_digits(&value.rounded_magnitude(fmt.decimals), fmt));
+    with_sign(body, value.is_negative(), fmt)
 }
 
 fn with_sign(body: String, negative: bool, fmt: &NumberFormat) -> String {
@@ -1031,5 +1052,29 @@ mod tests {
         let paint = value_label_paint("4821", &fmt);
         assert_eq!(paint.primary, "Acme Ltd");
         assert_eq!(paint.tooltip.as_deref(), Some("4821"));
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn exact_decimal_formats_from_its_digits() {
+        let wide = CellValue::from_decimal_text("-12345678901234567890123.455").expect("decimal");
+        assert!(matches!(wide, CellValue::ExactDecimal(_)));
+        let (text, negative) = format_cell(&wide, &plain_resolved(ColumnKind::Decimal));
+        assert_eq!(text, "-12,345,678,901,234,567,890,123.46");
+        assert!(negative);
+        let mut accounting = plain_resolved(ColumnKind::Decimal);
+        accounting.number.negative_parentheses = true;
+        accounting.number.thousands_char = '.';
+        accounting.number.decimal_char = ',';
+        accounting.number.decimals = 4;
+        assert_eq!(
+            format_cell(&wide, &accounting).0,
+            "(12.345.678.901.234.567.890.123,4550)"
+        );
+        // Outside a number column the canonical digits show as-is.
+        assert_eq!(
+            format_cell(&wide, &plain_resolved(ColumnKind::None)).0,
+            "-12345678901234567890123.455"
+        );
     }
 }

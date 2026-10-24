@@ -21,6 +21,7 @@ fn numeric_cell(value: &CellValue) -> Option<f64> {
     match value {
         CellValue::Integer(v) => Some(*v as f64),
         CellValue::Decimal(v) => Some(*v).filter(|f| f.is_finite()),
+        CellValue::ExactDecimal(d) => Some(d.to_f64()).filter(|f| f.is_finite()),
         CellValue::Text(s) => s.trim().parse::<f64>().ok().filter(|f| f.is_finite()),
         _ => None,
     }
@@ -80,6 +81,7 @@ fn label_text(value: Option<&CellValue>) -> String {
         Some(CellValue::Boolean(b)) => b.to_string(),
         Some(CellValue::Integer(v)) => v.to_string(),
         Some(CellValue::Decimal(v)) => v.to_string(),
+        Some(CellValue::ExactDecimal(d)) => d.to_string(),
         Some(CellValue::Date(v)) => v.to_string(),
         Some(CellValue::Text(s)) => s.clone(),
     }
