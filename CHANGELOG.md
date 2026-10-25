@@ -5,6 +5,14 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [9.0.0] - 2026-10-25
+
+### Added
+- **Host-controlled localization.** Grid, chart, and pivot text now uses stable contextual translation keys with named-placeholder formatting, English fallback, and a host-installed translator for localized labels, menus, statuses, errors, totals, exports, and accessibility text.
+
+### Changed
+- Several public text-returning APIs now return owned `String` values so hosts can supply translations at runtime.
+
 ## [8.4.0] - 2026-10-23
 
 ### Added

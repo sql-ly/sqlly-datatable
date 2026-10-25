@@ -561,51 +561,56 @@ pub struct FilterPanel {
     pub distinct: Vec<FilterValueRow>,
 }
 
-/// Operator labels for text/string-like columns. Index `0` is the inert
-/// "Choose One" sentinel; the rest map 1:1 to [`TextOp`] via
-/// [`FilterPanel::text_op_for_index`].
-const TEXT_OP_LABELS: &[&str] = &[
-    "Choose One",
-    "contains",
-    "does not contain",
-    "begins with",
-    "ends with",
-    "is",
-    "is not",
-    "matches (regex)",
+const TEXT_OP_KEYS: &[&str] = &[
+    "datatable.grid.filter_panel.text_operator_choose_one",
+    "datatable.grid.filter_panel.text_operator_contains",
+    "datatable.grid.filter_panel.text_operator_does_not_contain",
+    "datatable.grid.filter_panel.text_operator_begins_with",
+    "datatable.grid.filter_panel.text_operator_ends_with",
+    "datatable.grid.filter_panel.text_operator_is",
+    "datatable.grid.filter_panel.text_operator_is_not",
+    "datatable.grid.filter_panel.text_operator_matches_regex",
 ];
 
-/// Operator labels for numeric/date columns. Index `0` is "Choose One".
-const NUMBER_OP_LABELS: &[&str] = &[
-    "Choose One",
-    "equal to",
-    "not equal to",
-    "greater than",
-    "greater than or equal to",
-    "less than",
-    "less than or equal to",
-    "between",
-    "not between",
+const NUMBER_OP_KEYS: &[&str] = &[
+    "datatable.grid.filter_panel.number_operator_choose_one",
+    "datatable.grid.filter_panel.number_operator_equal_to",
+    "datatable.grid.filter_panel.number_operator_not_equal_to",
+    "datatable.grid.filter_panel.number_operator_greater_than",
+    "datatable.grid.filter_panel.number_operator_greater_than_or_equal_to",
+    "datatable.grid.filter_panel.number_operator_less_than",
+    "datatable.grid.filter_panel.number_operator_less_than_or_equal_to",
+    "datatable.grid.filter_panel.number_operator_between",
+    "datatable.grid.filter_panel.number_operator_not_between",
 ];
 
 impl FilterPanel {
     /// Operator labels appropriate to this column's kind.
     #[must_use]
-    pub fn op_labels(&self) -> &'static [&'static str] {
-        if uses_number_ops(self.kind) {
-            NUMBER_OP_LABELS
+    pub fn op_labels(&self) -> Vec<String> {
+        let keys = if uses_number_ops(self.kind) {
+            NUMBER_OP_KEYS
         } else {
-            TEXT_OP_LABELS
-        }
+            TEXT_OP_KEYS
+        };
+        keys.iter()
+            .map(|key| crate::localization::text(key))
+            .collect()
     }
 
     /// The currently selected operator label.
     #[must_use]
-    pub fn current_op_label(&self) -> &'static str {
+    pub fn current_op_label(&self) -> String {
         self.op_labels()
             .get(self.op_index)
-            .copied()
-            .unwrap_or("Choose One")
+            .cloned()
+            .unwrap_or_else(|| {
+                crate::localization::text(if uses_number_ops(self.kind) {
+                    "datatable.grid.filter_panel.number_operator_choose_one"
+                } else {
+                    "datatable.grid.filter_panel.text_operator_choose_one"
+                })
+            })
     }
 
     /// `true` when the selected operator needs at least one operand.

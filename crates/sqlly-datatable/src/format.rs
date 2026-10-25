@@ -188,7 +188,19 @@ fn metric_body(abs: f64, metric: &MetricReduction, fmt: &NumberFormat) -> Option
         };
         format!("{rounded:.0}")
     };
-    Some(format!("{}{label}", localize_digits(&digits, fmt)))
+    let digits = localize_digits(&digits, fmt);
+    if metric.labels == MetricReduction::default().labels {
+        let key = match unit {
+            1 => "datatable.format.metric.thousands",
+            2 => "datatable.format.metric.millions",
+            3 => "datatable.format.metric.billions",
+            4 => "datatable.format.metric.trillions",
+            _ => "datatable.format.metric.quadrillions",
+        };
+        Some(crate::localization::format(key, &[("value", &digits)]))
+    } else {
+        Some(format!("{digits}{label}"))
+    }
 }
 
 fn group_digits(int_part: &str, sep: char) -> String {
@@ -240,17 +252,17 @@ fn format_date_str(ts: i64, format: &str) -> String {
         .replace("%M", &format!("{min:02}"))
         .replace("%S", &format!("{sec:02}"))
         .replace("%y", &format!("{:02}", year.rem_euclid(100)))
-        .replace("%B", &month_name(month))
-        .replace("%b", &month_name(month)[..3.min(month_name(month).len())])
-        .replace("%A", &day_name(ts))
-        .replace("%a", &day_name(ts)[..3.min(day_name(ts).len())])
+        .replace("%B", &month_name(month, false))
+        .replace("%b", &month_name(month, true))
+        .replace("%A", &day_name(ts, false))
+        .replace("%a", &day_name(ts, true))
 }
 
 #[must_use]
 pub fn format_relative_date(ts: i64, now: i64, relative: &RelativeDateFormat) -> String {
     let diff = ts - now;
     if diff == 0 {
-        return "now".into();
+        return crate::localization::text("datatable.format.relative.now");
     }
     let abs_diff = diff.unsigned_abs();
     let components = break_down_duration(abs_diff, &relative.units);
@@ -260,14 +272,17 @@ pub fn format_relative_date(ts: i64, now: i64, relative: &RelativeDateFormat) ->
         .map(|(unit, count)| format!("{} {}", count, unit_name(unit, *count)))
         .collect();
     if parts.is_empty() {
-        return "now".into();
+        return crate::localization::text("datatable.format.relative.now");
     }
-    let joined = parts.join(" and ");
-    if diff > 0 {
-        format!("in {joined}")
+    let joined = parts.join(&crate::localization::text(
+        "datatable.format.relative.component_separator",
+    ));
+    let key = if diff > 0 {
+        "datatable.format.relative.future"
     } else {
-        format!("{joined} ago")
-    }
+        "datatable.format.relative.past"
+    };
+    crate::localization::format(key, &[("duration", &joined)])
 }
 
 fn break_down_duration(seconds: u64, units: &[RelativeUnit]) -> Vec<(RelativeUnit, u64)> {
@@ -310,63 +325,29 @@ fn unit_seconds(unit: RelativeUnit) -> u64 {
     }
 }
 
-fn unit_name(unit: &RelativeUnit, count: u64) -> &'static str {
-    match unit {
-        RelativeUnit::Year => {
-            if count == 1 {
-                "year"
-            } else {
-                "years"
-            }
-        }
-        RelativeUnit::Month => {
-            if count == 1 {
-                "month"
-            } else {
-                "months"
-            }
-        }
-        RelativeUnit::Week => {
-            if count == 1 {
-                "week"
-            } else {
-                "weeks"
-            }
-        }
-        RelativeUnit::Day => {
-            if count == 1 {
-                "day"
-            } else {
-                "days"
-            }
-        }
-        RelativeUnit::Hour => {
-            if count == 1 {
-                "hour"
-            } else {
-                "hours"
-            }
-        }
-        RelativeUnit::Minute => {
-            if count == 1 {
-                "minute"
-            } else {
-                "minutes"
-            }
-        }
-        RelativeUnit::Second => {
-            if count == 1 {
-                "second"
-            } else {
-                "seconds"
-            }
-        }
-    }
+fn unit_name(unit: &RelativeUnit, count: u64) -> String {
+    let stem = match unit {
+        RelativeUnit::Year => "year",
+        RelativeUnit::Month => "month",
+        RelativeUnit::Week => "week",
+        RelativeUnit::Day => "day",
+        RelativeUnit::Hour => "hour",
+        RelativeUnit::Minute => "minute",
+        RelativeUnit::Second => "second",
+    };
+    let number = if count == 1 { "singular" } else { "plural" };
+    crate::localization::text(&format!("datatable.format.relative.{stem}_{number}"))
 }
 
 fn format_boolean(b: bool, fmt: &crate::config::BooleanFormat) -> String {
     if b {
-        fmt.true_text.clone()
+        if fmt.true_text == "true" {
+            crate::localization::text("datatable.format.boolean.true")
+        } else {
+            fmt.true_text.clone()
+        }
+    } else if fmt.false_text == "false" {
+        crate::localization::text("datatable.format.boolean.false")
     } else {
         fmt.false_text.clone()
     }
@@ -445,36 +426,47 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
     (year, m, d)
 }
 
-fn month_name(m: u32) -> String {
-    match m {
-        1 => "January".into(),
-        2 => "February".into(),
-        3 => "March".into(),
-        4 => "April".into(),
-        5 => "May".into(),
-        6 => "June".into(),
-        7 => "July".into(),
-        8 => "August".into(),
-        9 => "September".into(),
-        10 => "October".into(),
-        11 => "November".into(),
-        12 => "December".into(),
-        _ => "Unknown".into(),
-    }
+fn month_name(month: u32, abbreviated: bool) -> String {
+    const MONTHS: &[&str] = &[
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    ];
+    let Some(month) = month
+        .checked_sub(1)
+        .and_then(|index| MONTHS.get(index as usize))
+    else {
+        return crate::localization::text("datatable.format.date.unknown_month");
+    };
+    let suffix = if abbreviated { "_abbreviated" } else { "" };
+    crate::localization::text(&format!("datatable.format.date.month_{month}{suffix}"))
 }
 
-fn day_name(ts: i64) -> String {
-    let day_of_week = (ts.div_euclid(86_400) + 4).rem_euclid(7) as u32;
-    match day_of_week {
-        0 => "Sunday".into(),
-        1 => "Monday".into(),
-        2 => "Tuesday".into(),
-        3 => "Wednesday".into(),
-        4 => "Thursday".into(),
-        5 => "Friday".into(),
-        6 => "Saturday".into(),
-        _ => "Unknown".into(),
-    }
+fn day_name(ts: i64, abbreviated: bool) -> String {
+    const DAYS: &[&str] = &[
+        "sunday",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+    ];
+    let day_of_week = (ts.div_euclid(86_400) + 4).rem_euclid(7) as usize;
+    let Some(day) = DAYS.get(day_of_week) else {
+        return crate::localization::text("datatable.format.date.unknown_day");
+    };
+    let suffix = if abbreviated { "_abbreviated" } else { "" };
+    crate::localization::text(&format!("datatable.format.date.day_{day}{suffix}"))
 }
 
 /// Case-insensitive substring filter against the user-visible rendered text.

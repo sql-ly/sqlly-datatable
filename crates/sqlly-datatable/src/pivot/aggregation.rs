@@ -44,21 +44,29 @@ impl AggregationFn {
 
     /// Short label ("Count", "Sum", …).
     #[must_use]
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Count => "Count",
-            Self::Sum => "Sum",
-            Self::Avg => "Avg",
-            Self::Min => "Min",
-            Self::Max => "Max",
-            Self::First => "First",
-        }
+    pub fn label(&self) -> String {
+        crate::localization::text(match self {
+            Self::Count => "datatable.pivot.aggregation.count",
+            Self::Sum => "datatable.pivot.aggregation.sum",
+            Self::Avg => "datatable.pivot.aggregation.average",
+            Self::Min => "datatable.pivot.aggregation.minimum",
+            Self::Max => "datatable.pivot.aggregation.maximum",
+            Self::First => "datatable.pivot.aggregation.first",
+        })
     }
 
     /// Header caption for the value area, e.g. `"Sum of Amount"`.
     #[must_use]
     pub fn caption(&self, field_name: &str) -> String {
-        format!("{} of {}", self.label(), field_name)
+        let key = match self {
+            Self::Count => "datatable.pivot.aggregation.count_caption",
+            Self::Sum => "datatable.pivot.aggregation.sum_caption",
+            Self::Avg => "datatable.pivot.aggregation.average_caption",
+            Self::Min => "datatable.pivot.aggregation.minimum_caption",
+            Self::Max => "datatable.pivot.aggregation.maximum_caption",
+            Self::First => "datatable.pivot.aggregation.first_caption",
+        };
+        crate::localization::format(key, &[("field_name", field_name)])
     }
 }
 

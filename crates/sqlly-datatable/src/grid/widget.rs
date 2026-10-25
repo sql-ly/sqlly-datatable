@@ -1311,14 +1311,24 @@ impl Render for SqllyDataTable {
                 })
         };
 
-        let pivot_label = self
-            .pivot_status
-            .as_deref()
-            .map_or_else(|| "Pivot".to_string(), |status| format!("Pivot  {status}"));
-        let chart_label = self
-            .chart_status
-            .as_deref()
-            .map_or_else(|| "Chart".to_string(), |status| format!("Chart  {status}"));
+        let pivot_label = self.pivot_status.as_deref().map_or_else(
+            || crate::localization::text("datatable.grid.tabs.pivot"),
+            |status| {
+                crate::localization::format(
+                    "datatable.grid.tabs.pivot_with_status",
+                    &[("status", status)],
+                )
+            },
+        );
+        let chart_label = self.chart_status.as_deref().map_or_else(
+            || crate::localization::text("datatable.grid.tabs.chart"),
+            |status| {
+                crate::localization::format(
+                    "datatable.grid.tabs.chart_with_status",
+                    &[("status", status)],
+                )
+            },
+        );
 
         let tab_bar = div()
             .flex()
@@ -1328,7 +1338,7 @@ impl Render for SqllyDataTable {
             .border_b_1()
             .border_color(theme.grid_line)
             .child(tab(
-                "Grid".to_string(),
+                crate::localization::text("datatable.grid.tabs.grid"),
                 GridTab::Grid,
                 self.active_tab == GridTab::Grid,
                 false,
@@ -1378,13 +1388,12 @@ impl Render for SqllyDataTable {
                         .border_color(theme.grid_line)
                         .text_size(px(12.0))
                         .text_color(theme.header_fg)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .truncate()
-                                .child(format!("Filtered from pivot: {label}")),
-                        )
+                        .child(div().flex_1().min_w(px(0.0)).truncate().child(
+                            crate::localization::format(
+                                "datatable.grid.drill_filter.banner",
+                                &[("filter_label", &label)],
+                            ),
+                        ))
                         .child(
                             div()
                                 .id("clear-drill-filter")
@@ -1398,7 +1407,9 @@ impl Render for SqllyDataTable {
                                 .cursor_pointer()
                                 .hover(move |style| style.bg(hover_bg))
                                 .child(Icon::new(IconName::CircleX))
-                                .child("Clear filter")
+                                .child(crate::localization::text(
+                                    "datatable.grid.drill_filter.clear_filter",
+                                ))
                                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                                     table_clear.update(cx, |table, cx| {
                                         table.clear_drill_filter(cx);
@@ -1431,7 +1442,7 @@ impl Render for SqllyDataTable {
                         position,
                         cx.entity().clone(),
                         "pivot-sidebar-rail",
-                        "Pivot",
+                        crate::localization::text("datatable.grid.sidebar.collapsed_pivot"),
                         |table| table.set_pivot_sidebar_collapsed(false),
                     );
                     let pivot_grid = div().flex_1().min_w_0().child(parts.grid.clone());
@@ -1536,7 +1547,7 @@ impl Render for SqllyDataTable {
                         position,
                         cx.entity().clone(),
                         "chart-sidebar-rail",
-                        "Chart",
+                        crate::localization::text("datatable.grid.sidebar.collapsed_chart"),
                         |table| table.set_chart_sidebar_collapsed(false),
                     );
                     let canvas = div().flex_1().min_w_0().child(parts.canvas.clone());
@@ -1648,9 +1659,21 @@ fn drill_filter_label(
         let shown = match sorted.len() {
             0 => continue,
             1..=3 => sorted.join(" | "),
-            n => format!("{} | … ({n} values)", sorted[..2].join(" | ")),
+            n => {
+                let value_count = n.to_string();
+                crate::localization::format(
+                    "datatable.grid.drill_filter.values_omitted",
+                    &[
+                        ("values", &sorted[..2].join(" | ")),
+                        ("value_count", &value_count),
+                    ],
+                )
+            }
         };
-        parts.push(format!("{name} = {shown}"));
+        parts.push(crate::localization::format(
+            "datatable.grid.drill_filter.field_equals",
+            &[("field_name", name), ("values", &shown)],
+        ));
     }
     parts.join(", ")
 }
@@ -1664,7 +1687,7 @@ fn sidebar_collapsed_rail(
     position: PivotSidebarPosition,
     table: Entity<SqllyDataTable>,
     rail_id: &'static str,
-    label: &'static str,
+    label: String,
     expand: fn(&mut SqllyDataTable),
 ) -> impl IntoElement {
     // Lucide panel-open icons pointing toward where the sidebar reappears.
@@ -2160,7 +2183,7 @@ fn render_context_menu_overlay(
                 );
                 continue;
             }
-            let label = item.label().unwrap_or("").to_owned();
+            let label = item.label().unwrap_or_default();
             let is_submenu = item.is_submenu();
             let lit = highlighted == Some(row_idx) || open_row == Some(row_idx);
 
@@ -2385,7 +2408,9 @@ fn render_filter_panel_overlay(
                 .border_color(c_line)
                 .bg(if asc_active { c_accent } else { c_hover })
                 .cursor_pointer()
-                .child("Ascending")
+                .child(crate::localization::text(
+                    "datatable.grid.filter_panel.sort_ascending",
+                ))
                 .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
                     st_asc.update(cx, |s, cx| {
                         s.set_panel_sort(SortDirection::Ascending);
@@ -2404,7 +2429,9 @@ fn render_filter_panel_overlay(
                 .border_color(c_line)
                 .bg(if desc_active { c_accent } else { c_hover })
                 .cursor_pointer()
-                .child("Descending")
+                .child(crate::localization::text(
+                    "datatable.grid.filter_panel.sort_descending",
+                ))
                 .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
                     st_desc.update(cx, |s, cx| {
                         s.set_panel_sort(SortDirection::Descending);
@@ -2445,7 +2472,7 @@ fn render_filter_panel_overlay(
                     .items_center()
                     .bg(if selected { c_accent } else { c_bg })
                     .cursor_pointer()
-                    .child(*label)
+                    .child(label.clone())
                     .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
                         st_pick.update(cx, |s, cx| {
                             s.set_filter_operator(i);
@@ -2497,29 +2524,30 @@ fn render_filter_panel_overlay(
     };
 
     let operand_placeholder = if panel.kind == crate::data::ColumnKind::Date {
-        "YYYY-MM-DD"
+        crate::localization::text("datatable.grid.filter_panel.date_operand_placeholder")
     } else if crate::filter::uses_number_ops(panel.kind) {
-        "value"
+        crate::localization::text("datatable.grid.filter_panel.number_operand_placeholder")
     } else if panel.op_index == 7 {
-        // Text "matches" operator.
-        "regex"
+        crate::localization::text("datatable.grid.filter_panel.regex_operand_placeholder")
     } else {
-        "value"
+        crate::localization::text("datatable.grid.filter_panel.text_operand_placeholder")
     };
     let operands = panel.needs_operand().then(|| {
         let mut row = div().flex().flex_col().gap(px(4.0)).child(operand_field(
             &panel.operand_a.value,
             panel.focus == FilterInput::OperandA,
-            operand_placeholder,
+            &operand_placeholder,
             FilterInput::OperandA,
         ));
         if panel.needs_second_operand() {
             row = row
-                .child(div().text_color(c_muted).text_size(px(11.0)).child("and"))
+                .child(div().text_color(c_muted).text_size(px(11.0)).child(
+                    crate::localization::text("datatable.grid.filter_panel.second_operand_and"),
+                ))
                 .child(operand_field(
                     &panel.operand_b.value,
                     panel.focus == FilterInput::OperandB,
-                    operand_placeholder,
+                    &operand_placeholder,
                     FilterInput::OperandB,
                 ));
         }
@@ -2530,7 +2558,10 @@ fn render_filter_panel_overlay(
     let st_search = state.clone();
     let search_focused = panel.focus == FilterInput::Search;
     let (search_text, search_is_ph) = if panel.search.value.is_empty() {
-        ("Search".to_owned(), true)
+        (
+            crate::localization::text("datatable.grid.filter_panel.search_placeholder"),
+            true,
+        )
     } else {
         (panel.search.value.clone(), false)
     };
@@ -2570,7 +2601,9 @@ fn render_filter_panel_overlay(
         .cursor_pointer()
         .hover(move |style| style.bg(c_hover))
         .child(checkbox(panel.all_checked()))
-        .child("(Select All)")
+        .child(crate::localization::text(
+            "datatable.grid.filter_panel.select_all",
+        ))
         .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
             st_all.update(cx, |s, cx| {
                 s.toggle_filter_select_all();
@@ -2617,7 +2650,9 @@ fn render_filter_panel_overlay(
             div()
                 .text_color(c_muted)
                 .text_size(px(11.0))
-                .child("Refine search to see more…")
+                .child(crate::localization::text(
+                    "datatable.grid.filter_panel.refine_search",
+                ))
         }));
 
     // --- Clear (left, disabled when no active filter) + Close (right) -----
@@ -2641,7 +2676,9 @@ fn render_filter_panel_overlay(
                 .bg(clear_bg)
                 .text_color(clear_fg)
                 .cursor_pointer()
-                .child("Clear Filter")
+                .child(crate::localization::text(
+                    "datatable.grid.filter_panel.clear_filter",
+                ))
                 .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
                     if !filter_active {
                         return;
@@ -2663,7 +2700,9 @@ fn render_filter_panel_overlay(
                 .border_color(c_line)
                 .bg(c_hover)
                 .cursor_pointer()
-                .child("Close")
+                .child(crate::localization::text(
+                    "datatable.grid.filter_panel.close",
+                ))
                 .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
                     st_close.update(cx, |s, cx| {
                         s.filter_panel = None;
@@ -2683,13 +2722,22 @@ fn render_filter_panel_overlay(
         .border_color(c_line)
         .text_color(c_fg)
         .text_size(px(13.0))
-        .child(div().text_color(c_muted).text_size(px(11.0)).child("Sort"))
+        .child(
+            div()
+                .text_color(c_muted)
+                .text_size(px(11.0))
+                .child(crate::localization::text(
+                    "datatable.grid.filter_panel.sort_heading",
+                )),
+        )
         .child(sort_row)
         .child(
             div()
                 .text_color(c_muted)
                 .text_size(px(11.0))
-                .child("Filter"),
+                .child(crate::localization::text(
+                    "datatable.grid.filter_panel.filter_heading",
+                )),
         )
         .child(op_button)
         .children(op_menu)

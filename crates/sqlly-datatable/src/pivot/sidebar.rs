@@ -197,7 +197,7 @@ impl PivotSidebar {
         sidebar: &Entity<PivotSidebar>,
         theme: &GridTheme,
         id: &'static str,
-        title: &'static str,
+        title: String,
         header_extra: Option<gpui::AnyElement>,
         expanded: bool,
         first: bool,
@@ -286,7 +286,7 @@ impl PivotSidebar {
         label: String,
         zone: Option<PivotZone>,
         removable: bool,
-        marker: Option<&'static str>,
+        marker: Option<String>,
         label_budget: f32,
         window: &Window,
         cx: &App,
@@ -314,7 +314,7 @@ impl PivotSidebar {
         let state_remove = state.clone();
 
         let mut available = label_budget;
-        if let Some(marker) = marker {
+        if let Some(marker) = marker.as_deref() {
             available -= CHIP_GAP + measure_text(window, marker, MARKER_FONT_SIZE);
         }
         if removable {
@@ -441,7 +441,7 @@ impl PivotSidebar {
     fn zone(
         state: &Entity<PivotState>,
         zone: PivotZone,
-        title: &'static str,
+        title: String,
         content_w: f32,
         window: &Window,
         cx: &App,
@@ -462,7 +462,12 @@ impl PivotSidebar {
             let name = columns
                 .get(field)
                 .map(|c| c.name.clone())
-                .unwrap_or_else(|| format!("column {field}"));
+                .unwrap_or_else(|| {
+                    crate::localization::format(
+                        "datatable.pivot.sidebar.fallback_field_name",
+                        &[("column_index", &field.to_string())],
+                    )
+                });
             match zone {
                 PivotZone::Values => {
                     chips.push(Self::values_chip(
@@ -507,7 +512,7 @@ impl PivotSidebar {
                             name,
                             Some(zone),
                             true,
-                            filter_on.then_some("🔽"),
+                            filter_on.then(|| "🔽".to_owned()),
                             label_budget,
                             window,
                             cx,
@@ -540,7 +545,9 @@ impl PivotSidebar {
                 div()
                     .text_color(theme.muted_text)
                     .text_size(px(11.0))
-                    .child("Drag fields here"),
+                    .child(crate::localization::text(
+                        "datatable.pivot.sidebar.drag_fields_here",
+                    )),
             )
         } else {
             None
@@ -759,7 +766,7 @@ impl PivotSidebar {
     /// A labelled checkbox row bound to one totals option.
     fn option_row(
         state: &Entity<PivotState>,
-        label: &'static str,
+        label: String,
         checked: bool,
         apply: impl Fn(&mut PivotState) + 'static,
         cx: &App,
@@ -795,7 +802,7 @@ impl PivotSidebar {
     /// Small inline text button.
     fn text_button(
         state: &Entity<PivotState>,
-        label: &'static str,
+        label: String,
         apply: impl Fn(&mut PivotState, &mut App) + 'static,
         cx: &App,
     ) -> gpui::AnyElement {
@@ -854,7 +861,9 @@ impl PivotSidebar {
             .cursor_pointer()
             .hover(move |style| style.bg(hover_bg))
             .child(checkbox(popover.all_checked()))
-            .child("(Select All)")
+            .child(crate::localization::text(
+                "datatable.pivot.sidebar.filter_select_all",
+            ))
             .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
                 state_all.update(cx, |s, cx| {
                     s.toggle_filter_popover_select_all();
@@ -911,7 +920,9 @@ impl PivotSidebar {
                     .border_color(theme.grid_line)
                     .bg(theme.menu_hover_bg)
                     .cursor_pointer()
-                    .child("Clear")
+                    .child(crate::localization::text(
+                        "datatable.pivot.sidebar.filter_clear",
+                    ))
                     .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
                         state_clear.update(cx, |s, cx| {
                             s.clear_filter(clear_field);
@@ -930,7 +941,9 @@ impl PivotSidebar {
                     .border_color(theme.grid_line)
                     .bg(theme.menu_hover_bg)
                     .cursor_pointer()
-                    .child("Close")
+                    .child(crate::localization::text(
+                        "datatable.pivot.sidebar.filter_close",
+                    ))
                     .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
                         state_close.update(cx, |s, cx| {
                             s.close_filter_popover();
@@ -954,7 +967,10 @@ impl PivotSidebar {
                 div()
                     .text_color(theme.muted_text)
                     .text_size(px(11.0))
-                    .child(format!("Filter: {field_name}")),
+                    .child(crate::localization::format(
+                        "datatable.pivot.sidebar.filter_title",
+                        &[("field_name", &field_name)],
+                    )),
             )
             .child(select_all)
             .child(
@@ -972,7 +988,10 @@ impl PivotSidebar {
                         div()
                             .text_color(theme.muted_text)
                             .text_size(px(11.0))
-                            .child(format!("Showing first {FILTER_POPOVER_MAX_ROWS} values…"))
+                            .child(crate::localization::format(
+                                "datatable.pivot.sidebar.filter_first_values",
+                                &[("count", &FILTER_POPOVER_MAX_ROWS.to_string())],
+                            ))
                     })),
             )
             .child(buttons);
@@ -1036,7 +1055,7 @@ impl PivotSidebar {
             move |checked: bool| crate::grid::checkbox(checked, &theme)
         };
 
-        let check_row = |label: &'static str, checked: bool, apply: fn(&mut NumberFormat)| {
+        let check_row = |label: String, checked: bool, apply: fn(&mut NumberFormat)| {
             let st = state.clone();
             div()
                 .h(px(22.0))
@@ -1055,7 +1074,7 @@ impl PivotSidebar {
         };
 
         // Segmented pair choosing how negatives are written.
-        let neg_btn = |label: &'static str, parens: bool| {
+        let neg_btn = |label: String, parens: bool| {
             let st = state.clone();
             let selected = fmt.negative_parentheses == parens;
             div()
@@ -1098,7 +1117,7 @@ impl PivotSidebar {
                 })
         };
 
-        let align_btn = |label: &'static str, value: TextAlignment| {
+        let align_btn = |label: String, value: TextAlignment| {
             let st = state.clone();
             let selected = fmt.alignment == value;
             div()
@@ -1136,7 +1155,9 @@ impl PivotSidebar {
                     .border_color(c_line)
                     .bg(c_hover)
                     .cursor_pointer()
-                    .child("Reset")
+                    .child(crate::localization::text(
+                        "datatable.pivot.sidebar.format_reset",
+                    ))
                     .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
                         st_reset.update(cx, |s, cx| {
                             s.reset_format_dialog();
@@ -1155,7 +1176,9 @@ impl PivotSidebar {
                     .border_color(c_line)
                     .bg(c_hover)
                     .cursor_pointer()
-                    .child("Close")
+                    .child(crate::localization::text(
+                        "datatable.pivot.sidebar.format_close",
+                    ))
                     .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
                         st_close.update(cx, |s, cx| {
                             s.close_format_dialog();
@@ -1164,83 +1187,94 @@ impl PivotSidebar {
                     }),
             );
 
-        let body = div()
-            .flex()
-            .flex_col()
-            .w(px(230.0))
-            .p(px(8.0))
-            .gap(px(6.0))
-            .bg(c_bg)
-            .border_1()
-            .border_color(c_line)
-            .text_color(c_fg)
-            .text_size(px(12.0))
-            .child(
-                div()
-                    .text_color(c_muted)
-                    .text_size(px(11.0))
-                    .child(format!("Format: {field_name}")),
-            )
-            .child(check_row(
-                "Negative numbers in red",
-                fmt.show_negative_red,
-                |f| f.show_negative_red = !f.show_negative_red,
-            ))
-            .child(check_row(
-                "Thousands separator",
-                fmt.thousands_separator,
-                |f| f.thousands_separator = !f.thousands_separator,
-            ))
-            .child(
-                div()
-                    .text_color(c_muted)
-                    .text_size(px(11.0))
-                    .child("Negatives"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap(px(6.0))
-                    .child(neg_btn("-1,234", false))
-                    .child(neg_btn("(1,234)", true)),
-            )
-            .child(
-                div()
-                    .h(px(22.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(
-                        div()
-                            .text_color(c_muted)
-                            .text_size(px(11.0))
-                            .child("Decimals"),
-                    )
-                    .child(dec_btn("-", |f| f.decimals = f.decimals.saturating_sub(1)))
-                    .child(
-                        div()
-                            .w(px(18.0))
-                            .flex()
-                            .justify_center()
-                            .child(fmt.decimals.to_string()),
-                    )
-                    .child(dec_btn("+", |f| f.decimals = (f.decimals + 1).min(8))),
-            )
-            .child(
-                div()
-                    .text_color(c_muted)
-                    .text_size(px(11.0))
-                    .child("Alignment"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap(px(6.0))
-                    .child(align_btn("Left", TextAlignment::Left))
-                    .child(align_btn("Center", TextAlignment::Center))
-                    .child(align_btn("Right", TextAlignment::Right)),
-            )
-            .child(buttons);
+        let body =
+            div()
+                .flex()
+                .flex_col()
+                .w(px(230.0))
+                .p(px(8.0))
+                .gap(px(6.0))
+                .bg(c_bg)
+                .border_1()
+                .border_color(c_line)
+                .text_color(c_fg)
+                .text_size(px(12.0))
+                .child(div().text_color(c_muted).text_size(px(11.0)).child(
+                    crate::localization::format(
+                        "datatable.pivot.sidebar.format_title",
+                        &[("field_name", &field_name)],
+                    ),
+                ))
+                .child(check_row(
+                    crate::localization::text("datatable.pivot.sidebar.negative_numbers_in_red"),
+                    fmt.show_negative_red,
+                    |f| f.show_negative_red = !f.show_negative_red,
+                ))
+                .child(check_row(
+                    crate::localization::text("datatable.pivot.sidebar.thousands_separator"),
+                    fmt.thousands_separator,
+                    |f| f.thousands_separator = !f.thousands_separator,
+                ))
+                .child(div().text_color(c_muted).text_size(px(11.0)).child(
+                    crate::localization::text("datatable.pivot.sidebar.negatives_heading"),
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(6.0))
+                        .child(neg_btn(
+                            crate::localization::text(
+                                "datatable.pivot.sidebar.negative_example_minus",
+                            ),
+                            false,
+                        ))
+                        .child(neg_btn(
+                            crate::localization::text(
+                                "datatable.pivot.sidebar.negative_example_parentheses",
+                            ),
+                            true,
+                        )),
+                )
+                .child(
+                    div()
+                        .h(px(22.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(div().text_color(c_muted).text_size(px(11.0)).child(
+                            crate::localization::text("datatable.pivot.sidebar.decimals_heading"),
+                        ))
+                        .child(dec_btn("-", |f| f.decimals = f.decimals.saturating_sub(1)))
+                        .child(
+                            div()
+                                .w(px(18.0))
+                                .flex()
+                                .justify_center()
+                                .child(fmt.decimals.to_string()),
+                        )
+                        .child(dec_btn("+", |f| f.decimals = (f.decimals + 1).min(8))),
+                )
+                .child(div().text_color(c_muted).text_size(px(11.0)).child(
+                    crate::localization::text("datatable.pivot.sidebar.alignment_heading"),
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(6.0))
+                        .child(align_btn(
+                            crate::localization::text("datatable.pivot.sidebar.align_left"),
+                            TextAlignment::Left,
+                        ))
+                        .child(align_btn(
+                            crate::localization::text("datatable.pivot.sidebar.align_center"),
+                            TextAlignment::Center,
+                        ))
+                        .child(align_btn(
+                            crate::localization::text("datatable.pivot.sidebar.align_right"),
+                            TextAlignment::Right,
+                        )),
+                )
+                .child(buttons);
 
         let state_backdrop = state.clone();
         let overlay = deferred(
@@ -1288,13 +1322,14 @@ impl Render for PivotSidebar {
         // Source field list with zone badges.
         let mut field_chips: Vec<gpui::AnyElement> = Vec::new();
         for (i, col) in columns.iter().enumerate() {
-            let badge = match config.zone_of(i) {
-                Some(PivotZone::Rows) => Some("R"),
-                Some(PivotZone::Columns) => Some("C"),
-                Some(PivotZone::Values) => Some("V"),
-                Some(PivotZone::Filters) => Some("F"),
-                None => None,
-            };
+            let badge = config.zone_of(i).map(|zone| {
+                crate::localization::text(match zone {
+                    PivotZone::Rows => "datatable.pivot.sidebar.rows_zone_badge",
+                    PivotZone::Columns => "datatable.pivot.sidebar.columns_zone_badge",
+                    PivotZone::Values => "datatable.pivot.sidebar.values_zone_badge",
+                    PivotZone::Filters => "datatable.pivot.sidebar.filters_zone_badge",
+                })
+            });
             field_chips.push(Self::chip(
                 &self.state,
                 ("pivot-source-field", i),
@@ -1317,11 +1352,13 @@ impl Render for PivotSidebar {
                 div()
                     .text_color(theme.muted_text)
                     .text_size(px(11.0))
-                    .child("Layout"),
+                    .child(crate::localization::text(
+                        "datatable.pivot.sidebar.layout_heading",
+                    )),
             )
             .child(Self::option_row(
                 &self.state,
-                "Flat rows (no hierarchy)",
+                crate::localization::text("datatable.pivot.sidebar.flat_rows"),
                 config.flat_rows,
                 |s| s.config.flat_rows = !s.config.flat_rows,
                 cx,
@@ -1330,32 +1367,34 @@ impl Render for PivotSidebar {
                 div()
                     .text_color(theme.muted_text)
                     .text_size(px(11.0))
-                    .child("Totals"),
+                    .child(crate::localization::text(
+                        "datatable.pivot.sidebar.totals_heading",
+                    )),
             )
             .child(Self::option_row(
                 &self.state,
-                "Row subtotals",
+                crate::localization::text("datatable.pivot.sidebar.row_subtotals"),
                 config.show_row_subtotals,
                 |s| s.config.show_row_subtotals = !s.config.show_row_subtotals,
                 cx,
             ))
             .child(Self::option_row(
                 &self.state,
-                "Column subtotal columns",
+                crate::localization::text("datatable.pivot.sidebar.column_subtotals"),
                 config.show_column_subtotals,
                 |s| s.config.show_column_subtotals = !s.config.show_column_subtotals,
                 cx,
             ))
             .child(Self::option_row(
                 &self.state,
-                "Grand total row",
+                crate::localization::text("datatable.pivot.sidebar.grand_total_row"),
                 config.show_row_grand_total,
                 |s| s.config.show_row_grand_total = !s.config.show_row_grand_total,
                 cx,
             ))
             .child(Self::option_row(
                 &self.state,
-                "Grand total column",
+                crate::localization::text("datatable.pivot.sidebar.grand_total_column"),
                 config.show_column_grand_total,
                 |s| s.config.show_column_grand_total = !s.config.show_column_grand_total,
                 cx,
@@ -1369,7 +1408,9 @@ impl Render for PivotSidebar {
                 div()
                     .text_color(theme.muted_text)
                     .text_size(px(11.0))
-                    .child("Groups"),
+                    .child(crate::localization::text(
+                        "datatable.pivot.sidebar.groups_heading",
+                    )),
             )
             .child(
                 div()
@@ -1377,13 +1418,13 @@ impl Render for PivotSidebar {
                     .gap(px(4.0))
                     .child(Self::text_button(
                         &self.state,
-                        "Expand rows",
+                        crate::localization::text("datatable.pivot.sidebar.expand_rows"),
                         |s, _| s.expand_all_rows(),
                         cx,
                     ))
                     .child(Self::text_button(
                         &self.state,
-                        "Collapse rows",
+                        crate::localization::text("datatable.pivot.sidebar.collapse_rows"),
                         |s, _| s.collapse_all_rows(),
                         cx,
                     )),
@@ -1394,13 +1435,13 @@ impl Render for PivotSidebar {
                     .gap(px(4.0))
                     .child(Self::text_button(
                         &self.state,
-                        "Expand cols",
+                        crate::localization::text("datatable.pivot.sidebar.expand_columns"),
                         |s, _| s.expand_all_cols(),
                         cx,
                     ))
                     .child(Self::text_button(
                         &self.state,
-                        "Collapse cols",
+                        crate::localization::text("datatable.pivot.sidebar.collapse_columns"),
                         |s, _| s.collapse_all_cols(),
                         cx,
                     )),
@@ -1409,11 +1450,13 @@ impl Render for PivotSidebar {
                 div()
                     .text_color(theme.muted_text)
                     .text_size(px(11.0))
-                    .child("Export"),
+                    .child(crate::localization::text(
+                        "datatable.pivot.sidebar.export_heading",
+                    )),
             )
             .child(Self::text_button(
                 &self.state,
-                "Copy pivot as CSV",
+                crate::localization::text("datatable.pivot.sidebar.copy_csv"),
                 |s, cx| {
                     let csv = s.to_csv();
                     if !csv.is_empty() {
@@ -1431,7 +1474,9 @@ impl Render for PivotSidebar {
                 div()
                     .text_color(theme.muted_text)
                     .text_size(px(11.0))
-                    .child("Drag a field into a layout zone"),
+                    .child(crate::localization::text(
+                        "datatable.pivot.sidebar.unconfigured_hint",
+                    )),
             )
             .child(
                 div()
@@ -1472,7 +1517,10 @@ impl Render for PivotSidebar {
                 .tooltip_show_delay(crate::tooltip::tooltip_show_delay())
                 .tooltip(move |_window, cx| {
                     cx.new(|_| ChipTooltip {
-                        label: "Save configuration".into(),
+                        label: crate::localization::text(
+                            "datatable.pivot.sidebar.save_configuration",
+                        )
+                        .into(),
                         bg: tip_bg,
                         fg: tip_fg,
                         border: tip_border,
@@ -1499,7 +1547,7 @@ impl Render for PivotSidebar {
             .child(Self::zone(
                 &self.state,
                 PivotZone::Filters,
-                "Filters",
+                crate::localization::text("datatable.pivot.sidebar.filters_zone"),
                 content_w,
                 window,
                 cx,
@@ -1507,7 +1555,7 @@ impl Render for PivotSidebar {
             .child(Self::zone(
                 &self.state,
                 PivotZone::Columns,
-                "Columns",
+                crate::localization::text("datatable.pivot.sidebar.columns_zone"),
                 content_w,
                 window,
                 cx,
@@ -1515,7 +1563,7 @@ impl Render for PivotSidebar {
             .child(Self::zone(
                 &self.state,
                 PivotZone::Rows,
-                "Rows",
+                crate::localization::text("datatable.pivot.sidebar.rows_zone"),
                 content_w,
                 window,
                 cx,
@@ -1523,7 +1571,7 @@ impl Render for PivotSidebar {
             .child(Self::zone(
                 &self.state,
                 PivotZone::Values,
-                "Values",
+                crate::localization::text("datatable.pivot.sidebar.values_zone"),
                 content_w,
                 window,
                 cx,
@@ -1548,7 +1596,7 @@ impl Render for PivotSidebar {
                 &sidebar,
                 &theme,
                 "fields",
-                "Fields",
+                crate::localization::text("datatable.pivot.sidebar.fields_section"),
                 None,
                 is_expanded("fields"),
                 true,
@@ -1559,7 +1607,7 @@ impl Render for PivotSidebar {
                 &sidebar,
                 &theme,
                 "layout",
-                "Layout",
+                crate::localization::text("datatable.pivot.sidebar.layout_section"),
                 save_button,
                 is_expanded("layout"),
                 false,
@@ -1570,7 +1618,7 @@ impl Render for PivotSidebar {
                 &sidebar,
                 &theme,
                 "display",
-                "Display and export",
+                crate::localization::text("datatable.pivot.sidebar.display_section"),
                 None,
                 is_expanded("display"),
                 false,
@@ -1594,7 +1642,9 @@ impl Render for PivotSidebar {
                     .text_color(theme.header_fg)
                     .text_size(px(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child("Pivot Controls"),
+                    .child(crate::localization::text(
+                        "datatable.pivot.sidebar.controls_title",
+                    )),
             )
             .child(sections)
             .children(Self::render_filter_popover(&self.state, cx))

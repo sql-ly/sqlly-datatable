@@ -180,7 +180,7 @@ impl ChartState {
     /// The theme-resolved paint snapshot for the current kind, with
     /// legend-hidden entries excluded. `Err` carries the message to render
     /// instead of a plot.
-    pub fn paint_for(&self) -> Result<ChartPaint, &'static str> {
+    pub fn paint_for(&self) -> Result<ChartPaint, String> {
         if self.config.kind == ChartKind::Histogram {
             return self.paint_for_histogram();
         }
@@ -192,11 +192,14 @@ impl ChartState {
         }
     }
 
-    fn paint_for_histogram(&self) -> Result<ChartPaint, &'static str> {
+    fn paint_for_histogram(&self) -> Result<ChartPaint, String> {
         let (name, pairs) = histogram_source(&self.source_columns, &self.source_rows, &self.config)
-            .ok_or("No numeric column to histogram")?;
-        let bins = histogram_bins(&pairs.iter().map(|(v, _)| *v).collect::<Vec<_>>())
-            .ok_or("No numeric values to histogram")?;
+            .ok_or_else(|| {
+                crate::localization::text("datatable.chart.error.no_numeric_column_to_histogram")
+            })?;
+        let bins = histogram_bins(&pairs.iter().map(|(v, _)| *v).collect::<Vec<_>>()).ok_or_else(
+            || crate::localization::text("datatable.chart.error.no_numeric_values_to_histogram"),
+        )?;
         let mut bin_rows: Vec<Vec<usize>> = vec![Vec::new(); bins.counts.len()];
         for (value, row) in &pairs {
             bin_rows[bins.bin_for(*value)].push(*row);
@@ -210,7 +213,7 @@ impl ChartState {
         ))
     }
 
-    fn paint_for_radial(&self, data: &ChartData) -> Result<ChartPaint, &'static str> {
+    fn paint_for_radial(&self, data: &ChartData) -> Result<ChartPaint, String> {
         if let Some(message) = data.radial_error() {
             return Err(message);
         }
@@ -253,7 +256,7 @@ impl ChartState {
         ))
     }
 
-    fn paint_for_cartesian(&self, data: &ChartData) -> Result<ChartPaint, &'static str> {
+    fn paint_for_cartesian(&self, data: &ChartData) -> Result<ChartPaint, String> {
         // Hidden series are excluded; the rest keep their original colors.
         let visible: Vec<(usize, &ChartSeries)> = data
             .series
@@ -341,21 +344,33 @@ impl ChartState {
         let mut parts = Vec::new();
         if data.categories_truncated {
             let top_n = self.config.top_n.clamp(1, super::config::MAX_CATEGORIES);
-            parts.push(format!("top {top_n} categories"));
+            parts.push(crate::localization::format(
+                "datatable.chart.truncation.top_categories",
+                &[("count", &top_n.to_string())],
+            ));
         }
         if data.series_truncated {
-            parts.push(format!(
-                "first {} numeric columns",
-                super::config::MAX_SERIES
+            parts.push(crate::localization::format(
+                "datatable.chart.truncation.first_numeric_columns",
+                &[("count", &super::config::MAX_SERIES.to_string())],
             ));
         }
         if data.source_truncated {
-            parts.push(format!(
-                "first {} source rows",
-                super::config::MAX_SOURCE_ROWS
+            parts.push(crate::localization::format(
+                "datatable.chart.truncation.first_source_rows",
+                &[("count", &super::config::MAX_SOURCE_ROWS.to_string())],
             ));
         }
-        (!parts.is_empty()).then(|| format!("Showing {}", parts.join(" · ")))
+        if parts.is_empty() {
+            return None;
+        }
+        let details = parts.join(&crate::localization::text(
+            "datatable.chart.truncation.component_separator",
+        ));
+        Some(crate::localization::format(
+            "datatable.chart.truncation.showing",
+            &[("details", &details)],
+        ))
     }
 
     /// The value columns the chart actually plots: the configured list, or —

@@ -80,14 +80,16 @@ impl GridState {
     pub fn search_count_label(&self) -> String {
         let total = self.search.matches.len();
         if total == 0 {
-            return "No matches".to_string();
+            return crate::localization::text("datatable.grid.search.no_matches");
         }
-        let n = self.search_active_ordinal().unwrap_or(1);
-        if self.search.truncated {
-            format!("{n} of {total}+")
+        let current = self.search_active_ordinal().unwrap_or(1).to_string();
+        let total = total.to_string();
+        let key = if self.search.truncated {
+            "datatable.grid.search.position_truncated"
         } else {
-            format!("{n} of {total}")
-        }
+            "datatable.grid.search.position"
+        };
+        crate::localization::format(key, &[("current", &current), ("total", &total)])
     }
 
     /// Advance the focused match to the next one (wrapping) and scroll it into

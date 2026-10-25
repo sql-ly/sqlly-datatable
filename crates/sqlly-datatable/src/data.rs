@@ -122,10 +122,19 @@ impl std::fmt::Display for GridDataError {
                 row_index,
                 expected,
                 actual,
-            } => write!(
-                f,
-                "row {row_index} has {actual} cells but {expected} were expected"
-            ),
+            } => {
+                let row_index = row_index.to_string();
+                let expected = expected.to_string();
+                let actual = actual.to_string();
+                f.write_str(&crate::localization::format(
+                    "datatable.grid.data_error.ragged_row",
+                    &[
+                        ("row_index", &row_index),
+                        ("expected", &expected),
+                        ("actual", &actual),
+                    ],
+                ))
+            }
         }
     }
 }

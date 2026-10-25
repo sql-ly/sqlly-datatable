@@ -149,7 +149,11 @@ impl PaintData {
             hover_hit: s.hover_hit,
             row_actions_enabled: s.row_actions.is_some(),
             row_actions_edit: s.row_actions.as_ref().is_some_and(|r| r.edit_enabled),
-            empty_text: s.config.empty_text.clone(),
+            empty_text: if s.config.empty_text == "No rows" {
+                crate::localization::text("datatable.grid.empty_state.no_rows")
+            } else {
+                s.config.empty_text.clone()
+            },
             // Overridden by the widget's canvas prepaint, which has the
             // `Window` needed to query focus; `from_state` alone cannot.
             focused: false,
@@ -720,8 +724,20 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
             if let Some(group) = data.group(dr) {
                 fill_quad(window, ox + rhw, y, cols_w, row_h, theme.pivot_group_bg);
                 let marker = if group.collapsed { ">" } else { "v" };
-                let noun = if group.row_count == 1 { "row" } else { "rows" };
-                let label = format!("{marker}  {}  ({} {noun})", group.label, group.row_count);
+                let row_count = group.row_count.to_string();
+                let key = if group.row_count == 1 {
+                    "datatable.grid.group_header.row_singular"
+                } else {
+                    "datatable.grid.group_header.row_plural"
+                };
+                let label = crate::localization::format(
+                    key,
+                    &[
+                        ("marker", marker),
+                        ("group_label", &group.label),
+                        ("row_count", &row_count),
+                    ],
+                );
                 paint_txt_bold(
                     window,
                     cx,

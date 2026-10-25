@@ -92,6 +92,7 @@ pub mod filter;
 pub mod font;
 pub mod format;
 pub mod grid;
+pub mod localization;
 pub mod pivot;
 pub mod tooltip;
 

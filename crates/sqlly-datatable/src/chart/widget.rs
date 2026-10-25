@@ -126,12 +126,12 @@ impl Render for ChartCanvas {
                 );
             }
             if let Some(label) = label_column {
-                strip = strip.child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(muted_text)
-                        .child(format!("by {label}")),
-                );
+                strip = strip.child(div().text_size(px(12.0)).text_color(muted_text).child(
+                    crate::localization::format(
+                        "datatable.chart.legend.by_label",
+                        &[("label", &label)],
+                    ),
+                ));
             }
             if let Some(note) = truncation {
                 strip = strip.child(div().text_size(px(11.0)).text_color(muted_text).child(note));

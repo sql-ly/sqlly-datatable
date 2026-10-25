@@ -78,7 +78,11 @@ fn classify_column(index: usize, rows: &[Vec<CellValue>]) -> ColumnRole {
 fn label_text(value: Option<&CellValue>) -> String {
     match value {
         None | Some(CellValue::None) => "NULL".to_string(),
-        Some(CellValue::Boolean(b)) => b.to_string(),
+        Some(CellValue::Boolean(b)) => crate::localization::text(if *b {
+            "datatable.chart.category.true"
+        } else {
+            "datatable.chart.category.false"
+        }),
         Some(CellValue::Integer(v)) => v.to_string(),
         Some(CellValue::Decimal(v)) => v.to_string(),
         Some(CellValue::ExactDecimal(d)) => d.to_string(),
@@ -319,7 +323,12 @@ impl ChartData {
                     .get(col)
                     .map(|c| c.name.clone())
                     .filter(|n| !n.is_empty())
-                    .unwrap_or_else(|| format!("column {}", col + 1)),
+                    .unwrap_or_else(|| {
+                        crate::localization::format(
+                            "datatable.chart.series.fallback_name",
+                            &[("column_number", &(col + 1).to_string())],
+                        )
+                    }),
                 values,
             })
             .collect();
@@ -366,19 +375,28 @@ impl ChartData {
 
     /// Why this data cannot be drawn as a pie/donut, or `None` if it can.
     #[must_use]
-    pub fn radial_error(&self) -> Option<&'static str> {
+    pub fn radial_error(&self) -> Option<String> {
         if self.series.len() != 1 {
-            return Some("Pie and donut charts require exactly one numeric series");
+            return Some(crate::localization::text(
+                "datatable.chart.error.radial_requires_one_series",
+            ));
         }
         if self.categories.len() > 16 {
-            return Some("Pie and donut charts support at most 16 categories");
+            return Some(crate::localization::format(
+                "datatable.chart.error.radial_category_limit",
+                &[("max_categories", "16")],
+            ));
         }
         let values = &self.series[0].values;
         if values.iter().flatten().any(|value| *value < 0.0) {
-            return Some("Pie and donut charts cannot represent negative values");
+            return Some(crate::localization::text(
+                "datatable.chart.error.radial_negative_values",
+            ));
         }
         if !values.iter().flatten().any(|value| *value > 0.0) {
-            return Some("Pie and donut charts need at least one positive value");
+            return Some(crate::localization::text(
+                "datatable.chart.error.radial_requires_positive_value",
+            ));
         }
         None
     }
@@ -419,7 +437,12 @@ pub fn histogram_source(
         .get(pick)
         .map(|c| c.name.clone())
         .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| format!("column {}", pick + 1));
+        .unwrap_or_else(|| {
+            crate::localization::format(
+                "datatable.chart.series.fallback_name",
+                &[("column_number", &(pick + 1).to_string())],
+            )
+        });
     Some((name, out))
 }
 
@@ -543,11 +566,20 @@ impl AxisScale {
 pub fn format_tick(v: f64) -> String {
     let abs = v.abs();
     if abs >= 1e9 {
-        format!("{}B", trim_float(v / 1e9))
+        crate::localization::format(
+            "datatable.chart.axis.billions",
+            &[("value", &trim_float(v / 1e9))],
+        )
     } else if abs >= 1e6 {
-        format!("{}M", trim_float(v / 1e6))
+        crate::localization::format(
+            "datatable.chart.axis.millions",
+            &[("value", &trim_float(v / 1e6))],
+        )
     } else if abs >= 1e3 {
-        format!("{}K", trim_float(v / 1e3))
+        crate::localization::format(
+            "datatable.chart.axis.thousands",
+            &[("value", &trim_float(v / 1e3))],
+        )
     } else {
         trim_float(v)
     }
