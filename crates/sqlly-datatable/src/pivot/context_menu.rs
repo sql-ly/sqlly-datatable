@@ -179,19 +179,28 @@ impl PivotMenuItem {
     /// double-clicking the cell).
     #[must_use]
     pub fn show_source_rows() -> Self {
-        Self::action(PIVOT_ACTION_SHOW_SOURCE_ROWS, "Show source rows in Grid")
+        Self::action(
+            PIVOT_ACTION_SHOW_SOURCE_ROWS,
+            crate::localization::text("datatable.pivot.context_menu.show_source_rows"),
+        )
     }
 
     /// The built-in "Copy value" item.
     #[must_use]
     pub fn copy_value() -> Self {
-        Self::action(PIVOT_ACTION_COPY_VALUE, "Copy value")
+        Self::action(
+            PIVOT_ACTION_COPY_VALUE,
+            crate::localization::text("datatable.pivot.context_menu.copy_value"),
+        )
     }
 
     /// The built-in "Copy pivot as CSV" item.
     #[must_use]
     pub fn copy_csv() -> Self {
-        Self::action(PIVOT_ACTION_COPY_CSV, "Copy pivot as CSV")
+        Self::action(
+            PIVOT_ACTION_COPY_CSV,
+            crate::localization::text("datatable.pivot.context_menu.copy_csv"),
+        )
     }
 
     /// The default menu shown when no provider is registered, for the given

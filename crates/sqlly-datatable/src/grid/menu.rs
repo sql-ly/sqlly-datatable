@@ -67,10 +67,10 @@ pub enum MenuItem {
 impl MenuItem {
     /// Display label for the item, or `None` for separators.
     #[must_use]
-    pub fn label(&self) -> Option<&str> {
+    pub fn label(&self) -> Option<String> {
         match self {
             Self::Action(a) => Some(label(*a)),
-            Self::Custom { label, .. } | Self::Submenu { label, .. } => Some(label.as_str()),
+            Self::Custom { label, .. } | Self::Submenu { label, .. } => Some(label.clone()),
             Self::Separator => None,
         }
     }
@@ -561,25 +561,26 @@ impl ContextMenu {
 /// Maps an action to its user-facing label. Used by hit-testing, paint, and
 /// any overlay that needs to show the same string the menu shows.
 #[must_use]
-pub fn label(action: MenuAction) -> &'static str {
-    match action {
-        MenuAction::SelectColumn => "Select column",
-        MenuAction::CopyColumn => "Copy column",
-        MenuAction::CopyColumnWithHeaders => "Copy column with headers",
-        MenuAction::SortAscending => "Sort Ascending",
-        MenuAction::SortDescending => "Sort Descending",
-        MenuAction::ClearSort => "Clear sort",
-        MenuAction::GroupBy => "Group by this column",
-        MenuAction::ClearGrouping => "Clear grouping",
-        MenuAction::FreezeToHere => "Freeze Columns Up to Here",
-        MenuAction::UnfreezeColumns => "Unfreeze Columns",
-        MenuAction::HideColumn => "Hide Column",
-        MenuAction::ShowAllColumns => "Show All Columns",
-        MenuAction::MoveColumnLeft => "Move Column Left",
-        MenuAction::MoveColumnRight => "Move Column Right",
-        MenuAction::FilterPrompt => "Filter...",
-        MenuAction::ClearFilter => "Clear filter",
-    }
+pub fn label(action: MenuAction) -> String {
+    let key = match action {
+        MenuAction::SelectColumn => "datatable.grid.context_menu.select_column",
+        MenuAction::CopyColumn => "datatable.grid.context_menu.copy_column",
+        MenuAction::CopyColumnWithHeaders => "datatable.grid.context_menu.copy_column_with_headers",
+        MenuAction::SortAscending => "datatable.grid.context_menu.sort_ascending",
+        MenuAction::SortDescending => "datatable.grid.context_menu.sort_descending",
+        MenuAction::ClearSort => "datatable.grid.context_menu.clear_sort",
+        MenuAction::GroupBy => "datatable.grid.context_menu.group_by_column",
+        MenuAction::ClearGrouping => "datatable.grid.context_menu.clear_grouping",
+        MenuAction::FreezeToHere => "datatable.grid.context_menu.freeze_columns_up_to_here",
+        MenuAction::UnfreezeColumns => "datatable.grid.context_menu.unfreeze_columns",
+        MenuAction::HideColumn => "datatable.grid.context_menu.hide_column",
+        MenuAction::ShowAllColumns => "datatable.grid.context_menu.show_all_columns",
+        MenuAction::MoveColumnLeft => "datatable.grid.context_menu.move_column_left",
+        MenuAction::MoveColumnRight => "datatable.grid.context_menu.move_column_right",
+        MenuAction::FilterPrompt => "datatable.grid.context_menu.filter_prompt",
+        MenuAction::ClearFilter => "datatable.grid.context_menu.clear_filter",
+    };
+    crate::localization::text(key)
 }
 
 /// Index of the hovered action under `x` (content-space) given the
@@ -885,7 +886,7 @@ mod tests {
     fn menu_item_label_helper() {
         assert_eq!(
             MenuItem::Action(MenuAction::SortAscending).label(),
-            Some("Sort Ascending")
+            Some("Sort Ascending".to_owned())
         );
         assert_eq!(
             MenuItem::Custom {
@@ -893,7 +894,7 @@ mod tests {
                 label: "Hello".into()
             }
             .label(),
-            Some("Hello")
+            Some("Hello".to_owned())
         );
         assert_eq!(MenuItem::Separator.label(), None);
     }

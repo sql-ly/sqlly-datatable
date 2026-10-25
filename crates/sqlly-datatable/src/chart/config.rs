@@ -32,17 +32,17 @@ pub enum ChartError {
 impl ChartError {
     /// The user-facing message for this error.
     #[must_use]
-    pub fn message(&self) -> &'static str {
-        match self {
-            ChartError::NoRows => "No rows to chart",
-            ChartError::NoNumericColumns => "No numeric columns to chart",
-        }
+    pub fn message(&self) -> String {
+        crate::localization::text(match self {
+            ChartError::NoRows => "datatable.chart.error.no_rows",
+            ChartError::NoNumericColumns => "datatable.chart.error.no_numeric_columns",
+        })
     }
 }
 
 impl std::fmt::Display for ChartError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.message())
+        f.write_str(&self.message())
     }
 }
 
@@ -84,16 +84,16 @@ impl ChartKind {
 
     /// The sidebar label for this kind.
     #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            ChartKind::Bar => "Bar",
-            ChartKind::Line => "Line",
-            ChartKind::Area => "Area",
-            ChartKind::Scatter => "Scatter",
-            ChartKind::Histogram => "Histogram",
-            ChartKind::Pie => "Pie",
-            ChartKind::Donut => "Donut",
-        }
+    pub fn label(self) -> String {
+        crate::localization::text(match self {
+            ChartKind::Bar => "datatable.chart.kind.bar",
+            ChartKind::Line => "datatable.chart.kind.line",
+            ChartKind::Area => "datatable.chart.kind.area",
+            ChartKind::Scatter => "datatable.chart.kind.scatter",
+            ChartKind::Histogram => "datatable.chart.kind.histogram",
+            ChartKind::Pie => "datatable.chart.kind.pie",
+            ChartKind::Donut => "datatable.chart.kind.donut",
+        })
     }
 }
 
@@ -130,15 +130,15 @@ impl ChartAggregate {
 
     /// The sidebar label for this aggregate.
     #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            ChartAggregate::None => "None",
-            ChartAggregate::Sum => "Sum",
-            ChartAggregate::Average => "Average",
-            ChartAggregate::Minimum => "Minimum",
-            ChartAggregate::Maximum => "Maximum",
-            ChartAggregate::Count => "Count",
-        }
+    pub fn label(self) -> String {
+        crate::localization::text(match self {
+            ChartAggregate::None => "datatable.chart.aggregate.none",
+            ChartAggregate::Sum => "datatable.chart.aggregate.sum",
+            ChartAggregate::Average => "datatable.chart.aggregate.average",
+            ChartAggregate::Minimum => "datatable.chart.aggregate.minimum",
+            ChartAggregate::Maximum => "datatable.chart.aggregate.maximum",
+            ChartAggregate::Count => "datatable.chart.aggregate.count",
+        })
     }
 }
 
@@ -166,12 +166,12 @@ impl ChartOrder {
 
     /// The sidebar label for this order.
     #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            ChartOrder::Source => "Source",
-            ChartOrder::CategoryAscending => "Category A–Z",
-            ChartOrder::ValueDescending => "Value high–low",
-        }
+    pub fn label(self) -> String {
+        crate::localization::text(match self {
+            ChartOrder::Source => "datatable.chart.order.source",
+            ChartOrder::CategoryAscending => "datatable.chart.order.category_ascending",
+            ChartOrder::ValueDescending => "datatable.chart.order.value_descending",
+        })
     }
 }
 

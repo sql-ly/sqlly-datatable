@@ -56,6 +56,7 @@ pub(crate) struct PivotPaintData {
     pub(crate) font_size: f32,
     pub(crate) char_width: f32,
     pub(crate) is_ready: bool,
+    pub(crate) blank_label: String,
     /// Rubber-band overscroll translation (px added to the paint origin):
     /// the whole pivot surface — headers included — shifts by this while a
     /// gesture pulls past an edge or the bounce-back spring runs. Scrollbars
@@ -101,6 +102,7 @@ impl PivotPaintData {
             font_size: s.font_size,
             char_width: s.char_width,
             is_ready: s.config.is_ready(),
+            blank_label: s.config.blank_label.clone(),
             overscroll: s.scroll_overscroll_shift(),
         }
     }
@@ -148,14 +150,24 @@ impl PivotPaintData {
 
     fn row_label(&self, row: &VisibleRow) -> String {
         match row.kind {
-            VisibleRowKind::GrandTotal => "Grand Total".into(),
-            _ if row.key == TOTAL_KEY => "Total".into(),
+            VisibleRowKind::GrandTotal => {
+                crate::localization::text("datatable.pivot.totals.grand_total")
+            }
+            _ if row.key == TOTAL_KEY => crate::localization::text("datatable.pivot.totals.total"),
             _ => self
                 .result
                 .row_nodes
                 .get(row.key)
-                .map(|n| n.label.clone())
+                .map(|n| self.display_group_label(&n.label))
                 .unwrap_or_default(),
+        }
+    }
+
+    fn display_group_label(&self, label: &str) -> String {
+        if label == self.blank_label && self.blank_label == "(blank)" {
+            crate::localization::text("datatable.pivot.group.blank")
+        } else {
+            label.to_owned()
         }
     }
 }
@@ -379,16 +391,16 @@ fn paint_pivot_content(
 
     // Empty state: prompt for configuration instead of painting a grid.
     if n_rows == 0 || n_cols == 0 {
-        let msg = if data.is_ready {
-            "No data matches the current pivot filters."
+        let msg = crate::localization::text(if data.is_ready {
+            "datatable.pivot.empty_state.no_matching_data"
         } else {
-            "Drag fields into Rows, Columns, and Values to build the pivot."
-        };
-        let tw = text_w_approx(msg, cw);
+            "datatable.pivot.empty_state.not_configured"
+        });
+        let tw = text_w_approx(&msg, cw);
         paint_txt(
             window,
             cx,
-            msg,
+            &msg,
             ox + (sw - tw) * 0.5,
             oy + sh * 0.4,
             theme.muted_text,
@@ -555,7 +567,7 @@ fn paint_pivot_content(
                     paint_txt_weighted(
                         window,
                         cx,
-                        "Grand Total",
+                        &crate::localization::text("datatable.pivot.totals.grand_total"),
                         ox + 4.0,
                         ty,
                         theme.pivot_total_fg,
@@ -567,7 +579,9 @@ fn paint_pivot_content(
                     for i in 0..n {
                         let cx0 = ox + i as f32 * sub_w;
                         let node = ids.get(i).and_then(|&id| data.result.row_nodes.get(id));
-                        let label = node.map(|n| n.label.as_str()).unwrap_or("");
+                        let label = node
+                            .map(|n| data.display_group_label(&n.label))
+                            .unwrap_or_default();
                         let (align, red) = data
                             .row_label_fmts
                             .get(i)
@@ -577,7 +591,7 @@ fn paint_pivot_content(
                             align,
                             cx0 + 4.0,
                             cx0 + sub_w - 6.0,
-                            text_w_approx(label, cw),
+                            text_w_approx(&label, cw),
                         );
                         let color = if red && node.is_some_and(|n| cell_is_negative(&n.sort_key)) {
                             theme.negative_fg
@@ -587,7 +601,7 @@ fn paint_pivot_content(
                         paint_txt(
                             window,
                             cx,
-                            label,
+                            &label,
                             lx,
                             ty,
                             color,
@@ -703,12 +717,12 @@ fn paint_pivot_content(
                             hdr_h - hdr_row_h,
                             theme.pivot_grand_total_bg,
                         );
-                        let label = "Grand Total";
-                        let tw = text_w_approx(label, cw);
+                        let label = crate::localization::text("datatable.pivot.totals.grand_total");
+                        let tw = text_w_approx(&label, cw);
                         paint_txt_weighted(
                             window,
                             cx,
-                            label,
+                            &label,
                             x + (col_w - tw) * 0.5,
                             ly + (hdr_row_h - fs) * 0.5,
                             theme.pivot_total_fg,
@@ -803,12 +817,12 @@ fn paint_pivot_content(
                     // innermost level.
                     if level == levels - 1 && vc.kind == VisibleColKind::Subtotal {
                         fill_quad(window, x, ly, col_w, hdr_row_h, theme.pivot_subtotal_bg);
-                        let label = "Total";
-                        let tw = text_w_approx(label, cw);
+                        let label = crate::localization::text("datatable.pivot.totals.total");
+                        let tw = text_w_approx(&label, cw);
                         paint_txt(
                             window,
                             cx,
-                            label,
+                            &label,
                             x + (col_w - tw) * 0.5,
                             ly + (hdr_row_h - fs) * 0.5,
                             theme.pivot_total_fg,
@@ -888,10 +902,15 @@ fn paint_pivot_content(
                         );
                         label_x = span_x + 4.0 + CHEVRON_SIZE;
                     }
-                    let mut label = node_ref.label.clone();
-                    if collapsed_here {
-                        label.push_str(" Total");
-                    }
+                    let group_label = data.display_group_label(&node_ref.label);
+                    let label = if collapsed_here {
+                        crate::localization::format(
+                            "datatable.pivot.totals.group_total",
+                            &[("group_label", &group_label)],
+                        )
+                    } else {
+                        group_label
+                    };
                     // The innermost level is a sort target; reserve room at
                     // the right edge for the sort glyph so labels don't jump
                     // when it appears (mirrors the flat grid's header).

@@ -262,14 +262,16 @@ pub fn compute_pivot(
         .unwrap_or(CellValue::None);
 
     let field_name = |idx: usize| {
-        columns
-            .get(idx)
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| format!("column {idx}"))
+        columns.get(idx).map(|c| c.name.clone()).unwrap_or_else(|| {
+            crate::localization::format(
+                "datatable.pivot.values.fallback_field_name",
+                &[("column_index", &idx.to_string())],
+            )
+        })
     };
     let value_caption = match value_field {
         Some(vf) => agg.caption(&field_name(vf)),
-        None => "Values".to_owned(),
+        None => crate::localization::text("datatable.pivot.values.caption"),
     };
 
     PivotResult {

@@ -1215,13 +1215,15 @@ impl PivotState {
     #[must_use]
     pub fn row_label(&self, row: &VisibleRow) -> String {
         match row.kind {
-            VisibleRowKind::GrandTotal => "Grand Total".into(),
-            _ if row.key == TOTAL_KEY => "Total".into(),
+            VisibleRowKind::GrandTotal => {
+                crate::localization::text("datatable.pivot.totals.grand_total")
+            }
+            _ if row.key == TOTAL_KEY => crate::localization::text("datatable.pivot.totals.total"),
             _ => self
                 .result
                 .row_nodes
                 .get(row.key)
-                .map(|n| n.label.clone())
+                .map(|n| self.display_group_label(&n.label))
                 .unwrap_or_default(),
         }
     }
@@ -1231,20 +1233,35 @@ impl PivotState {
     #[must_use]
     pub fn col_label(&self, col: &VisibleCol) -> String {
         match col.kind {
-            VisibleColKind::GrandTotal => "Grand Total".into(),
+            VisibleColKind::GrandTotal => {
+                crate::localization::text("datatable.pivot.totals.grand_total")
+            }
             VisibleColKind::Subtotal | VisibleColKind::Collapsed => self
                 .result
                 .col_nodes
                 .get(col.key)
-                .map(|n| format!("{} Total", n.label))
-                .unwrap_or_else(|| "Total".into()),
+                .map(|n| {
+                    crate::localization::format(
+                        "datatable.pivot.totals.group_total",
+                        &[("group_label", &self.display_group_label(&n.label))],
+                    )
+                })
+                .unwrap_or_else(|| crate::localization::text("datatable.pivot.totals.total")),
             _ if col.key == TOTAL_KEY => self.result.value_caption.clone(),
             _ => self
                 .result
                 .col_nodes
                 .get(col.key)
-                .map(|n| n.label.clone())
+                .map(|n| self.display_group_label(&n.label))
                 .unwrap_or_default(),
+        }
+    }
+
+    fn display_group_label(&self, label: &str) -> String {
+        if label == self.config.blank_label && self.config.blank_label == "(blank)" {
+            crate::localization::text("datatable.pivot.group.blank")
+        } else {
+            label.to_owned()
         }
     }
 
@@ -1904,11 +1921,19 @@ impl PivotState {
             header.push(res.value_caption.clone());
         } else {
             for &leaf in &col_leaves {
-                header.push(node_path(&res.col_nodes, leaf).join(" / "));
+                header.push(
+                    node_path(&res.col_nodes, leaf)
+                        .iter()
+                        .map(|label| self.display_group_label(label))
+                        .collect::<Vec<_>>()
+                        .join(" / "),
+                );
             }
         }
         if want_grand_col {
-            header.push("Grand Total".into());
+            header.push(crate::localization::text(
+                "datatable.pivot.totals.grand_total",
+            ));
         }
         push_csv_line(&mut out, &header);
 
@@ -1937,17 +1962,26 @@ impl PivotState {
 
         let row_leaves = res.row_leaves();
         if row_leaves.is_empty() && res.row_depth == 0 && !res.values.is_empty() {
-            emit_line(&mut out, vec!["Total".into()], TOTAL_KEY);
+            emit_line(
+                &mut out,
+                vec![crate::localization::text("datatable.pivot.totals.total")],
+                TOTAL_KEY,
+            );
         }
         for &leaf in &row_leaves {
-            let mut labels = node_path(&res.row_nodes, leaf);
+            let mut labels: Vec<String> = node_path(&res.row_nodes, leaf)
+                .iter()
+                .map(|label| self.display_group_label(label))
+                .collect();
             while labels.len() < res.row_depth {
                 labels.push(String::new());
             }
             emit_line(&mut out, labels, leaf);
         }
         if self.config.show_row_grand_total && !row_leaves.is_empty() {
-            let mut labels = vec!["Grand Total".to_owned()];
+            let mut labels = vec![crate::localization::text(
+                "datatable.pivot.totals.grand_total",
+            )];
             while labels.len() < res.row_depth.max(1) {
                 labels.push(String::new());
             }

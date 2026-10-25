@@ -69,7 +69,7 @@ impl ChartSidebar {
         sidebar: &Entity<ChartSidebar>,
         theme: &GridTheme,
         id: &'static str,
-        title: &'static str,
+        title: impl Into<SharedString>,
         header_extra: Option<gpui::AnyElement>,
         expanded: bool,
         first: bool,
@@ -106,7 +106,7 @@ impl ChartSidebar {
                             .text_size(px(14.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.header_fg)
-                            .child(title),
+                            .child(title.into()),
                     )
                     .children(header_extra),
             )
@@ -146,11 +146,11 @@ impl ChartSidebar {
     }
 
     /// A small group label ("Category", "Values", …) inside a section body.
-    fn group_label(theme: &GridTheme, text: &'static str) -> gpui::AnyElement {
+    fn group_label(theme: &GridTheme, text: impl Into<SharedString>) -> gpui::AnyElement {
         div()
             .text_color(theme.muted_text)
             .text_size(px(GROUP_FONT_SIZE))
-            .child(text)
+            .child(text.into())
             .into_any_element()
     }
 
@@ -200,7 +200,7 @@ impl ChartSidebar {
     fn action_row(
         theme: &GridTheme,
         id: &'static str,
-        label: &'static str,
+        label: impl Into<SharedString>,
         on_click: impl Fn(&mut ChartState, &mut Context<ChartState>) + 'static,
         state: &Entity<ChartState>,
     ) -> gpui::AnyElement {
@@ -220,7 +220,7 @@ impl ChartSidebar {
             .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _w, cx| {
                 state.update(cx, |s, cx| on_click(s, cx));
             })
-            .child(div().child(label))
+            .child(div().child(label.into()))
             .into_any_element()
     }
 
@@ -323,11 +323,14 @@ impl Render for ChartSidebar {
         let mut data_children: Vec<gpui::AnyElement> = Vec::new();
 
         if !histogram {
-            data_children.push(Self::group_label(&theme, "Category"));
+            data_children.push(Self::group_label(
+                &theme,
+                crate::localization::text("datatable.chart.sidebar.category_heading"),
+            ));
             data_children.push(Self::pick_row(
                 &theme,
                 SharedString::from("chart-category-auto"),
-                "Auto",
+                crate::localization::text("datatable.chart.sidebar.category_auto"),
                 config.label_column.is_none(),
                 |s, cx| {
                     let mut config = s.config.clone();
@@ -354,13 +357,18 @@ impl Render for ChartSidebar {
             }
         }
 
-        data_children.push(Self::group_label(&theme, "Values"));
+        data_children.push(Self::group_label(
+            &theme,
+            crate::localization::text("datatable.chart.sidebar.values_heading"),
+        ));
         if numeric_columns.is_empty() {
             data_children.push(
                 div()
                     .text_size(px(ROW_FONT_SIZE))
                     .text_color(theme.muted_text)
-                    .child("No numeric columns")
+                    .child(crate::localization::text(
+                        "datatable.chart.sidebar.no_numeric_columns",
+                    ))
                     .into_any_element(),
             );
         } else {
@@ -400,7 +408,10 @@ impl Render for ChartSidebar {
         }
 
         if !histogram {
-            data_children.push(Self::group_label(&theme, "Aggregate"));
+            data_children.push(Self::group_label(
+                &theme,
+                crate::localization::text("datatable.chart.sidebar.aggregate_heading"),
+            ));
             for aggregate in ChartAggregate::all() {
                 let selected = config.aggregate == *aggregate;
                 let label: SharedString = aggregate.label().into();
@@ -418,7 +429,10 @@ impl Render for ChartSidebar {
                 ));
             }
 
-            data_children.push(Self::group_label(&theme, "Order"));
+            data_children.push(Self::group_label(
+                &theme,
+                crate::localization::text("datatable.chart.sidebar.order_heading"),
+            ));
             for order in ChartOrder::all() {
                 let selected = config.order == *order;
                 let label: SharedString = order.label().into();
@@ -436,8 +450,15 @@ impl Render for ChartSidebar {
                 ));
             }
 
-            data_children.push(Self::group_label(&theme, "Limit"));
-            let top_label: SharedString = format!("Top {}", config.top_n).into();
+            data_children.push(Self::group_label(
+                &theme,
+                crate::localization::text("datatable.chart.sidebar.limit_heading"),
+            ));
+            let top_label: SharedString = crate::localization::format(
+                "datatable.chart.sidebar.top_n",
+                &[("count", &config.top_n.to_string())],
+            )
+            .into();
             data_children.push(Self::pick_row(
                 &theme,
                 SharedString::from("chart-top-n"),
@@ -461,7 +482,9 @@ impl Render for ChartSidebar {
             .child(
                 Checkbox::new("chart-navigate-on-click")
                     .checked(config.navigate_on_click)
-                    .label("Click marks to show source rows")
+                    .label(crate::localization::text(
+                        "datatable.chart.sidebar.navigate_on_click",
+                    ))
                     .on_click(move |checked: &bool, _window, app| {
                         state_navigate.update(app, |s, cx| {
                             let mut config = s.config.clone();
@@ -474,10 +497,9 @@ impl Render for ChartSidebar {
                 div()
                     .text_size(px(GROUP_FONT_SIZE))
                     .text_color(theme.muted_text)
-                    .child(
-                        "Clicking a bar, point, or slice selects the result rows \
-                         behind it on the Grid tab.",
-                    ),
+                    .child(crate::localization::text(
+                        "datatable.chart.sidebar.navigate_explanation",
+                    )),
             );
 
         // -- Export section -----------------------------------------------
@@ -487,7 +509,7 @@ impl Render for ChartSidebar {
         let export = div().flex().flex_col().gap(px(4.0)).child(Self::action_row(
             &theme,
             "chart-copy-svg",
-            "Copy SVG",
+            crate::localization::text("datatable.chart.sidebar.copy_svg"),
             move |_s, cx| {
                 if let Some(svg) = state_copy.read(cx).svg() {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(svg));
@@ -499,7 +521,7 @@ impl Render for ChartSidebar {
         let export = export.child(Self::action_row(
             &theme,
             "chart-save-svg",
-            "Save SVG…",
+            crate::localization::text("datatable.chart.sidebar.save_svg"),
             move |_s, cx| {
                 if let Some(svg) = state_save_svg.read(cx).svg() {
                     let rx = cx.prompt_for_new_path(std::path::Path::new("."), Some("chart.svg"));
@@ -521,7 +543,9 @@ impl Render for ChartSidebar {
             div()
                 .text_size(px(GROUP_FONT_SIZE))
                 .text_color(theme.muted_text)
-                .child("Save SVG is unavailable in the browser preview; use Copy SVG."),
+                .child(crate::localization::text(
+                    "datatable.chart.sidebar.browser_save_svg_unavailable",
+                )),
         );
 
         let sidebar = cx.entity().clone();
@@ -536,7 +560,7 @@ impl Render for ChartSidebar {
                 &sidebar,
                 &theme,
                 "type",
-                "Type",
+                crate::localization::text("datatable.chart.sidebar.type_section"),
                 save_button,
                 is_expanded("type"),
                 true,
@@ -552,7 +576,7 @@ impl Render for ChartSidebar {
                 &sidebar,
                 &theme,
                 "data",
-                "Data",
+                crate::localization::text("datatable.chart.sidebar.data_section"),
                 None,
                 is_expanded("data"),
                 false,
@@ -568,7 +592,7 @@ impl Render for ChartSidebar {
                 &sidebar,
                 &theme,
                 "behavior",
-                "Behavior",
+                crate::localization::text("datatable.chart.sidebar.behavior_section"),
                 None,
                 is_expanded("behavior"),
                 false,
@@ -579,7 +603,7 @@ impl Render for ChartSidebar {
                 &sidebar,
                 &theme,
                 "export",
-                "Export",
+                crate::localization::text("datatable.chart.sidebar.export_section"),
                 None,
                 is_expanded("export"),
                 false,
@@ -603,7 +627,9 @@ impl Render for ChartSidebar {
                     .text_color(theme.header_fg)
                     .text_size(px(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child("Chart Controls"),
+                    .child(crate::localization::text(
+                        "datatable.chart.sidebar.controls_title",
+                    )),
             )
             .child(sections)
     }
