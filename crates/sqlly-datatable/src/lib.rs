@@ -94,6 +94,7 @@ pub mod format;
 pub mod grid;
 pub mod localization;
 pub mod pivot;
+pub mod text_style;
 pub mod tooltip;
 
 // Re-exported so hosts can call `gpui_component` APIs (theme switching,
@@ -140,6 +141,7 @@ pub use grid::{
     ReferenceHighlights, RowAction, RowGroup, RowWindow, ScrollbarAxis, SelectedCellContext,
     SelectedRowContext, Selection, SortDirection, SqllyDataTable, SqllyDataTableBuilder,
 };
+pub use text_style::{CellStyler, CellTextStyler, TextSpan};
 pub use tooltip::{set_tooltip_show_delay, tooltip_show_delay};
 
 pub use pivot::{

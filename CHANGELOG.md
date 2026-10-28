@@ -5,6 +5,17 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [9.1.0] - 2026-10-28
+
+### Added
+- **Colored text runs in cells.** `GridConfig::cell_text_styler` takes a host `CellTextStyler` (wrapped in `CellStyler`) that returns `TextSpan`s (byte range + color) for a cell's display text, for syntax coloring JSON, XML and the like. The grid asks once per column whether it is styled, hands the styler only the visible prefix of each cell (column width plus a few characters, never more than 4096), and caches spans per cell until that prefix changes, so huge values and fast scrolling cost no re-tokenizing. Truncated cells keep their colors up to the ellipsis. A conditional-formatting text color wins over the spans, and NULL placeholders are never styled. `text_style::visible_prefix`, `normalize_spans` and `color_runs` are public for hosts that want the same bounding and run splitting.
+
+### Fixed
+- **Cells with line breaks no longer crash debug builds.** Text holding `\n`, `\r\n` or `\r` tripped the text shaper's single-line assertion in debug builds and was shaped wrong in release. Grid cells, pivot labels and chart labels now paint such text on one line with a `⏎` marker at each break (`grid::paint::single_line`); copy, export and editing still see the real line breaks.
+
+### Changed
+- `GridConfig` gains a field; hosts that build it with a struct literal and no `..GridConfig::default()` must add `cell_text_styler: None`.
+
 ## [9.0.0] - 2026-10-25
 
 ### Added

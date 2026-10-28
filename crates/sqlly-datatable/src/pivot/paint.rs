@@ -307,6 +307,8 @@ fn paint_pivot_content(
         if text.is_empty() {
             return;
         }
+        // Group labels come from data: one paintable line.
+        let text: &str = &crate::grid::paint::single_line(text);
         let mk_run = |t: &str| gpui::TextRun {
             len: t.len(),
             color,

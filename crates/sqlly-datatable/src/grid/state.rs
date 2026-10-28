@@ -299,6 +299,9 @@ pub struct GridState {
     /// computed over the rows currently in memory). Arc'd for the same
     /// cheap paint-snapshot reason as `resolved_formats`.
     pub resolved_conditionals: Arc<crate::conditional::ResolvedConditionals>,
+    /// Which columns the host's [`crate::text_style::CellTextStyler`] colors,
+    /// plus the per-cell span cache. Rebuilt with the conditionals.
+    pub(crate) text_styling: Arc<crate::text_style::TextStyling>,
     /// Arc-wrapped row data so `PaintData::from_state` can clone cheaply
     /// (O(1)) instead of deep-cloning every cell every frame. Rows are
     /// immutable after `GridState::new`, so the Arc never needs rebuilding.
@@ -817,6 +820,10 @@ impl GridState {
             &data.columns,
             &data.rows,
         ));
+        let text_styling = Arc::new(crate::text_style::TextStyling::resolve(
+            config.cell_text_styler.as_ref(),
+            &data.columns,
+        ));
         let col_count = data.columns.len();
         let display_indices = Arc::new((0..data.rows.len()).collect::<Vec<_>>());
         let display_rows = Arc::new(
@@ -847,6 +854,7 @@ impl GridState {
             window: None,
             resolved_formats,
             resolved_conditionals,
+            text_styling,
             data_rows,
             display_indices,
             display_rows,
@@ -1382,6 +1390,18 @@ impl GridState {
             &self.data.columns,
             &self.data.rows,
         ));
+        // Same triggers (config, columns, rows): re-resolve the styled
+        // columns. A styler or column change must not reuse cached spans;
+        // appended rows keep the cache (entries are checked against the
+        // cell's text anyway).
+        let styler_changed = self.text_styling.styler() != self.config.cell_text_styler.as_ref();
+        let columns_changed = self.text_styling.column_count() != self.data.columns.len();
+        if styler_changed || columns_changed {
+            self.text_styling = Arc::new(crate::text_style::TextStyling::resolve(
+                self.config.cell_text_styler.as_ref(),
+                &self.data.columns,
+            ));
+        }
     }
 
     pub fn recompute(&mut self) {

@@ -480,6 +480,10 @@ pub struct GridConfig {
     /// rules the feature costs a single check per paint. See
     /// [`crate::conditional`] for semantics.
     pub conditional_rules: Vec<ConditionalRule>,
+    /// Host hook that colors runs of cell text (e.g. JSON/XML syntax
+    /// coloring). `None` by default — cells paint in one color. See
+    /// [`crate::text_style`].
+    pub cell_text_styler: Option<crate::text_style::CellStyler>,
 }
 
 impl Default for GridConfig {
@@ -497,6 +501,7 @@ impl Default for GridConfig {
             empty_text: "No rows".into(),
             animations: true,
             conditional_rules: vec![],
+            cell_text_styler: None,
         }
     }
 }

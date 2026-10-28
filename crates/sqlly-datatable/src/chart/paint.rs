@@ -320,6 +320,8 @@ impl ChartPaint {
         let tick_fs = self.font_size * 0.85;
         let line_height = |fs: f32| px(fs * 1.4);
         let shape = |text: &str, color: Hsla, fs: f32| {
+            // Category labels come from data: one paintable line.
+            let text: &str = &crate::grid::paint::single_line(text);
             let run = gpui::TextRun {
                 len: text.len(),
                 color,

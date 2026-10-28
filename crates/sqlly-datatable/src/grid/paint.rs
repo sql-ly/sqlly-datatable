@@ -85,6 +85,8 @@ pub(crate) struct PaintData {
     /// Resolved conditional-formatting rules; empty (one cheap check) when
     /// [`crate::config::GridConfig::conditional_rules`] is unset.
     pub(crate) conditionals: Arc<crate::conditional::ResolvedConditionals>,
+    /// Host text styling (syntax colors) and its per-cell span cache.
+    pub(crate) text_styling: Arc<crate::text_style::TextStyling>,
     pub(crate) rows: Arc<Vec<Vec<crate::data::CellValue>>>,
     pub(crate) filters_active: Vec<bool>,
     pub(crate) scroll_offset: Point<Pixels>,
@@ -137,6 +139,7 @@ impl PaintData {
             columns: s.data.columns.clone(),
             resolved_formats: Arc::clone(&s.resolved_formats),
             conditionals: Arc::clone(&s.resolved_conditionals),
+            text_styling: Arc::clone(&s.text_styling),
             rows: Arc::clone(&s.data_rows),
             filters_active: s.filters.iter().map(|f| f.is_active()).collect(),
             scroll_offset: s.scroll_handle.offset(),
@@ -259,6 +262,38 @@ impl StatusBarData {
 /// Guards the truncation slice: the shaper's byte index should always land
 /// on a boundary, but a mid-char index from a foreign glyph cluster would
 /// otherwise panic the paint pass on multi-byte input (emoji, CJK).
+/// Marker painted in place of each line break in a cell.
+pub const LINE_BREAK_MARKER: char = '\u{23CE}';
+
+/// `text` as one paintable line: every line break (`\r\n`, `\n`, `\r`)
+/// becomes [`LINE_BREAK_MARKER`], so a multi-line value reads as one line
+/// with visible break markers. The text shaper takes a single line only (it
+/// asserts in debug builds and mis-shapes in release), so everything the
+/// grid paints goes through here. Paint-only: copy, export, and editing read
+/// the cell value, which keeps its real line breaks. Borrowed (no
+/// allocation) when there is nothing to replace.
+#[must_use]
+pub fn single_line(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains(['\n', '\r']) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + 4);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push(LINE_BREAK_MARKER);
+            }
+            '\n' => out.push(LINE_BREAK_MARKER),
+            other => out.push(other),
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 pub(crate) fn floor_char_boundary(text: &str, idx: usize) -> usize {
     let mut idx = idx.min(text.len());
     while idx > 0 && !text.is_char_boundary(idx) {
@@ -547,12 +582,16 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
     // it, so right/center alignment lands correctly rather than relying on a
     // monospace char-count estimate. Shaping happens exactly once per visible
     // cell here, so measuring costs nothing extra over painting.
-    let shape_fitted = |text: &str,
-                        color: Hsla,
-                        max_w: Option<f32>,
-                        italic: bool,
-                        bold: bool|
+    let shape_fitted_spans = |text: &str,
+                              color: Hsla,
+                              max_w: Option<f32>,
+                              italic: bool,
+                              bold: bool,
+                              spans: Option<&[crate::text_style::TextSpan]>|
      -> Option<gpui::ShapedLine> {
+        // Callers that style spans pass already single-line text (so span
+        // offsets match); this is a no-op for them.
+        let text: &str = &single_line(text);
         let face = if italic {
             &italic_font
         } else if bold {
@@ -568,8 +607,41 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
             underline: None,
             strikethrough: None,
         };
-        let shaped =
-            text_system.shape_line(text.to_owned().into(), font_size, &[mk_run(text)], None);
+        // Host syntax colors: the first `len` bytes of `t` split into colored
+        // runs, the rest (an ellipsis) in the cell color.
+        let mk_runs = |t: &str, len: usize| -> Vec<gpui::TextRun> {
+            match spans {
+                Some(spans) if !spans.is_empty() => {
+                    let mut runs: Vec<gpui::TextRun> =
+                        crate::text_style::color_runs(t, len, spans, color)
+                            .into_iter()
+                            .map(|(n, c)| gpui::TextRun {
+                                len: n,
+                                color: c,
+                                font: face.clone(),
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            })
+                            .collect();
+                    let covered: usize = runs.iter().map(|r| r.len).sum();
+                    if covered < t.len() {
+                        runs.push(gpui::TextRun {
+                            len: t.len() - covered,
+                            ..mk_run(t)
+                        });
+                    }
+                    runs
+                }
+                _ => vec![mk_run(t)],
+            }
+        };
+        let shaped = text_system.shape_line(
+            text.to_owned().into(),
+            font_size,
+            &mk_runs(text, text.len()),
+            None,
+        );
         match max_w {
             Some(mw) if mw <= 0.0 => None,
             Some(mw) if f32::from(shaped.width) > mw => {
@@ -586,7 +658,7 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                     return Some(text_system.shape_line(
                         truncated.to_owned().into(),
                         font_size,
-                        &[mk_run(truncated)],
+                        &mk_runs(truncated, truncated.len()),
                         None,
                     ));
                 }
@@ -596,12 +668,15 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                 Some(text_system.shape_line(
                     fitted.clone().into(),
                     font_size,
-                    &[mk_run(&fitted)],
+                    &mk_runs(&fitted, kept.len()),
                     None,
                 ))
             }
             _ => Some(shaped),
         }
+    };
+    let shape_fitted = |text: &str, color: Hsla, max_w: Option<f32>, italic: bool, bold: bool| {
+        shape_fitted_spans(text, color, max_w, italic, bold, None)
     };
     let paint_txt_styled = |win: &mut Window,
                             cx: &mut App,
@@ -871,7 +946,8 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                 } else {
                     crate::format::value_label_paint(&text, fmt)
                 };
-                let text = paint.primary;
+                // One paintable line; spans below are computed on it.
+                let text = single_line(&paint.primary).into_owned();
                 // A conditional foreground beats every default text color;
                 // it stays applied over a selection so rule-driven emphasis
                 // survives highlighting.
@@ -892,12 +968,29 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                 // placeholder is italic AND a rule asks for bold, italic wins
                 // (`shape_fitted` picks one face; a bold-italic face is not
                 // shaped today).
-                if let Some(shaped) = shape_fitted(
+                // Host syntax colors, unless a conditional text color (the
+                // user's own rule) already decided the color. Only the
+                // visible prefix is ever styled, and spans are cached per
+                // cell, so huge values cost nothing extra per frame.
+                let spans = if is_null
+                    || !data.text_styling.is_active()
+                    || effect.as_ref().is_some_and(|e| e.fg.is_some())
+                {
+                    None
+                } else {
+                    let prefix = crate::text_style::visible_prefix(&text, w, cw);
+                    data.columns.get(ci).and_then(|column| {
+                        data.text_styling
+                            .spans_for(row_idx, ci, &column.name, prefix)
+                    })
+                };
+                if let Some(shaped) = shape_fitted_spans(
                     &text,
                     color,
                     Some(w - 2.0 * CELL_TEXT_INSET),
                     is_null && fmt.null.italic,
                     effect.as_ref().is_some_and(|e| e.bold),
+                    spans.as_deref(),
                 ) {
                     let text_w = f32::from(shaped.width);
                     let tx = match fmt.alignment() {
