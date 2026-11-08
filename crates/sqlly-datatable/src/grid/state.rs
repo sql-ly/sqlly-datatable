@@ -3923,7 +3923,7 @@ mod tests {
             }
         }
 
-        fn key(name: &str) -> Keystroke {
+        fn key(name: &'static str) -> Keystroke {
             Keystroke::parse(name).expect("keystroke")
         }
 

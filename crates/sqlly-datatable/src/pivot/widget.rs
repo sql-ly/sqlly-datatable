@@ -12,7 +12,7 @@ use crate::pivot::state::{PivotHitResult, PivotState};
 use gpui::{
     anchored, canvas, deferred, div, point, px, App, Context, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Render, ScrollWheelEvent, Styled, Window,
+    MouseUpEvent, ParentElement, Render, ScrollEvent, Styled, Window,
 };
 
 /// Draw order for the pivot's context-menu overlay; matches the flat grid's
@@ -168,7 +168,7 @@ impl Render for PivotGrid {
                     });
                 },
             )
-            .on_scroll_wheel(move |event: &ScrollWheelEvent, _window, cx| {
+            .on_scroll(move |event: &ScrollEvent, _window, cx| {
                 state_scroll.update(cx, |s, cx| {
                     let line_h = px(s.row_height);
                     let delta = event.delta.pixel_delta(line_h);

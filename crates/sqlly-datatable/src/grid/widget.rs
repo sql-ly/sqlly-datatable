@@ -31,8 +31,7 @@ use gpui::{
     anchored, canvas, deferred, div, point, pulsating_between, px, relative, Anchor, Animation,
     AnimationExt, App, AppContext, Context, Div, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Render, ScrollWheelEvent, StatefulInteractiveElement, Styled,
-    Window,
+    MouseUpEvent, ParentElement, Render, ScrollEvent, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::resizable::{h_resizable, resizable_panel, ResizableState};
 use gpui_component::{Icon, IconName};
@@ -2094,7 +2093,7 @@ impl SqllyDataTable {
                     });
                 },
             )
-            .on_scroll_wheel(move |event: &ScrollWheelEvent, _window, cx| {
+            .on_scroll(move |event: &ScrollEvent, _window, cx| {
                 state_scroll.update(cx, |s, cx| {
                     let line_h = px(s.row_height);
                     let delta = event.delta.pixel_delta(line_h);

@@ -7,7 +7,7 @@
 
 use gpui::{
     div, point, px, AppContext, Context, InteractiveElement, IntoElement, Modifiers, MouseButton,
-    ParentElement, Render, ScrollWheelEvent, Styled, TestAppContext, Window,
+    ParentElement, Render, ScrollEvent, Styled, TestAppContext, Window,
 };
 use sqlly_datatable::{
     CellValue, Column, ColumnKind, GridConfig, GridData, Selection, SqllyDataTable,
@@ -70,7 +70,7 @@ impl Render for Harness {
                                     div()
                                         .id("tabbed-results")
                                         .size_full()
-                                        .on_scroll_wheel(|_e: &ScrollWheelEvent, _w, _c| {})
+                                        .on_scroll(|_e: &ScrollEvent, _w, _c| {})
                                         .child(grid),
                                 ),
                         )

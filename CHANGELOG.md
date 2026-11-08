@@ -5,6 +5,12 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.0.0] - 2026-11-08
+
+### Changed
+- **Moves to gpui-pre 0.3.11 and gpui-component / gpui-kit-assets 0.9.0.** gpui-component 0.9 pins `gpui-pre = "=0.3.11"`, so hosts must move their whole gpui graph to the same versions, which is why this is a major release. No API change in this crate.
+- Scroll handling uses gpui's renamed `ScrollEvent` / `on_scroll` (formerly `ScrollWheelEvent` / `on_scroll_wheel`).
+
 ## [9.1.0] - 2026-10-28
 
 ### Added
