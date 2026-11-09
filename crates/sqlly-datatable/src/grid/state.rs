@@ -302,6 +302,13 @@ pub struct GridState {
     /// Which columns the host's [`crate::text_style::CellTextStyler`] colors,
     /// plus the per-cell span cache. Rebuilt with the conditionals.
     pub(crate) text_styling: Arc<crate::text_style::TextStyling>,
+    /// Shaped cell text retained across frames (see `grid::shape_cache`).
+    pub(crate) shape_cache: Arc<crate::grid::shape_cache::ShapeCache>,
+    /// A paced scroll repaint is already scheduled (see
+    /// [`Self::scroll_repaint_delay`]).
+    pub(crate) scroll_notify_pending: bool,
+    /// When the last scroll-driven repaint was requested.
+    pub(crate) last_scroll_notify: Option<Instant>,
     /// Arc-wrapped row data so `PaintData::from_state` can clone cheaply
     /// (O(1)) instead of deep-cloning every cell every frame. Rows are
     /// immutable after `GridState::new`, so the Arc never needs rebuilding.
@@ -855,6 +862,9 @@ impl GridState {
             resolved_formats,
             resolved_conditionals,
             text_styling,
+            shape_cache: Arc::new(crate::grid::shape_cache::ShapeCache::default()),
+            scroll_notify_pending: false,
+            last_scroll_notify: None,
             data_rows,
             display_indices,
             display_rows,
@@ -1564,6 +1574,47 @@ impl GridState {
         });
         if self.drag_start.is_some() {
             self.handle_scroll_drag();
+        }
+    }
+
+    /// How long the widget should wait before repainting for the scroll
+    /// input just applied: `None` means repaint now. Paces repaints to
+    /// `config.scroll_repaint_interval` — the first event of a burst paints
+    /// immediately and the ones inside the interval wait for its end, so a
+    /// 120 Hz event stream paints at the configured rate while the scroll
+    /// offset itself always reflects the latest event.
+    pub(crate) fn scroll_repaint_delay(&mut self) -> Option<std::time::Duration> {
+        let interval = self.config.scroll_repaint_interval?;
+        let now = scroll_now();
+        if let Some(last) = self.last_scroll_notify {
+            let since = now.saturating_duration_since(last);
+            if since < interval {
+                return Some(interval - since);
+            }
+        }
+        self.last_scroll_notify = Some(now);
+        None
+    }
+
+    /// Request a repaint for scroll input or scroll physics: immediately when
+    /// unpaced, otherwise at most once per `config.scroll_repaint_interval`,
+    /// with one deferred notify covering every request inside the interval.
+    pub(crate) fn request_scroll_repaint(&mut self, cx: &mut gpui::Context<Self>) {
+        match self.scroll_repaint_delay() {
+            None => cx.notify(),
+            Some(_) if self.scroll_notify_pending => {}
+            Some(delay) => {
+                self.scroll_notify_pending = true;
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(delay).await;
+                    let _ = this.update(cx, |s, cx| {
+                        s.scroll_notify_pending = false;
+                        s.last_scroll_notify = Some(scroll_now());
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
         }
     }
 
@@ -2615,6 +2666,24 @@ impl GridState {
         self.update_drag();
     }
 
+    /// [`Self::handle_mouse_move`], reporting whether anything painted may
+    /// have changed. Plain pointer motion over an unchanged hover target
+    /// repaints nothing, so the widget skips the notify (and the frame).
+    pub(crate) fn handle_mouse_move_repaints(
+        &mut self,
+        pos: Point<Pixels>,
+        pressed_button: Option<MouseButton>,
+    ) -> bool {
+        let before = (self.hover_hit, self.header_hover.map(|(col, _)| col));
+        self.handle_mouse_move(pos, pressed_button);
+        pressed_button.is_some()
+            || self.is_dragging
+            || self.resizing_col.is_some()
+            || self.scrollbar_drag.is_some()
+            || self.context_menu.is_some()
+            || (self.hover_hit, self.header_hover.map(|(col, _)| col)) != before
+    }
+
     pub fn handle_mouse_move(&mut self, pos: Point<Pixels>, pressed_button: Option<MouseButton>) {
         if self.is_dragging && pressed_button != Some(MouseButton::Left) {
             self.handle_mouse_up();
@@ -3468,6 +3537,25 @@ mod tests {
             );
             let _ = format_current_status(&state);
             assert_eq!(state.selection, Selection::None);
+
+            // scroll_repaint_delay: unpaced grids repaint every event; paced
+            // grids repaint the first event now and defer the rest of the
+            // interval.
+            assert_eq!(state.scroll_repaint_delay(), None);
+            assert_eq!(state.scroll_repaint_delay(), None);
+            state.config.scroll_repaint_interval = Some(std::time::Duration::from_secs(3600));
+            state.last_scroll_notify = None;
+            assert_eq!(
+                state.scroll_repaint_delay(),
+                None,
+                "first paced event paints now"
+            );
+            let deferred = state
+                .scroll_repaint_delay()
+                .expect("second event inside the interval is deferred");
+            assert!(deferred <= std::time::Duration::from_secs(3600));
+            assert!(deferred > std::time::Duration::from_secs(3500));
+            state.config.scroll_repaint_interval = None;
 
             // format_current_status_replaces_with_supplied_pos
             state.last_mouse_pos = Some(Point {

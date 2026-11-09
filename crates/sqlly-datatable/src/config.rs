@@ -475,6 +475,13 @@ pub struct GridConfig {
     /// motion" preference: every surface then appears instantly. The data
     /// surface (cells, selection, sort) is always instant regardless.
     pub animations: bool,
+    /// Minimum interval between repaints driven by wheel and trackpad
+    /// scrolling. `None` repaints at the display's refresh rate. A host can
+    /// set this (for example to one sixtieth of a second) to roughly halve
+    /// the CPU a scroll costs on 120 Hz displays, at a slight loss of
+    /// smoothness; scroll input is still applied per event, only the paint
+    /// is paced. No effect on displays at or below the paced rate.
+    pub scroll_repaint_interval: Option<std::time::Duration>,
     /// Conditional-formatting rules (per-cell colors, color scales, data
     /// bars), each targeting a column by name. Empty by default — with no
     /// rules the feature costs a single check per paint. See
@@ -500,6 +507,7 @@ impl Default for GridConfig {
             column_overrides: vec![],
             empty_text: "No rows".into(),
             animations: true,
+            scroll_repaint_interval: None,
             conditional_rules: vec![],
             cell_text_styler: None,
         }

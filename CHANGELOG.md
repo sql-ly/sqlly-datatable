@@ -5,6 +5,14 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.1.0] - 2026-11-08
+
+### Added
+- **Paced scroll repaints.** `GridConfig::scroll_repaint_interval` sets a minimum interval between repaints driven by wheel and trackpad scrolling (and by the glide/bounce physics loop); `None`, the default, repaints at the display's refresh rate. A host can set it to one sixtieth of a second to roughly halve what a scroll costs on 120 Hz displays. Scroll input is still applied per event, so the grid always lands on the latest position; only the paint waits.
+
+### Changed
+- **Scrolling costs less CPU.** Three changes to the grid painter, measured on a 40,000-row result with a 2,500-character text column: a cell's text is cut to the prefix that can fit its column before it is scanned, hashed or shaped, so a cell holding a document costs the same as a short one; each cell's shaped line is kept across frames and validated by a fingerprint of its text, color, face, size, width and syntax spans, so a steady scroll shapes only the rows entering the viewport (`grid::shape_cache`); and plain pointer motion over an unchanged hover target no longer requests a repaint. Together with host-side changes this took a continuous scroll in SQLLY from about 35% of a core to about 24%.
+
 ## [10.0.0] - 2026-11-08
 
 ### Changed

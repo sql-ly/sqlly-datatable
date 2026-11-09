@@ -10,6 +10,7 @@ pub mod paint;
 pub(crate) mod scroll_physics;
 pub mod search;
 pub mod selection;
+pub(crate) mod shape_cache;
 pub mod state;
 pub mod theme;
 pub mod widget;

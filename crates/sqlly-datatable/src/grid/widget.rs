@@ -1880,7 +1880,10 @@ impl SqllyDataTable {
                     let (changed, active) =
                         cx.update(|cx| state_phys.update(cx, |s, _cx| s.step_scroll_physics()));
                     if changed {
-                        state_phys.update(cx, |_s, cx| cx.notify());
+                        // Same pacing as wheel input: the glide/bounce loop
+                        // runs at 60 Hz and would otherwise repaint between
+                        // the paced wheel frames.
+                        state_phys.update(cx, |s, cx| s.request_scroll_repaint(cx));
                     }
                     if !active {
                         break;
@@ -2080,8 +2083,9 @@ impl SqllyDataTable {
             .on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
                 state_move.update(cx, |s, cx| {
                     let rel = state_inner::to_grid_relative(event.position, s.bounds.origin);
-                    s.handle_mouse_move(rel, event.pressed_button);
-                    cx.notify();
+                    if s.handle_mouse_move_repaints(rel, event.pressed_button) {
+                        cx.notify();
+                    }
                 });
             })
             .on_mouse_up(
@@ -2103,7 +2107,9 @@ impl SqllyDataTable {
                         precise,
                         event.touch_phase,
                     );
-                    cx.notify();
+                    // Paced when `GridConfig::scroll_repaint_interval` is set:
+                    // the offset is already updated above, the paint waits.
+                    s.request_scroll_repaint(cx);
                 });
             })
             .on_key_down(move |event: &KeyDownEvent, _window, cx| {

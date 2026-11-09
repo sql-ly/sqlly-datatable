@@ -124,6 +124,7 @@ pub(crate) struct PaintData {
     pub(crate) frozen_columns: usize,
     pub(crate) row_backgrounds: Arc<Vec<Option<Hsla>>>,
     pub(crate) reference_highlights: Arc<super::state::ReferenceHighlights>,
+    pub(crate) shape_cache: Arc<super::shape_cache::ShapeCache>,
 }
 
 impl PaintData {
@@ -167,6 +168,7 @@ impl PaintData {
             frozen_columns: s.frozen_columns.min(s.display_columns.len()),
             row_backgrounds: Arc::clone(&s.row_backgrounds),
             reference_highlights: Arc::clone(&s.reference_highlights),
+            shape_cache: Arc::clone(&s.shape_cache),
         }
     }
 
@@ -589,6 +591,15 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                               bold: bool,
                               spans: Option<&[crate::text_style::TextSpan]>|
      -> Option<gpui::ShapedLine> {
+        // Bound the shaping cost by the box, not the value: a cell holding a
+        // 50 KB document is cut to the prefix that could possibly fit (plus
+        // slack for the ellipsis fit below) before it is scanned, hashed, or
+        // shaped. Cut on a char boundary, so span offsets inside the prefix
+        // are unchanged; `color_runs` clips spans past the end.
+        let text: &str = match max_w {
+            Some(mw) => crate::text_style::visible_prefix(text, mw, cw),
+            None => text,
+        };
         // Callers that style spans pass already single-line text (so span
         // offsets match); this is a no-op for them.
         let text: &str = &single_line(text);
@@ -946,8 +957,12 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                 } else {
                     crate::format::value_label_paint(&text, fmt)
                 };
-                // One paintable line; spans below are computed on it.
-                let text = single_line(&paint.primary).into_owned();
+                // One paintable line, bounded by the column: a value far
+                // longer than the box is cut before it is scanned, so a cell
+                // holding a document costs the same as a short one. Spans
+                // below are computed on this same text.
+                let text = single_line(crate::text_style::visible_prefix(&paint.primary, w, cw))
+                    .into_owned();
                 // A conditional foreground beats every default text color;
                 // it stays applied over a selection so rule-driven emphasis
                 // survives highlighting.
@@ -978,20 +993,38 @@ fn paint_grid_content(data: &PaintData, window: &mut Window, cx: &mut App, bound
                 {
                     None
                 } else {
-                    let prefix = crate::text_style::visible_prefix(&text, w, cw);
                     data.columns.get(ci).and_then(|column| {
                         data.text_styling
-                            .spans_for(row_idx, ci, &column.name, prefix)
+                            .spans_for(row_idx, ci, &column.name, &text)
                     })
                 };
-                if let Some(shaped) = shape_fitted_spans(
+                let italic = is_null && fmt.null.italic;
+                let bold = effect.as_ref().is_some_and(|e| e.bold);
+                let max_w = w - 2.0 * CELL_TEXT_INSET;
+                // Shaped once per cell and kept across frames; a steady
+                // scroll pays one hash per visible cell.
+                let fingerprint = super::shape_cache::fingerprint(
                     &text,
                     color,
-                    Some(w - 2.0 * CELL_TEXT_INSET),
-                    is_null && fmt.null.italic,
-                    effect.as_ref().is_some_and(|e| e.bold),
+                    max_w,
+                    italic,
+                    bold,
+                    fs,
                     spans.as_deref(),
-                ) {
+                );
+                let shaped = data
+                    .shape_cache
+                    .get_or_shape((row_idx, ci), fingerprint, || {
+                        shape_fitted_spans(
+                            &text,
+                            color,
+                            Some(max_w),
+                            italic,
+                            bold,
+                            spans.as_deref(),
+                        )
+                    });
+                if let Some(shaped) = shaped {
                     let text_w = f32::from(shaped.width);
                     let tx = match fmt.alignment() {
                         crate::config::TextAlignment::Left => x + CELL_TEXT_INSET,
