@@ -5,6 +5,17 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [11.0.0] - 2026-11-11
+
+### Added
+- **Pivot and chart over results too large for memory.** A host whose grid is in windowed-row mode can hand the complete result to `SqllyDataTable::set_row_source` as a `RowSource` (row count plus a start-to-finish scan). The Pivot and Chart tabs then read every row on the background executor each time their layout changes, keeping only running totals, so memory stays flat however many rows there are. The previous result stays on screen with a "Pivoting… / Charting… N% of M rows" label while a scan runs, a newer layout cancels the older scan, and a source that fails to read shows a message instead of a partial pivot. The pivot's Filters checklist uses values collected during the scan (up to 10,000 per field). Because the grid then holds only a window of the rows, drill-through goes to the host: with `set_row_source_drill_handler`, double-clicking a pivot cell (or "Show source rows"), clicking an aggregated chart mark, or clicking a histogram bin hands the host a `RowSourceDrill`, a banner label plus a row test that reproduces the pivot's or chart's grouping exactly (formatted labels, blank groups, Filters-zone choices, bin ranges). The host filters its own copy of the rows and shows them under the usual drill banner with `show_row_source_drill`, whose Clear calls back into the host. Clicking a per-row chart mark (no aggregation, including downsampled lines) selects and reveals its row in the windowed grid. Without a handler, pivot drills over a source do nothing. `PivotBuilder` exposes the pivot engine one row at a time, and `ChartState::data` returns the extracted chart data.
+- **Line, area, and scatter charts keep their shape.** With no aggregation, source order, and more rows than the category limit, these charts now split the rows into consecutive buckets and draw each bucket's minimum and maximum, so spikes and dips survive; the "Showing …" note says how many rows the points summarize. Bar, pie, and donut charts still show the first rows.
+
+### Changed
+- **Charts use every row.** The chart no longer stops at the first 10,000 rows; `MAX_SOURCE_ROWS` now only bounds the rows used to decide which columns are numeric and which label the categories. Each ordering keeps bounded state while rows stream by: aggregated categories in source or label order keep only the drawn categories, ordering aggregated categories by value tracks up to 100,000 distinct categories (with a note when more exist), and per-row charts keep only the best rows.
+- **Histograms are computed once per change, not on every paint,** and bin every row.
+- `ChartData` drops `source_truncated` and gains `categories_capped` and `downsampled_rows`, which is why this is a major release. The `datatable.chart.truncation.first_source_rows` message is replaced by `first_distinct_categories` and `downsampled_shape`; `datatable.pivot.scan.progress`, `datatable.pivot.scan.failed`, `datatable.chart.scan.progress`, and `datatable.chart.scan.failed` are new.
+
 ## [10.1.0] - 2026-11-08
 
 ### Added

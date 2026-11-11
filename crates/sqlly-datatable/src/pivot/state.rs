@@ -20,7 +20,10 @@ use crate::pivot::context_menu::{
     PivotMenuTarget, PivotPathComponent, PIVOT_ACTION_COPY_CSV, PIVOT_ACTION_COPY_VALUE,
     PIVOT_ACTION_SHOW_SOURCE_ROWS,
 };
-use crate::pivot::engine::{compute_pivot, PivotNode, PivotResult, TOTAL_KEY};
+use crate::pivot::engine::{compute_pivot, PivotBuilder, PivotNode, PivotResult, TOTAL_KEY};
+use crate::source::{
+    progress_percent, scan_with_progress, RowSource, RowSourceDrill, RowSourceError, ScanControl,
+};
 
 use crate::grid::scroll_physics::{scroll_now, ScrollPhysics};
 use gpui::{px, App, Bounds, FocusHandle, Pixels, Point, ScrollHandle, Size, TouchPhase};
@@ -206,6 +209,9 @@ pub(crate) struct PivotMenu {
     /// Precomputed drill-through filters for the built-in "Show source
     /// rows" action.
     pub(crate) drill: Vec<(usize, HashSet<String>)>,
+    /// `(row key, column key)` the menu was opened for, so "Show source
+    /// rows" can build a [`RowSourceDrill`] over a row source.
+    pub(crate) keys: (usize, usize),
 }
 
 /// Fixed indent per row-group depth level, in pixels.
@@ -225,6 +231,120 @@ pub const MIN_PIVOT_COLUMN_WIDTH: f32 = 40.0;
 pub const MIN_PIVOT_ROW_HEADER_WIDTH: f32 = 60.0;
 /// Default width of the pivot controls sidebar, in logical pixels.
 pub const DEFAULT_PIVOT_SIDEBAR_WIDTH: f32 = 260.0;
+
+/// Most distinct values a background pivot collects per Filters-zone field
+/// for the checklist; a field with more values lists the first ones seen.
+pub(crate) const MAX_SCANNED_FILTER_VALUES: usize = 10_000;
+
+/// Distinct `(formatted label, raw value)` pairs per Filters-zone field, in
+/// first-seen order.
+type FilterValues = HashMap<usize, Vec<(String, CellValue)>>;
+
+/// A background pivot over a [`RowSource`]: queued by
+/// [`PivotState::recompute`], started by the widget, and applied by
+/// [`PivotState::apply_scan`] if nothing newer replaced it.
+pub(crate) struct PivotScanJob {
+    pub(crate) generation: u64,
+    pub(crate) control: Arc<ScanControl>,
+    source: Arc<dyn RowSource>,
+    columns: Vec<Column>,
+    config: PivotConfig,
+    formats: Vec<ResolvedColumnFormat>,
+    filters: Vec<(usize, HashSet<String>)>,
+}
+
+/// What a finished background pivot produced.
+pub(crate) struct PivotScanOutput {
+    generation: u64,
+    outcome: Result<(PivotResult, FilterValues), RowSourceError>,
+}
+
+impl PivotScanJob {
+    /// Read every row once: collect the Filters-zone checklist values, and
+    /// pivot the rows that pass the active filters. `None` when cancelled.
+    /// Blocking; runs on the background executor.
+    pub(crate) fn run(self) -> Option<PivotScanOutput> {
+        let _finish = FinishOnDrop(Arc::clone(&self.control));
+        let active: Vec<(usize, &HashSet<String>)> =
+            self.filters.iter().map(|(f, set)| (*f, set)).collect();
+        let mut builder = PivotBuilder::new(&self.config, &self.formats);
+        let mut seen: HashMap<usize, HashSet<String>> = HashMap::new();
+        let mut values: FilterValues = HashMap::new();
+        let complete = scan_with_progress(&*self.source, &self.control, 0, 1, &mut |row| {
+            for &field in &self.config.filter_fields {
+                let list = values.entry(field).or_default();
+                if list.len() >= MAX_SCANNED_FILTER_VALUES {
+                    continue;
+                }
+                let Some(fmt) = self.formats.get(field) else {
+                    continue;
+                };
+                let cell = row.get(field).unwrap_or(&CellValue::None);
+                let label = format_cell(cell, fmt).0;
+                if seen.entry(field).or_default().insert(label.clone()) {
+                    list.push((label, cell.clone()));
+                }
+            }
+            if passes_filters(row, &active, &self.formats) {
+                builder.ingest(row);
+            }
+        });
+        let outcome = match complete {
+            Ok(true) => Ok((builder.finish(&self.columns), values)),
+            Ok(false) => return None,
+            Err(error) => Err(error),
+        };
+        Some(PivotScanOutput {
+            generation: self.generation,
+            outcome,
+        })
+    }
+}
+
+/// Marks a scan done however its job ends (finished, cancelled, panicked),
+/// so the progress ticker always stops.
+struct FinishOnDrop(Arc<ScanControl>);
+
+impl Drop for FinishOnDrop {
+    fn drop(&mut self) {
+        self.0.finish();
+    }
+}
+
+/// Whether `row` passes every active Filters-zone filter: its formatted
+/// value in each filtered field is in that field's allow-list.
+fn passes_filters(
+    row: &[CellValue],
+    active: &[(usize, &HashSet<String>)],
+    formats: &[ResolvedColumnFormat],
+) -> bool {
+    active.iter().all(|(field, allowed)| {
+        let Some(fmt) = formats.get(*field) else {
+            return false;
+        };
+        let cell = row.get(*field).unwrap_or(&CellValue::None);
+        allowed.contains(&format_cell(cell, fmt).0)
+    })
+}
+
+/// Remove the "Show source rows" action (it cannot work over a row source)
+/// and any separator it leaves at the top of the menu.
+fn drop_show_source_rows(items: &mut Vec<PivotMenuItem>) {
+    items.retain(
+        |item| !matches!(item, PivotMenuItem::Action { id, .. } if id == PIVOT_ACTION_SHOW_SOURCE_ROWS),
+    );
+    while matches!(items.first(), Some(PivotMenuItem::Separator)) {
+        items.remove(0);
+    }
+}
+
+/// The background pivot currently queued or running for a [`RowSource`].
+struct PivotScan {
+    control: Arc<ScanControl>,
+    total: usize,
+    /// Taken by the widget when it starts the job.
+    job: Option<PivotScanJob>,
+}
 
 #[derive(Clone, Copy, Debug)]
 enum PivotResizeDrag {
@@ -253,7 +373,27 @@ pub struct PivotState {
     /// The computed pivot, Arc-wrapped so paint snapshots clone in O(1).
     pub result: Arc<PivotResult>,
     /// Shared, immutable source rows (same Arc as the flat grid's snapshot).
+    /// Unused while [`Self::row_source`] is set.
     pub(crate) source_rows: Arc<Vec<Vec<CellValue>>>,
+    /// The complete result when the grid holds only a window of it. While
+    /// set, every recompute pivots it on the background executor (see
+    /// [`Self::set_row_source`]) instead of pivoting `source_rows`.
+    row_source: Option<Arc<dyn RowSource>>,
+    /// The background pivot queued or running over `row_source`.
+    scan: Option<PivotScan>,
+    /// Bumped per queued scan; a finished scan applies only if it matches.
+    scan_generation: u64,
+    /// The last background pivot could not read the rows.
+    scan_failed: bool,
+    /// Checklist values per Filters-zone field, collected by the last
+    /// background pivot (a row source cannot be scanned on the UI thread).
+    scanned_filter_values: FilterValues,
+    /// The host handles drill-through over the row source (it filters its
+    /// own copy of the rows); set by the host grid.
+    pub(crate) source_drill_enabled: bool,
+    /// A drill over the row source, drained by `SqllyDataTable::render` and
+    /// handed to the host.
+    pending_source_drill: Option<RowSourceDrill>,
     /// Source column metadata.
     pub(crate) source_columns: Vec<Column>,
     /// Resolved per-source-column formats; drive group labels and filters.
@@ -349,6 +489,13 @@ pub struct PivotState {
     pub char_width: f32,
 }
 
+impl Drop for PivotState {
+    /// A pivot that goes away stops its background read of the source.
+    fn drop(&mut self) {
+        self.cancel_scan();
+    }
+}
+
 impl PivotState {
     /// Build a pivot state over a shared source snapshot and compute the
     /// initial result.
@@ -365,6 +512,13 @@ impl PivotState {
             config,
             result: Arc::new(PivotResult::default()),
             source_rows,
+            row_source: None,
+            scan: None,
+            scan_generation: 0,
+            scan_failed: false,
+            scanned_filter_values: HashMap::new(),
+            source_drill_enabled: false,
+            pending_source_drill: None,
             source_columns,
             resolved_formats,
             label_formats: Vec::new(),
@@ -425,6 +579,123 @@ impl PivotState {
         !Arc::ptr_eq(&self.source_rows, rows)
     }
 
+    /// Pivot `source` — the complete result — instead of the in-memory
+    /// rows, or go back to the in-memory rows with `None`. Every recompute
+    /// then reads `source` once on the background executor while the
+    /// previous result stays on screen with a progress label. Drill-through
+    /// is unavailable meanwhile: the grid only holds a window of the rows.
+    pub fn set_row_source(&mut self, columns: Vec<Column>, source: Option<Arc<dyn RowSource>>) {
+        self.source_columns = columns;
+        self.row_source = source;
+        self.scanned_filter_values.clear();
+        self.recompute();
+    }
+
+    /// Whether this pivot reads a [`RowSource`] rather than in-memory rows.
+    #[must_use]
+    pub fn has_row_source(&self) -> bool {
+        self.row_source.is_some()
+    }
+
+    /// Whether `source` is the row source already installed.
+    #[must_use]
+    pub fn row_source_is(&self, source: &Arc<dyn RowSource>) -> bool {
+        self.row_source
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, source))
+    }
+
+    /// Whether a background pivot is queued or running.
+    #[must_use]
+    pub fn is_scanning(&self) -> bool {
+        self.scan.is_some()
+    }
+
+    /// The label shown over the pivot while a background pivot runs, or
+    /// after one failed; `None` otherwise.
+    #[must_use]
+    pub fn scan_status(&self) -> Option<String> {
+        if let Some(scan) = &self.scan {
+            let percent = progress_percent(scan.control.scanned(), scan.total);
+            return Some(crate::localization::format(
+                "datatable.pivot.scan.progress",
+                &[
+                    ("percent", &percent.to_string()),
+                    ("total", &scan.total.to_string()),
+                ],
+            ));
+        }
+        self.scan_failed
+            .then(|| crate::localization::text("datatable.pivot.scan.failed"))
+    }
+
+    /// Take the queued background pivot for the widget to run.
+    pub(crate) fn take_pending_scan(&mut self) -> Option<PivotScanJob> {
+        self.scan.as_mut().and_then(|scan| scan.job.take())
+    }
+
+    /// Install a finished background pivot, unless a newer one replaced it.
+    pub(crate) fn apply_scan(&mut self, output: PivotScanOutput) {
+        if output.generation != self.scan_generation {
+            return;
+        }
+        self.scan = None;
+        match output.outcome {
+            Ok((result, values)) => {
+                self.scan_failed = false;
+                self.result = Arc::new(result);
+                self.scanned_filter_values = values;
+                if let Some(p) = &mut self.filter_popover {
+                    if p.rows.is_empty() {
+                        let (field, anchor) = (p.field, p.anchor);
+                        self.open_filter_popover(field, anchor);
+                    }
+                }
+            }
+            Err(_) => {
+                self.scan_failed = true;
+                self.result = Arc::new(PivotResult::default());
+            }
+        }
+        self.resort();
+    }
+
+    /// Queue a background pivot over `source` for the current layout,
+    /// cancelling any earlier one. The current result stays until it lands.
+    fn queue_scan(&mut self, source: Arc<dyn RowSource>) {
+        self.cancel_scan();
+        self.scan_generation += 1;
+        let control = ScanControl::new();
+        let filters = self
+            .config
+            .filter_fields
+            .iter()
+            .filter_map(|&f| self.filter_values.get(&f).map(|set| (f, set.clone())))
+            .collect();
+        let total = source.row_count();
+        let job = PivotScanJob {
+            generation: self.scan_generation,
+            control: Arc::clone(&control),
+            source,
+            columns: self.source_columns.clone(),
+            config: self.config.clone(),
+            formats: self.label_formats.clone(),
+            filters,
+        };
+        self.scan = Some(PivotScan {
+            control,
+            total,
+            job: Some(job),
+        });
+    }
+
+    /// Stop the queued or running background pivot, if any.
+    fn cancel_scan(&mut self) {
+        if let Some(scan) = self.scan.take() {
+            scan.control.cancel();
+        }
+    }
+
     /// Source column metadata (for building field lists).
     #[must_use]
     pub fn source_columns(&self) -> &[Column] {
@@ -440,7 +711,14 @@ impl PivotState {
             .retain(|field, _| filter_fields.contains(field));
         self.label_formats = self.build_label_formats();
 
-        if self.config.is_ready() {
+        self.scan_failed = false;
+        if !self.config.is_ready() {
+            self.cancel_scan();
+            self.result = Arc::new(PivotResult::default());
+        } else if let Some(source) = self.row_source.clone() {
+            self.queue_scan(source);
+        } else {
+            self.cancel_scan();
             let included = self.filtered_source_rows();
             self.result = Arc::new(compute_pivot(
                 &self.source_columns,
@@ -449,8 +727,6 @@ impl PivotState {
                 &self.config,
                 &self.label_formats,
             ));
-        } else {
-            self.result = Arc::new(PivotResult::default());
         }
         self.value_fmt = self.build_value_format();
         self.resort();
@@ -496,13 +772,7 @@ impl PivotState {
             return (0..self.source_rows.len()).collect();
         }
         (0..self.source_rows.len())
-            .filter(|&r| {
-                active.iter().all(|(field, allowed)| {
-                    let cell = self.source_rows[r].get(*field).unwrap_or(&CellValue::None);
-                    let label = format_cell(cell, &self.label_formats[*field]).0;
-                    allowed.contains(&label)
-                })
-            })
+            .filter(|&r| passes_filters(&self.source_rows[r], &active, &self.label_formats))
             .collect()
     }
 
@@ -741,15 +1011,25 @@ impl PivotState {
         }
         let fmt = &self.label_formats[field];
         let allowed = self.filter_values.get(&field);
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut pairs: Vec<(String, CellValue)> = Vec::new();
-        for row in self.source_rows.iter() {
-            let cell = row.get(field).unwrap_or(&CellValue::None);
-            let label = format_cell(cell, fmt).0;
-            if seen.insert(label.clone()) {
-                pairs.push((label, cell.clone()));
+        let mut pairs: Vec<(String, CellValue)> = if self.row_source.is_some() {
+            // Collected by the last background pivot; empty until the scan
+            // that follows adding the field lands (it re-opens the list).
+            self.scanned_filter_values
+                .get(&field)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut pairs = Vec::new();
+            for row in self.source_rows.iter() {
+                let cell = row.get(field).unwrap_or(&CellValue::None);
+                let label = format_cell(cell, fmt).0;
+                if seen.insert(label.clone()) {
+                    pairs.push((label, cell.clone()));
+                }
             }
-        }
+            pairs
+        };
         pairs.sort_by(|(_, a), (_, b)| compare_cells(a, b));
         let rows = pairs
             .into_iter()
@@ -798,6 +1078,11 @@ impl PivotState {
         let Some(p) = &self.filter_popover else {
             return;
         };
+        // An empty checklist (values still being read) has nothing to
+        // apply; storing its empty allow-list would hide every row.
+        if p.rows.is_empty() {
+            return;
+        }
         let field = p.field;
         if p.all_checked() {
             self.filter_values.remove(&field);
@@ -986,8 +1271,14 @@ impl PivotState {
     /// intersection: rows passing the pivot's source filters whose grouping
     /// labels match both paths. [`TOTAL_KEY`] on either axis means "no
     /// constraint on that axis", so totals and subtotals resolve naturally.
+    ///
+    /// Empty while a [`RowSource`] is installed: finding the rows would
+    /// mean reading the whole source on the UI thread.
     #[must_use]
     pub fn source_rows_for(&self, row_key: usize, col_key: usize) -> Vec<usize> {
+        if self.row_source.is_some() {
+            return Vec::new();
+        }
         let constraints: Vec<(usize, String)> = self
             .row_path_components(row_key)
             .into_iter()
@@ -1039,6 +1330,10 @@ impl PivotState {
     /// widget applies the resulting filters to the flat grid and switches
     /// to the Grid tab. Triggered by double-click and by the built-in
     /// "Show source rows in Grid" menu action.
+    ///
+    /// While a [`RowSource`] is installed the grid holds only a window of
+    /// the rows and cannot filter itself, so the drill goes to the host as a
+    /// [`RowSourceDrill`] instead — or does nothing when no host handles it.
     pub fn request_drill_down(&mut self, row: usize, col: usize) {
         let (Some(vr), Some(vc)) = (
             self.visible_rows.get(row).copied(),
@@ -1046,7 +1341,68 @@ impl PivotState {
         ) else {
             return;
         };
-        self.pending_drill_down = Some(self.drill_down_filters(vr.key, vc.key));
+        self.queue_drill(vr.key, vc.key);
+    }
+
+    /// Queue the drill for `(row_key, col_key)`: grid filters over in-memory
+    /// rows, a [`RowSourceDrill`] for the host over a row source.
+    fn queue_drill(&mut self, row_key: usize, col_key: usize) {
+        if self.row_source.is_some() {
+            if self.source_drill_enabled {
+                self.pending_source_drill = Some(self.source_drill(row_key, col_key));
+            }
+            return;
+        }
+        self.pending_drill_down = Some(self.drill_down_filters(row_key, col_key));
+    }
+
+    /// The rows behind `(row_key, col_key)` as a test over full rows: the
+    /// same grouping labels (blank groups included) and Filters-zone
+    /// choices the pivot applied when it counted them.
+    #[must_use]
+    pub fn source_drill(&self, row_key: usize, col_key: usize) -> RowSourceDrill {
+        let constraints: Vec<(usize, String)> = self
+            .row_path_components(row_key)
+            .into_iter()
+            .chain(self.col_path_components(col_key))
+            .map(|c| (c.field_index, c.label))
+            .collect();
+        let filters: Vec<(usize, HashSet<String>)> = self
+            .config
+            .filter_fields
+            .iter()
+            .filter_map(|&f| self.filter_values.get(&f).map(|set| (f, set.clone())))
+            .collect();
+        let formats = self.label_formats.clone();
+        let blank_label = self.config.blank_label.clone();
+        let label = crate::grid::widget::drill_filter_label(
+            &self.source_columns,
+            &self.drill_down_filters(row_key, col_key),
+        );
+        RowSourceDrill::new(label, move |row| {
+            let grouped = constraints.iter().all(|(field, label)| {
+                let cell = row.get(*field).unwrap_or(&CellValue::None);
+                if matches!(cell, CellValue::None) {
+                    return blank_label == *label;
+                }
+                formats
+                    .get(*field)
+                    .is_some_and(|fmt| format_cell(cell, fmt).0 == *label)
+            });
+            // Same test as `passes_filters`, without a per-row allocation.
+            grouped
+                && filters.iter().all(|(field, allowed)| {
+                    let cell = row.get(*field).unwrap_or(&CellValue::None);
+                    formats
+                        .get(*field)
+                        .is_some_and(|fmt| allowed.contains(&format_cell(cell, fmt).0))
+                })
+        })
+    }
+
+    /// Take the queued drill over the row source, if any.
+    pub(crate) fn take_pending_source_drill(&mut self) -> Option<RowSourceDrill> {
+        self.pending_source_drill.take()
     }
 
     /// Take the queued drill-through, if any. Called by the host widget.
@@ -1161,10 +1517,13 @@ impl PivotState {
             value_caption: self.result.value_caption.clone(),
             config: self.config.clone(),
         };
-        let items = match &self.context_menu_provider {
+        let mut items = match &self.context_menu_provider {
             Some(provider) => provider.menu_items(&request),
             None => PivotMenuItem::standard_items(&request.target),
         };
+        if self.row_source.is_some() && !self.source_drill_enabled {
+            drop_show_source_rows(&mut items);
+        }
         if items.is_empty() {
             self.menu = None;
             return;
@@ -1176,6 +1535,7 @@ impl PivotState {
             hovered: None,
             request,
             drill,
+            keys: (row_key, col_key),
         });
     }
 
@@ -1184,7 +1544,12 @@ impl PivotState {
     pub(crate) fn execute_menu_action(&mut self, id: &str, menu: PivotMenu, cx: &mut App) {
         match id {
             PIVOT_ACTION_SHOW_SOURCE_ROWS => {
-                self.pending_drill_down = Some(menu.drill);
+                if self.row_source.is_some() {
+                    let (row_key, col_key) = menu.keys;
+                    self.queue_drill(row_key, col_key);
+                } else {
+                    self.pending_drill_down = Some(menu.drill);
+                }
             }
             PIVOT_ACTION_COPY_VALUE => {
                 if let Some(cell) = menu.request.clicked_cell() {

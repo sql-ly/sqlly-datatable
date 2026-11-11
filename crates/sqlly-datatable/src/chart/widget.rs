@@ -54,6 +54,19 @@ impl Focusable for ChartCanvas {
 
 impl Render for ChartCanvas {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Background extraction over a row source: a recompute queued it;
+        // run it off the UI thread and repaint the progress label meanwhile.
+        if let Some(job) = self.state.update(cx, |s, _cx| s.take_pending_scan()) {
+            start_chart_scan(&self.state, job, cx);
+        }
+        // Over a chart that is still showing; with nothing drawn yet the
+        // canvas paints the same text in place of its empty state.
+        let status = {
+            let s = self.state.read(cx);
+            s.scan_status()
+                .filter(|_| s.is_chartable())
+                .map(|text| crate::pivot::widget::scan_status_pill(text, &s.theme))
+        };
         let state_canvas = self.state.clone();
         let state_down = self.state.clone();
         let (bg, focus_handle, navigate_on_click, legend, label_column, truncation, muted_text) = {
@@ -200,8 +213,43 @@ impl Render for ChartCanvas {
             .track_focus(&focus_handle)
             .bg(bg)
             .children(strip)
-            .child(plot)
+            .child(plot.children(status))
     }
+}
+
+/// Run a queued background extraction. Like the pivot's, the job holds no
+/// reference to the state, so a chart torn down mid-read cancels it.
+fn start_chart_scan(
+    state: &Entity<ChartState>,
+    job: super::state::ChartScanJob,
+    cx: &mut Context<ChartCanvas>,
+) {
+    let control = std::sync::Arc::clone(&job.control);
+    let task = cx.background_executor().spawn(async move { job.run() });
+    let ticker = state.downgrade();
+    cx.spawn(async move |_this, cx| {
+        while !control.is_done() {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(
+                    crate::pivot::widget::SCAN_PROGRESS_TICK_MS,
+                ))
+                .await;
+            if ticker.update(cx, |_s, cx| cx.notify()).is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
+    let target = state.downgrade();
+    cx.spawn(async move |_this, cx| {
+        if let Some(output) = task.await {
+            let _ = target.update(cx, |s, cx| {
+                s.apply_scan(output);
+                cx.notify();
+            });
+        }
+    })
+    .detach();
 }
 
 /// Paint the honest empty-state message centered in `bounds`.

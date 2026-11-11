@@ -13,6 +13,7 @@ pub mod model;
 mod paint;
 pub(crate) mod sidebar;
 pub(crate) mod state;
+pub(crate) mod stream;
 mod svg;
 pub(crate) mod widget;
 

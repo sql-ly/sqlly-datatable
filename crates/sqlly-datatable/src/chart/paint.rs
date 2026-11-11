@@ -226,14 +226,9 @@ impl ChartPaint {
             return None;
         }
         let cat_w = plot_w / n as f32;
+        // A category without recorded rows still answers: over a row source
+        // its rows are found by a drill instead (`ChartState::mark_drill`).
         let category = (((x - left) / cat_w).floor() as usize).min(n - 1);
-        if self
-            .category_rows
-            .get(category)
-            .is_none_or(|rows| rows.is_empty())
-        {
-            return None;
-        }
         // For grouped bars, report the series whose bar occupies the click
         // column when that series has a value there; anything else reports
         // the whole category (line/scatter/area marks overlap slots).

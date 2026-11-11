@@ -21,7 +21,7 @@ A configurable data grid component for GPUI, built for the needs of [sqlly.app](
 [dependencies]
 gpui = { package = "gpui-pre", version = "0.3.11" }
 gpui-component = "0.9"
-sqlly-datatable = "10.0"
+sqlly-datatable = "11.0"
 ```
 
 Call `sqlly_datatable::init(cx)` once at startup (it forwards to `gpui_component::init`, installing the toolkit theme the embedded widgets read). Hosts that already initialize `gpui-component` themselves can skip it.

@@ -16,10 +16,108 @@ use gpui::{App, Bounds, FocusHandle, Pixels};
 use crate::data::{CellValue, Column};
 use crate::grid::theme::GridTheme;
 
-use super::config::{ChartConfig, ChartError, ChartKind, SVG_EXPORT_HEIGHT, SVG_EXPORT_WIDTH};
-use super::model::{histogram_bins, histogram_source, ChartData, ChartSeries};
+use super::config::{
+    ChartConfig, ChartError, ChartKind, MAX_SOURCE_ROWS, SVG_EXPORT_HEIGHT, SVG_EXPORT_WIDTH,
+};
+use super::model::{ChartData, ChartSeries};
 use super::paint::{series_color, ChartPaint, PaintSeries};
+use super::stream::{extract, extract_rows, Extraction, HistogramData, HistogramError};
 use super::svg::chart_svg;
+use crate::source::{
+    progress_percent, scan_with_progress, RowSource, RowSourceDrill, RowSourceError, ScanControl,
+};
+
+/// A background chart extraction over a [`RowSource`]: queued by
+/// [`ChartState::recompute`], started by the canvas, and applied by
+/// [`ChartState::apply_scan`] if nothing newer replaced it.
+pub(crate) struct ChartScanJob {
+    generation: u64,
+    pub(crate) control: Arc<ScanControl>,
+    source: Arc<dyn RowSource>,
+    columns: Vec<Column>,
+    config: ChartConfig,
+    /// The first rows, which decide the column roles; read by this job when
+    /// no earlier job has.
+    sample: Option<Arc<Vec<Vec<CellValue>>>>,
+}
+
+/// What a finished background extraction produced.
+pub(crate) struct ChartScanOutput {
+    generation: u64,
+    sample: Arc<Vec<Vec<CellValue>>>,
+    outcome: Result<Extraction, RowSourceError>,
+}
+
+impl ChartScanJob {
+    /// Read the sample (first job only), then extract over every row.
+    /// `None` when cancelled. Blocking; runs on the background executor.
+    pub(crate) fn run(self) -> Option<ChartScanOutput> {
+        struct FinishOnDrop(Arc<ScanControl>);
+        impl Drop for FinishOnDrop {
+            fn drop(&mut self) {
+                self.0.finish();
+            }
+        }
+        let _finish = FinishOnDrop(Arc::clone(&self.control));
+        let sample = match self.sample {
+            Some(sample) => sample,
+            None => match read_sample(&*self.source) {
+                Ok(sample) => Arc::new(sample),
+                Err(error) => {
+                    return Some(ChartScanOutput {
+                        generation: self.generation,
+                        sample: Arc::new(Vec::new()),
+                        outcome: Err(error),
+                    })
+                }
+            },
+        };
+        let source = &*self.source;
+        let control = &*self.control;
+        let mut scan = |pass: usize, passes: usize, visit: &mut dyn FnMut(usize, &[CellValue])| {
+            let mut index = 0usize;
+            scan_with_progress(source, control, pass, passes, &mut |row| {
+                visit(index, row);
+                index += 1;
+            })
+        };
+        let outcome = match extract(
+            &self.columns,
+            &sample,
+            source.row_count(),
+            &self.config,
+            false,
+            &mut scan,
+        ) {
+            Ok(Some(extraction)) => Ok(extraction),
+            Ok(None) => return None,
+            Err(error) => Err(error),
+        };
+        Some(ChartScanOutput {
+            generation: self.generation,
+            sample,
+            outcome,
+        })
+    }
+}
+
+/// The first [`MAX_SOURCE_ROWS`] rows of `source`.
+fn read_sample(source: &dyn RowSource) -> Result<Vec<Vec<CellValue>>, RowSourceError> {
+    let mut sample = Vec::with_capacity(source.row_count().min(MAX_SOURCE_ROWS));
+    source.scan(&mut |row| {
+        sample.push(row.to_vec());
+        sample.len() < MAX_SOURCE_ROWS
+    })?;
+    Ok(sample)
+}
+
+/// The background extraction currently queued or running.
+struct ChartScan {
+    control: Arc<ScanControl>,
+    total: usize,
+    /// Taken by the canvas when it starts the job.
+    job: Option<ChartScanJob>,
+}
 
 /// Callback invoked when the user clicks the sidebar's save-configuration
 /// button. Receives the live [`ChartConfig`] to persist.
@@ -36,8 +134,32 @@ pub struct ChartState {
     /// Latest extraction outcome. `Err` carries the honest empty-state
     /// message rendered instead of a plot.
     pub(crate) outcome: Result<ChartData, ChartError>,
-    /// Shared snapshot of the grid's source rows (never mutated).
+    /// Shared snapshot of the grid's source rows (never mutated). Unused
+    /// while [`Self::row_source`] is set.
     pub(crate) source_rows: Arc<Vec<Vec<CellValue>>>,
+    /// The complete result when the grid holds only a window of it; every
+    /// recompute then extracts from it on the background executor.
+    row_source: Option<Arc<dyn RowSource>>,
+    /// The first rows of `row_source`, which decide the column roles (and
+    /// the sidebar's numeric columns). Read once per source.
+    source_sample: Arc<Vec<Vec<CellValue>>>,
+    /// The background extraction queued or running over `row_source`.
+    scan: Option<ChartScan>,
+    /// Bumped per queued scan; a finished scan applies only if it matches.
+    scan_generation: u64,
+    /// The last background extraction could not read the rows.
+    scan_failed: bool,
+    /// The histogram for the current source and config (histogram kind
+    /// only), computed with the rest of the extraction rather than per paint.
+    histogram: Option<Result<HistogramData, HistogramError>>,
+    /// Source column labelling the categories in the current extraction.
+    label_index: Option<usize>,
+    /// The host handles drill-through over the row source; set by the host
+    /// grid.
+    pub(crate) source_drill_enabled: bool,
+    /// A clicked mark's rows as a drill over the row source, drained by
+    /// `SqllyDataTable::render` and handed to the host.
+    pending_source_drill: Option<RowSourceDrill>,
     /// Source column metadata.
     pub(crate) source_columns: Vec<Column>,
     /// Legend entries the user has hidden, by name. For radial kinds these
@@ -69,6 +191,13 @@ pub struct ChartState {
     pub(crate) sidebar_width: f32,
 }
 
+impl Drop for ChartState {
+    /// A chart that goes away stops its background read of the source.
+    fn drop(&mut self) {
+        self.cancel_scan();
+    }
+}
+
 impl ChartState {
     /// Build a chart state over a shared source snapshot and run the initial
     /// extraction.
@@ -86,6 +215,15 @@ impl ChartState {
             config,
             outcome: Err(ChartError::NoRows),
             source_rows,
+            row_source: None,
+            source_sample: Arc::new(Vec::new()),
+            scan: None,
+            scan_generation: 0,
+            scan_failed: false,
+            histogram: None,
+            label_index: None,
+            source_drill_enabled: false,
+            pending_source_drill: None,
             source_columns,
             hidden: HashSet::new(),
             save_config_handler: None,
@@ -115,13 +253,142 @@ impl ChartState {
         !Arc::ptr_eq(&self.source_rows, rows)
     }
 
+    /// Chart `source` — the complete result — instead of the in-memory rows,
+    /// or go back to the in-memory rows with `None`. Every recompute then
+    /// reads `source` on the background executor while the previous chart
+    /// stays up with a progress label. Click-to-navigate is unavailable
+    /// meanwhile: the grid only holds a window of the rows.
+    pub fn set_row_source(&mut self, columns: Vec<Column>, source: Option<Arc<dyn RowSource>>) {
+        self.source_columns = columns;
+        self.row_source = source;
+        self.source_sample = Arc::new(Vec::new());
+        self.recompute();
+    }
+
+    /// Whether this chart reads a [`RowSource`] rather than in-memory rows.
+    #[must_use]
+    pub fn has_row_source(&self) -> bool {
+        self.row_source.is_some()
+    }
+
+    /// Whether `source` is the row source already installed.
+    #[must_use]
+    pub fn row_source_is(&self, source: &Arc<dyn RowSource>) -> bool {
+        self.row_source
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, source))
+    }
+
+    /// Whether a background extraction is queued or running.
+    #[must_use]
+    pub fn is_scanning(&self) -> bool {
+        self.scan.is_some()
+    }
+
+    /// The label shown over the chart while a background extraction runs,
+    /// or after one failed; `None` otherwise.
+    #[must_use]
+    pub fn scan_status(&self) -> Option<String> {
+        if let Some(scan) = &self.scan {
+            let percent = progress_percent(scan.control.scanned(), scan.total);
+            return Some(crate::localization::format(
+                "datatable.chart.scan.progress",
+                &[
+                    ("percent", &percent.to_string()),
+                    ("total", &scan.total.to_string()),
+                ],
+            ));
+        }
+        self.scan_failed
+            .then(|| crate::localization::text("datatable.chart.scan.failed"))
+    }
+
+    /// Take the queued background extraction for the canvas to run.
+    pub(crate) fn take_pending_scan(&mut self) -> Option<ChartScanJob> {
+        self.scan.as_mut().and_then(|scan| scan.job.take())
+    }
+
+    /// Install a finished background extraction, unless a newer one
+    /// replaced it.
+    pub(crate) fn apply_scan(&mut self, output: ChartScanOutput) {
+        if output.generation != self.scan_generation {
+            return;
+        }
+        self.scan = None;
+        if !output.sample.is_empty() {
+            self.source_sample = output.sample;
+        }
+        match output.outcome {
+            Ok(extraction) => {
+                self.scan_failed = false;
+                self.outcome = extraction.data;
+                self.histogram = extraction.histogram;
+                self.label_index = extraction.label_index;
+            }
+            Err(_) => {
+                self.scan_failed = true;
+                self.outcome = Err(ChartError::NoRows);
+                self.histogram = None;
+            }
+        }
+        self.last_paint = None;
+    }
+
+    /// The rows that decide which columns are numeric or labels: the first
+    /// [`MAX_SOURCE_ROWS`] rows of whichever source the chart reads.
+    pub(crate) fn classification_rows(&self) -> &[Vec<CellValue>] {
+        let rows: &[Vec<CellValue>] = if self.row_source.is_some() {
+            &self.source_sample
+        } else {
+            &self.source_rows
+        };
+        &rows[..rows.len().min(MAX_SOURCE_ROWS)]
+    }
+
     /// Re-run extraction against the current source + config. Called by
     /// every mutating entry point; invalidates the cached paint.
     pub(crate) fn recompute(&mut self) {
         self.config.clamp_to_columns(self.source_columns.len());
-        self.outcome =
-            ChartData::extract_with_config(&self.source_columns, &self.source_rows, &self.config);
         self.last_paint = None;
+        self.scan_failed = false;
+        if let Some(source) = self.row_source.clone() {
+            self.queue_scan(source);
+            return;
+        }
+        self.cancel_scan();
+        let extraction = extract_rows(&self.source_columns, &self.source_rows, &self.config);
+        self.outcome = extraction.data;
+        self.histogram = extraction.histogram;
+        self.label_index = extraction.label_index;
+    }
+
+    /// Queue a background extraction over `source` for the current config,
+    /// cancelling any earlier one. The current chart stays until it lands.
+    fn queue_scan(&mut self, source: Arc<dyn RowSource>) {
+        self.cancel_scan();
+        self.scan_generation += 1;
+        let control = ScanControl::new();
+        let total = source.row_count();
+        let job = ChartScanJob {
+            generation: self.scan_generation,
+            control: Arc::clone(&control),
+            source,
+            columns: self.source_columns.clone(),
+            config: self.config.clone(),
+            sample: (!self.source_sample.is_empty()).then(|| Arc::clone(&self.source_sample)),
+        };
+        self.scan = Some(ChartScan {
+            control,
+            total,
+            job: Some(job),
+        });
+    }
+
+    /// Stop the queued or running background extraction, if any.
+    fn cancel_scan(&mut self) {
+        if let Some(scan) = self.scan.take() {
+            scan.control.cancel();
+        }
     }
 
     /// Replace the whole config and recompute.
@@ -184,7 +451,12 @@ impl ChartState {
         if self.config.kind == ChartKind::Histogram {
             return self.paint_for_histogram();
         }
-        let data = self.outcome.as_ref().map_err(|e| e.message())?;
+        let data = match &self.outcome {
+            Ok(data) => data,
+            // Nothing drawn yet: say what the background read is doing
+            // instead of a "no rows" message.
+            Err(error) => return Err(self.scan_status().unwrap_or_else(|| error.message())),
+        };
         if matches!(self.config.kind, ChartKind::Pie | ChartKind::Donut) {
             self.paint_for_radial(data)
         } else {
@@ -193,21 +465,18 @@ impl ChartState {
     }
 
     fn paint_for_histogram(&self) -> Result<ChartPaint, String> {
-        let (name, pairs) = histogram_source(&self.source_columns, &self.source_rows, &self.config)
-            .ok_or_else(|| {
-                crate::localization::text("datatable.chart.error.no_numeric_column_to_histogram")
-            })?;
-        let bins = histogram_bins(&pairs.iter().map(|(v, _)| *v).collect::<Vec<_>>()).ok_or_else(
-            || crate::localization::text("datatable.chart.error.no_numeric_values_to_histogram"),
-        )?;
-        let mut bin_rows: Vec<Vec<usize>> = vec![Vec::new(); bins.counts.len()];
-        for (value, row) in &pairs {
-            bin_rows[bins.bin_for(*value)].push(*row);
+        if let Some(status) = self.scan_status().filter(|_| self.histogram.is_none()) {
+            return Err(status);
         }
+        let histogram = match &self.histogram {
+            Some(Ok(histogram)) => histogram,
+            Some(Err(error)) => return Err(error.message()),
+            None => return Err(HistogramError::NoNumericColumn.message()),
+        };
         Ok(ChartPaint::from_histogram(
-            &name,
-            &bins,
-            bin_rows,
+            &histogram.name,
+            &histogram.bins,
+            histogram.bin_rows.clone(),
             &self.theme,
             self.font_size,
         ))
@@ -299,6 +568,13 @@ impl ChartState {
             .map(|paint| chart_svg(&paint, SVG_EXPORT_WIDTH, SVG_EXPORT_HEIGHT))
     }
 
+    /// The extracted categories and series behind the chart, when there is
+    /// anything to chart.
+    #[must_use]
+    pub fn data(&self) -> Option<&ChartData> {
+        self.outcome.as_ref().ok()
+    }
+
     /// Whether the current source has anything chartable.
     #[must_use]
     pub fn is_chartable(&self) -> bool {
@@ -330,9 +606,12 @@ impl ChartState {
     /// Whether any truncation flag is set (drives the "Showing …" note).
     #[must_use]
     pub fn is_truncated(&self) -> bool {
-        self.outcome
-            .as_ref()
-            .is_ok_and(|d| d.categories_truncated || d.series_truncated || d.source_truncated)
+        self.outcome.as_ref().is_ok_and(|d| {
+            d.categories_truncated
+                || d.series_truncated
+                || d.categories_capped
+                || d.downsampled_rows.is_some()
+        })
     }
 
     /// The "Showing …" note describing every active cap, or `None` when
@@ -355,10 +634,19 @@ impl ChartState {
                 &[("count", &super::config::MAX_SERIES.to_string())],
             ));
         }
-        if data.source_truncated {
+        if data.categories_capped {
             parts.push(crate::localization::format(
-                "datatable.chart.truncation.first_source_rows",
-                &[("count", &super::config::MAX_SOURCE_ROWS.to_string())],
+                "datatable.chart.truncation.first_distinct_categories",
+                &[("count", &super::stream::MAX_TRACKED_CATEGORIES.to_string())],
+            ));
+        }
+        if let Some(rows) = data.downsampled_rows {
+            parts.push(crate::localization::format(
+                "datatable.chart.truncation.downsampled_shape",
+                &[
+                    ("rows", &rows.to_string()),
+                    ("points", &data.categories.len().to_string()),
+                ],
             ));
         }
         if parts.is_empty() {
@@ -382,8 +670,9 @@ impl ChartState {
         if !self.config.value_columns.is_empty() {
             return self.config.value_columns.clone();
         }
+        let rows = self.classification_rows();
         (0..self.source_columns.len())
-            .filter(|&index| super::model::is_numeric_column(index, &self.source_rows))
+            .filter(|&index| super::model::is_numeric_column(index, rows))
             .take(super::config::MAX_SERIES)
             .collect()
     }
@@ -464,10 +753,62 @@ impl ChartState {
             .cloned()
             .unwrap_or_default();
         if rows.is_empty() {
+            // An aggregated mark over a row source: its rows were never
+            // collected, so hand the host a test that finds them.
+            if self.row_source.is_some() && self.source_drill_enabled {
+                if let Some(drill) = self.mark_drill(&paint, category) {
+                    self.pending_source_drill = Some(drill);
+                    return true;
+                }
+            }
             return false;
         }
         self.pending_navigate = Some(rows);
         true
+    }
+
+    /// The rows behind mark `category` of `paint` as a test over full rows:
+    /// the label column equals the category (bars, points, slices), or the
+    /// value falls in the bin (histograms). `None` when the categories are
+    /// row numbers, which have no column to test.
+    fn mark_drill(&self, paint: &ChartPaint, category: usize) -> Option<RowSourceDrill> {
+        let field_label = |column: usize, value: &str| {
+            let name = self
+                .source_columns
+                .get(column)
+                .map_or("?", |c| c.name.as_str());
+            crate::localization::format(
+                "datatable.grid.drill_filter.field_equals",
+                &[("field_name", name), ("values", value)],
+            )
+        };
+        if self.config.kind == ChartKind::Histogram {
+            let Some(Ok(histogram)) = &self.histogram else {
+                return None;
+            };
+            if category >= histogram.bins.counts.len() {
+                return None;
+            }
+            let column = histogram.column;
+            let bins = histogram.bins.clone();
+            let label = field_label(column, &bins.label(category));
+            return Some(RowSourceDrill::new(label, move |row| {
+                row.get(column)
+                    .and_then(super::model::numeric_cell)
+                    .is_some_and(|value| bins.bin_for(value) == category)
+            }));
+        }
+        let column = self.label_index?;
+        let wanted = paint.categories.get(category)?.clone();
+        let label = field_label(column, &wanted);
+        Some(RowSourceDrill::new(label, move |row| {
+            super::model::label_text(row.get(column)) == wanted
+        }))
+    }
+
+    /// Take the queued drill over the row source, if any.
+    pub(crate) fn take_pending_source_drill(&mut self) -> Option<RowSourceDrill> {
+        self.pending_source_drill.take()
     }
 
     /// Take the queued navigation rows, if any. Called by the host widget.

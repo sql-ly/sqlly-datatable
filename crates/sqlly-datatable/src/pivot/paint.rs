@@ -56,6 +56,9 @@ pub(crate) struct PivotPaintData {
     pub(crate) font_size: f32,
     pub(crate) char_width: f32,
     pub(crate) is_ready: bool,
+    /// Background-pivot progress or failure, painted in place of the empty
+    /// state while there is no result to show.
+    pub(crate) scan_status: Option<String>,
     pub(crate) blank_label: String,
     /// Rubber-band overscroll translation (px added to the paint origin):
     /// the whole pivot surface — headers included — shifts by this while a
@@ -102,6 +105,7 @@ impl PivotPaintData {
             font_size: s.font_size,
             char_width: s.char_width,
             is_ready: s.config.is_ready(),
+            scan_status: s.scan_status(),
             blank_label: s.config.blank_label.clone(),
             overscroll: s.scroll_overscroll_shift(),
         }
@@ -393,11 +397,14 @@ fn paint_pivot_content(
 
     // Empty state: prompt for configuration instead of painting a grid.
     if n_rows == 0 || n_cols == 0 {
-        let msg = crate::localization::text(if data.is_ready {
-            "datatable.pivot.empty_state.no_matching_data"
-        } else {
-            "datatable.pivot.empty_state.not_configured"
-        });
+        let msg = match &data.scan_status {
+            Some(status) if data.is_ready => status.clone(),
+            _ => crate::localization::text(if data.is_ready {
+                "datatable.pivot.empty_state.no_matching_data"
+            } else {
+                "datatable.pivot.empty_state.not_configured"
+            }),
+        };
         let tw = text_w_approx(&msg, cw);
         paint_txt(
             window,

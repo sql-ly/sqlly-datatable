@@ -414,8 +414,20 @@ pub const ENGLISH_DEFAULTS: &[(&str, &str)] = &[
         "first {count} numeric columns",
     ),
     (
-        "datatable.chart.truncation.first_source_rows",
-        "first {count} source rows",
+        "datatable.chart.truncation.first_distinct_categories",
+        "first {count} distinct categories",
+    ),
+    (
+        "datatable.chart.truncation.downsampled_shape",
+        "the shape of {rows} rows in {points} points",
+    ),
+    (
+        "datatable.chart.scan.progress",
+        "Charting… {percent}% of {total} rows",
+    ),
+    (
+        "datatable.chart.scan.failed",
+        "Couldn't read all of the result rows, so the chart can't be shown.",
     ),
     ("datatable.chart.truncation.component_separator", " · "),
     ("datatable.chart.truncation.showing", "Showing {details}"),
@@ -465,6 +477,14 @@ pub const ENGLISH_DEFAULTS: &[(&str, &str)] = &[
     (
         "datatable.pivot.empty_state.not_configured",
         "Drag fields into Rows, Columns, and Values to build the pivot.",
+    ),
+    (
+        "datatable.pivot.scan.progress",
+        "Pivoting… {percent}% of {total} rows",
+    ),
+    (
+        "datatable.pivot.scan.failed",
+        "Couldn't read all of the result rows, so the pivot can't be shown.",
     ),
     (
         "datatable.pivot.context_menu.show_source_rows",

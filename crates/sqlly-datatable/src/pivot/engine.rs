@@ -207,34 +207,106 @@ pub fn compute_pivot(
     config: &PivotConfig,
     formats: &[ResolvedColumnFormat],
 ) -> PivotResult {
-    let mut row_axis = AxisBuilder::new();
-    let mut col_axis = AxisBuilder::new();
-    let mut accs: HashMap<(usize, usize), Accumulator> = HashMap::new();
-
-    let value_field = config.value_field;
-    let agg = config.aggregation;
-
+    let mut builder = PivotBuilder::new(config, formats);
     for &row_idx in source_rows {
-        let Some(row) = rows.get(row_idx) else {
-            continue;
-        };
-        let row_path = row_axis.path_for_row(row, &config.row_fields, formats, &config.blank_label);
-        let col_path =
-            col_axis.path_for_row(row, &config.column_fields, formats, &config.blank_label);
-        let Some(vf) = value_field else {
-            continue;
+        if let Some(row) = rows.get(row_idx) {
+            builder.ingest(row);
+        }
+    }
+    builder.finish(columns)
+}
+
+/// [`compute_pivot`] one row at a time, for sources that are streamed
+/// rather than held in memory. Memory grows with the number of distinct
+/// groups and their rollup intersections, never with the number of rows.
+///
+/// Feed every row that passes the pivot's source filters to
+/// [`Self::ingest`], then call [`Self::finish`]. The result is identical to
+/// [`compute_pivot`] over the same rows in the same order.
+pub struct PivotBuilder<'a> {
+    config: &'a PivotConfig,
+    formats: &'a [ResolvedColumnFormat],
+    row_axis: AxisBuilder,
+    col_axis: AxisBuilder,
+    accs: HashMap<(usize, usize), Accumulator>,
+    ingested: usize,
+}
+
+impl<'a> PivotBuilder<'a> {
+    /// Start an empty pivot for `config`; `formats` are the per-column label
+    /// formats (they decide how values group, e.g. dates by display format).
+    #[must_use]
+    pub fn new(config: &'a PivotConfig, formats: &'a [ResolvedColumnFormat]) -> Self {
+        Self {
+            config,
+            formats,
+            row_axis: AxisBuilder::new(),
+            col_axis: AxisBuilder::new(),
+            accs: HashMap::new(),
+            ingested: 0,
+        }
+    }
+
+    /// Add one source row.
+    pub fn ingest(&mut self, row: &[CellValue]) {
+        let config = self.config;
+        self.ingested += 1;
+        let row_path =
+            self.row_axis
+                .path_for_row(row, &config.row_fields, self.formats, &config.blank_label);
+        let col_path = self.col_axis.path_for_row(
+            row,
+            &config.column_fields,
+            self.formats,
+            &config.blank_label,
+        );
+        let Some(vf) = config.value_field else {
+            return;
         };
         let value = row.get(vf).unwrap_or(&CellValue::None);
+        let agg = config.aggregation;
         // Ingest at every rollup level: each ancestor (incl. leaf) on the row
         // path plus the axis total, crossed with the same on the column path.
         for &rk in row_path.iter().chain(std::iter::once(&TOTAL_KEY)) {
             for &ck in col_path.iter().chain(std::iter::once(&TOTAL_KEY)) {
-                accs.entry((rk, ck))
+                self.accs
+                    .entry((rk, ck))
                     .or_insert_with(|| Accumulator::new(agg))
                     .ingest(value);
             }
         }
     }
+
+    /// Number of rows ingested so far.
+    #[must_use]
+    pub fn ingested(&self) -> usize {
+        self.ingested
+    }
+
+    /// Finish the pivot. `columns` names the fields in captions.
+    #[must_use]
+    pub fn finish(self, columns: &[Column]) -> PivotResult {
+        finish_pivot(
+            columns,
+            self.config,
+            self.row_axis,
+            self.col_axis,
+            &self.accs,
+            self.ingested,
+        )
+    }
+}
+
+fn finish_pivot(
+    columns: &[Column],
+    config: &PivotConfig,
+    mut row_axis: AxisBuilder,
+    mut col_axis: AxisBuilder,
+    accs: &HashMap<(usize, usize), Accumulator>,
+    source_row_count: usize,
+) -> PivotResult {
+    let value_field = config.value_field;
+    let agg = config.aggregation;
 
     row_axis.sort_canonical();
     col_axis.sort_canonical();
@@ -290,7 +362,7 @@ pub fn compute_pivot(
             .map(|&f| field_name(f))
             .collect(),
         value_caption,
-        source_row_count: source_rows.len(),
+        source_row_count,
     }
 }
 

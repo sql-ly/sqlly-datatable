@@ -85,6 +85,17 @@ impl Render for PivotGrid {
             .detach();
         }
 
+        // Background pivot over a row source: a recompute queued it; run it
+        // off the UI thread and repaint the progress label while it reads.
+        if let Some(job) = self.state.update(cx, |s, _cx| s.take_pending_scan()) {
+            start_pivot_scan(&self.state, job, cx);
+        }
+        let status = {
+            let s = self.state.read(cx);
+            s.scan_status().filter(|_| !s.visible_rows.is_empty())
+        };
+        let status_theme = self.state.read(cx).theme.clone();
+
         div()
             .size_full()
             .relative()
@@ -187,9 +198,66 @@ impl Render for PivotGrid {
                     cx.notify();
                 });
             })
+            .children(status.map(|text| scan_status_pill(text, &status_theme)))
             .children(render_pivot_menu_overlay(&self.state, cx))
     }
 }
+
+/// The progress label floated over a pivot whose previous result is still
+/// shown while a background pivot runs. (With nothing to show yet, the
+/// canvas paints the same text in place of the empty state.)
+pub(crate) fn scan_status_pill(text: String, theme: &crate::grid::theme::GridTheme) -> gpui::Div {
+    div()
+        .absolute()
+        .top(px(8.0))
+        .right(px(8.0))
+        .px(px(8.0))
+        .py(px(3.0))
+        .rounded(px(4.0))
+        .bg(theme.header_bg)
+        .border_1()
+        .border_color(theme.grid_line)
+        .text_size(px(12.0))
+        .text_color(theme.muted_text)
+        .child(text)
+}
+
+/// Run a queued background pivot. The job holds no reference to the state,
+/// so a pivot torn down mid-read is dropped (cancelling the read) rather
+/// than kept alive by its own scan.
+fn start_pivot_scan(
+    state: &Entity<PivotState>,
+    job: crate::pivot::state::PivotScanJob,
+    cx: &mut Context<PivotGrid>,
+) {
+    let control = std::sync::Arc::clone(&job.control);
+    let task = cx.background_executor().spawn(async move { job.run() });
+    let ticker = state.downgrade();
+    cx.spawn(async move |_this, cx| {
+        while !control.is_done() {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(SCAN_PROGRESS_TICK_MS))
+                .await;
+            if ticker.update(cx, |_s, cx| cx.notify()).is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
+    let target = state.downgrade();
+    cx.spawn(async move |_this, cx| {
+        if let Some(output) = task.await {
+            let _ = target.update(cx, |s, cx| {
+                s.apply_scan(output);
+                cx.notify();
+            });
+        }
+    })
+    .detach();
+}
+
+/// How often the progress label repaints while a background scan runs.
+pub(crate) const SCAN_PROGRESS_TICK_MS: u64 = 150;
 
 /// Build the pivot's right-click menu as a `deferred` + `anchored` overlay
 /// (same mechanism as the flat grid's menu, so it paints and receives events

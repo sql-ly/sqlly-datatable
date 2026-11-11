@@ -236,7 +236,7 @@ impl Render for ChartSidebar {
         let (theme, columns, config, save_handler, animations, numeric_columns, checked_values) = {
             let s = self.state.read(cx);
             let numeric = (0..s.source_columns.len())
-                .filter(|&i| is_numeric_column(i, &s.source_rows))
+                .filter(|&i| is_numeric_column(i, s.classification_rows()))
                 .collect::<Vec<_>>();
             (
                 s.theme.clone(),

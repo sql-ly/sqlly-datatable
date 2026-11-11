@@ -128,6 +128,7 @@ fn injection_formatting_fallback_and_literal_coverage() {
         include_str!("../src/chart/model.rs"),
         include_str!("../src/chart/sidebar.rs"),
         include_str!("../src/chart/state.rs"),
+        include_str!("../src/chart/stream.rs"),
         include_str!("../src/chart/widget.rs"),
         include_str!("../src/pivot/aggregation.rs"),
         include_str!("../src/pivot/context_menu.rs"),

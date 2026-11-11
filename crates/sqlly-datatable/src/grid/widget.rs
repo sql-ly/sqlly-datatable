@@ -25,6 +25,7 @@ use crate::pivot::state::{
     DEFAULT_PIVOT_SIDEBAR_WIDTH,
 };
 use crate::pivot::widget::PivotGrid;
+use crate::source::{RowSource, RowSourceDrillClearHandler, RowSourceDrillHandler};
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -203,6 +204,15 @@ pub struct SqllyDataTable {
     /// first render (that is where a `Window` is available); dropping it would
     /// unregister the observer, so it is stored for the widget's lifetime.
     appearance_subscription: Option<gpui::Subscription>,
+    /// The complete result behind a windowed grid, read by the pivot and
+    /// chart instead of the resident rows (see [`Self::set_row_source`]).
+    row_source: Option<Arc<dyn RowSource>>,
+    /// Host that turns pivot/chart drills over the row source into a
+    /// filtered view (see [`Self::set_row_source_drill_handler`]).
+    row_source_drill_handler: Option<RowSourceDrillHandler>,
+    /// Set while the drill banner belongs to the host: Clear calls this
+    /// instead of resetting the grid's own filters.
+    drill_clear_handler: Option<RowSourceDrillClearHandler>,
 }
 
 impl SqllyDataTable {
@@ -231,6 +241,9 @@ impl SqllyDataTable {
             chart_sidebar_width_dirty: false,
             follow_system_appearance: true,
             appearance_subscription: None,
+            row_source: None,
+            row_source_drill_handler: None,
+            drill_clear_handler: None,
         }
     }
 
@@ -373,6 +386,13 @@ impl SqllyDataTable {
         if self.drill_filter.take().is_none() {
             return;
         }
+        // A host-shown banner: the host owns the filtered view and puts the
+        // full result back. Deferred so it may update this grid.
+        if let Some(handler) = self.drill_clear_handler.take() {
+            cx.defer(move |cx| handler(cx));
+            cx.notify();
+            return;
+        }
         self.state.update(cx, |g, cx| {
             for filter in &mut g.filters {
                 *filter = ColumnFilter::default();
@@ -448,6 +468,7 @@ impl SqllyDataTable {
             DEFAULT_PIVOT_COLUMN_WIDTH,
             cx,
         ));
+        self.push_row_source_into_tabs(cx);
     }
 
     /// Remove the pivot tab and return to the flat grid.
@@ -510,6 +531,10 @@ impl SqllyDataTable {
         let Some(parts) = &self.pivot else {
             return;
         };
+        // A row source is the whole result; the resident rows are a window.
+        if self.row_source.is_some() {
+            return;
+        }
         let (columns, rows) = {
             let s = self.state.read(cx);
             (s.data.columns.clone(), Arc::clone(&s.data_rows))
@@ -520,6 +545,148 @@ impl SqllyDataTable {
                 cx.notify();
             }
         });
+    }
+
+    /// Give the pivot and chart tabs the complete result behind a windowed
+    /// grid. While a source is set, both read it on the background executor
+    /// (with a progress label) every time their layout changes, keeping only
+    /// running totals in memory, instead of using the grid's resident rows
+    /// — which, in windowed-row mode, are just the rows near the viewport.
+    /// `None` returns both to the grid's own rows. Setting the source that
+    /// is already installed does nothing, so hosts may call this freely.
+    ///
+    /// The source's rows must match the grid's columns. Drill-through and
+    /// click-to-navigate are unavailable while a source is set.
+    pub fn set_row_source(&mut self, source: Option<Arc<dyn RowSource>>, cx: &mut App) {
+        let unchanged = match (&self.row_source, &source) {
+            (Some(current), Some(next)) => Arc::ptr_eq(current, next),
+            (None, None) => true,
+            _ => false,
+        };
+        if unchanged {
+            return;
+        }
+        let returning = source.is_none();
+        self.row_source = source;
+        self.push_row_source_into_tabs(cx);
+        if returning {
+            let (columns, rows) = {
+                let s = self.state.read(cx);
+                (s.data.columns.clone(), Arc::clone(&s.data_rows))
+            };
+            if let Some(parts) = &self.pivot {
+                let (columns, rows) = (columns.clone(), Arc::clone(&rows));
+                parts.state.update(cx, |ps, cx| {
+                    ps.set_source(columns, rows);
+                    cx.notify();
+                });
+            }
+            if let Some(parts) = &self.chart {
+                parts.state.update(cx, |cs, cx| {
+                    cs.set_source(columns, rows);
+                    cx.notify();
+                });
+            }
+        }
+    }
+
+    /// Let the host handle drill-through over the row source. With a
+    /// handler, double-clicking a pivot cell (or "Show source rows"), and
+    /// clicking an aggregated chart mark or histogram bin, call `handler`
+    /// with a [`crate::RowSourceDrill`] describing the rows; the host
+    /// filters its own copy of the result and shows it with
+    /// [`Self::show_row_source_drill`]. Per-row chart marks need no host:
+    /// they select and reveal their row in the windowed grid. Without a
+    /// handler (`None`), pivot drills over a row source do nothing.
+    pub fn set_row_source_drill_handler(
+        &mut self,
+        handler: Option<RowSourceDrillHandler>,
+        cx: &mut App,
+    ) {
+        self.row_source_drill_handler = handler;
+        self.push_row_source_into_tabs(cx);
+    }
+
+    /// Show the Grid tab's drill banner for a host-filtered view: `label`
+    /// names the filter, and the banner's Clear calls `on_clear` (deferred)
+    /// for the host to restore the full result. Switches to the Grid tab.
+    pub fn show_row_source_drill(&mut self, label: String, on_clear: RowSourceDrillClearHandler) {
+        self.drill_filter = Some(label);
+        self.drill_clear_handler = Some(on_clear);
+        self.active_tab = GridTab::Grid;
+    }
+
+    /// Dismiss a host-shown drill banner without calling its clear handler
+    /// (the host already restored the full result).
+    pub fn dismiss_row_source_drill(&mut self) {
+        if self.drill_clear_handler.take().is_some() {
+            self.drill_filter = None;
+        }
+    }
+
+    /// Whether the drill banner currently belongs to the host.
+    #[must_use]
+    pub fn has_row_source_drill(&self) -> bool {
+        self.drill_clear_handler.is_some()
+    }
+
+    /// The row source the pivot and chart read, if one is set.
+    #[must_use]
+    pub fn row_source(&self) -> Option<&Arc<dyn RowSource>> {
+        self.row_source.as_ref()
+    }
+
+    /// Hand the current row source to whichever of the pivot and chart
+    /// states do not have it yet.
+    fn push_row_source_into_tabs(&self, cx: &mut App) {
+        let drill_enabled = self.row_source_drill_handler.is_some();
+        if let Some(parts) = &self.pivot {
+            parts
+                .state
+                .update(cx, |ps, _cx| ps.source_drill_enabled = drill_enabled);
+        }
+        if let Some(parts) = &self.chart {
+            parts
+                .state
+                .update(cx, |cs, _cx| cs.source_drill_enabled = drill_enabled);
+        }
+        let columns = self.state.read(cx).data.columns.clone();
+        let source = self.row_source.clone();
+        let installed = |current: bool, is_same: bool| match &source {
+            Some(_) => is_same,
+            None => !current,
+        };
+        if let Some(parts) = &self.pivot {
+            let (has, same) = {
+                let ps = parts.state.read(cx);
+                (
+                    ps.has_row_source(),
+                    source.as_ref().is_some_and(|s| ps.row_source_is(s)),
+                )
+            };
+            if !installed(has, same) {
+                let (columns, source) = (columns.clone(), source.clone());
+                parts.state.update(cx, |ps, cx| {
+                    ps.set_row_source(columns, source);
+                    cx.notify();
+                });
+            }
+        }
+        if let Some(parts) = &self.chart {
+            let (has, same) = {
+                let cs = parts.state.read(cx);
+                (
+                    cs.has_row_source(),
+                    source.as_ref().is_some_and(|s| cs.row_source_is(s)),
+                )
+            };
+            if !installed(has, same) {
+                parts.state.update(cx, |cs, cx| {
+                    cs.set_row_source(columns, source);
+                    cx.notify();
+                });
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -578,6 +745,7 @@ impl SqllyDataTable {
             return;
         }
         self.chart = Some(build_chart_parts(&self.state, config, None, cx));
+        self.push_row_source_into_tabs(cx);
     }
 
     /// Remove the chart tab and return to the flat grid.
@@ -623,6 +791,9 @@ impl SqllyDataTable {
         let Some(parts) = &self.chart else {
             return;
         };
+        if self.row_source.is_some() {
+            return;
+        }
         let (columns, rows) = {
             let s = self.state.read(cx);
             (s.data.columns.clone(), Arc::clone(&s.data_rows))
@@ -1043,6 +1214,9 @@ impl SqllyDataTableBuilder {
             chart_sidebar_width_dirty: false,
             follow_system_appearance,
             appearance_subscription: None,
+            row_source: None,
+            row_source_drill_handler: None,
+            drill_clear_handler: None,
         }
     }
 }
@@ -1195,13 +1369,33 @@ impl Render for SqllyDataTable {
                     cx.notify();
                 });
                 if applied {
-                    self.drill_filter =
-                        Some(drill_filter_label(&self.state.read(cx).data, &filter_sets));
+                    self.drill_filter = Some(drill_filter_label(
+                        &self.state.read(cx).data.columns,
+                        &filter_sets,
+                    ));
                 }
                 self.active_tab = GridTab::Grid;
                 let focus = self.state.read(cx).focus_handle.clone();
                 window.focus(&focus, cx);
                 cx.notify();
+            }
+        }
+
+        // Drills over a row source go to the host, which filters its own
+        // copy of the rows. Deferred: the host updates this grid in reply.
+        {
+            let pivot_drill = self
+                .pivot
+                .as_ref()
+                .and_then(|parts| parts.state.update(cx, |s, _| s.take_pending_source_drill()));
+            let chart_drill = self
+                .chart
+                .as_ref()
+                .and_then(|parts| parts.state.update(cx, |s, _| s.take_pending_source_drill()));
+            for drill in [pivot_drill, chart_drill].into_iter().flatten() {
+                if let Some(handler) = self.row_source_drill_handler.clone() {
+                    cx.defer(move |cx| handler(drill, cx));
+                }
             }
         }
 
@@ -1213,11 +1407,28 @@ impl Render for SqllyDataTable {
             let navigate = parts.state.update(cx, |s, _| s.take_pending_navigate());
             if let Some(source_rows) = navigate {
                 let mut applied = false;
+                // While the host shows a filtered view, row positions in the
+                // whole result no longer line up with the grid's rows.
+                let over_source = self.row_source.is_some() && self.drill_clear_handler.is_none();
                 self.state.update(cx, |g, cx| {
-                    // Selection is unsupported in windowed-row mode; the
-                    // navigation is skipped rather than selecting against a
-                    // partially resident window.
-                    if g.window.is_none() {
+                    // Windowed over a row source: rows are positions in the
+                    // whole result, which are the grid's virtual rows (no
+                    // sort or filter while windowed). Select and reveal
+                    // them; the host pages them in as the view scrolls.
+                    // Otherwise selection is unsupported while windowed and
+                    // the navigation is skipped.
+                    if g.window.is_some() && over_source {
+                        let total = g.display_row_count();
+                        let mut display: Vec<usize> =
+                            source_rows.iter().copied().filter(|r| *r < total).collect();
+                        display.sort_unstable();
+                        display.dedup();
+                        if let Some(&first) = display.first() {
+                            g.selection = Selection::Rows(display);
+                            g.ensure_visible(Some(first), None);
+                            applied = true;
+                        }
+                    } else if g.window.is_none() {
                         let mut display_of = std::collections::HashMap::new();
                         for (display, &source) in g.display_indices.iter().enumerate() {
                             display_of.insert(source, display);
@@ -1646,13 +1857,13 @@ impl Render for SqllyDataTable {
 /// Human-readable summary of a drill-through's per-column value filters,
 /// e.g. `region = East, location = Boston, txn_type = Sale`. Multi-value
 /// sets list up to three values; longer sets are elided with a count.
-fn drill_filter_label(
-    data: &crate::data::GridData,
+pub(crate) fn drill_filter_label(
+    columns: &[crate::data::Column],
     filter_sets: &[(usize, std::collections::HashSet<String>)],
 ) -> String {
     let mut parts = Vec::with_capacity(filter_sets.len());
     for (field, values) in filter_sets {
-        let name = data.columns.get(*field).map_or("?", |c| c.name.as_str());
+        let name = columns.get(*field).map_or("?", |c| c.name.as_str());
         let mut sorted: Vec<&str> = values.iter().map(String::as_str).collect();
         sorted.sort_unstable();
         let shown = match sorted.len() {

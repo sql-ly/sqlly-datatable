@@ -94,6 +94,7 @@ pub mod format;
 pub mod grid;
 pub mod localization;
 pub mod pivot;
+pub mod source;
 pub mod text_style;
 pub mod tooltip;
 
@@ -140,6 +141,9 @@ pub use grid::{
     GridTheme, GridThemePair, HitResult, MenuAction, MenuItem, PivotSidebarPosition,
     ReferenceHighlights, RowAction, RowGroup, RowWindow, ScrollbarAxis, SelectedCellContext,
     SelectedRowContext, Selection, SortDirection, SqllyDataTable, SqllyDataTableBuilder,
+};
+pub use source::{
+    RowSource, RowSourceDrill, RowSourceDrillClearHandler, RowSourceDrillHandler, RowSourceError,
 };
 pub use text_style::{CellStyler, CellTextStyler, TextSpan};
 pub use tooltip::{set_tooltip_show_delay, tooltip_show_delay};

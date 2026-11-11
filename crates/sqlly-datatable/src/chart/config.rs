@@ -12,7 +12,8 @@ pub const MAX_SERIES: usize = 4;
 /// Most categories (rows) a chart will draw. Past this a bar is thinner than
 /// a pixel anyway; extra rows are dropped with a visible note.
 pub const MAX_CATEGORIES: usize = 200;
-/// Most visible source rows inspected for configuration and aggregation.
+/// Rows inspected to decide which columns are numeric and which label the
+/// categories. Every row feeds the chart itself.
 pub const MAX_SOURCE_ROWS: usize = 10_000;
 /// Width of the exported standalone SVG document.
 pub const SVG_EXPORT_WIDTH: f32 = 960.0;

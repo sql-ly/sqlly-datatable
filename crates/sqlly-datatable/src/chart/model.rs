@@ -8,16 +8,13 @@
 
 use crate::data::{CellValue, Column};
 
-use super::config::{
-    ChartAggregate, ChartConfig, ChartError, ChartKind, ChartOrder, MAX_CATEGORIES, MAX_SERIES,
-    MAX_SOURCE_ROWS,
-};
+use super::config::{ChartConfig, ChartError, ChartKind, MAX_SOURCE_ROWS};
 
 /// A cell's numeric value, if it has one. Covers typed numbers plus
 /// numeric-looking strings (wire layers often ship decimal/money values as
 /// canonical strings) — except booleans: charting a bit column as 0/1 bars is
 /// noise, so bools are not treated as numeric here.
-fn numeric_cell(value: &CellValue) -> Option<f64> {
+pub(crate) fn numeric_cell(value: &CellValue) -> Option<f64> {
     match value {
         CellValue::Integer(v) => Some(*v as f64),
         CellValue::Decimal(v) => Some(*v).filter(|f| f.is_finite()),
@@ -29,7 +26,7 @@ fn numeric_cell(value: &CellValue) -> Option<f64> {
 
 /// What a column can contribute to the chart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ColumnRole {
+pub(crate) enum ColumnRole {
     /// Every non-null cell is numeric (typed or numeric-looking string).
     Numeric,
     /// String-ish with at least one non-numeric value — a label candidate.
@@ -41,7 +38,7 @@ enum ColumnRole {
 /// Classify one column by scanning its cells. NULLs and blank strings are
 /// ignored (they become gaps); an all-NULL column is `Other` — there is no
 /// honest way to know what it would have held.
-fn classify_column(index: usize, rows: &[Vec<CellValue>]) -> ColumnRole {
+pub(crate) fn classify_column(index: usize, rows: &[Vec<CellValue>]) -> ColumnRole {
     let mut non_null = 0usize;
     let mut numeric = 0usize;
     let mut texty = false;
@@ -75,7 +72,7 @@ fn classify_column(index: usize, rows: &[Vec<CellValue>]) -> ColumnRole {
 }
 
 /// A cell rendered as a category label.
-fn label_text(value: Option<&CellValue>) -> String {
+pub(crate) fn label_text(value: Option<&CellValue>) -> String {
     match value {
         None | Some(CellValue::None) => "NULL".to_string(),
         Some(CellValue::Boolean(b)) => crate::localization::text(if *b {
@@ -97,81 +94,6 @@ pub(crate) fn is_numeric_column(index: usize, rows: &[Vec<CellValue>]) -> bool {
     classify_column(index, rows) == ColumnRole::Numeric
 }
 
-#[derive(Clone, Copy, Default)]
-struct AggregateCell {
-    count: usize,
-    sum: f64,
-    min: Option<f64>,
-    max: Option<f64>,
-}
-
-/// Grouped aggregate output: distinct categories in first-seen order, the
-/// per-series aggregate values, and the source-row indices per group.
-type Aggregated = (Vec<String>, Vec<Vec<Option<f64>>>, Vec<Vec<usize>>);
-
-/// Group `rows` by the label returned from `label_for_row` and fold each
-/// group's configured value columns into one aggregate per (category, series).
-///
-/// Returns the distinct categories in first-seen order, the per-series
-/// aggregate values, and — for click-to-navigate — the source-row indices
-/// that fed each category.
-fn aggregate_rows(
-    rows: &[Vec<CellValue>],
-    label_for_row: &dyn Fn(usize, &Vec<CellValue>) -> String,
-    value_columns: &[usize],
-    aggregate: ChartAggregate,
-) -> Aggregated {
-    let mut categories = Vec::new();
-    let mut category_indices = std::collections::HashMap::new();
-    let mut groups: Vec<Vec<AggregateCell>> = Vec::new();
-    let mut group_rows: Vec<Vec<usize>> = Vec::new();
-    for (row_index, row) in rows.iter().enumerate() {
-        let category = label_for_row(row_index, row);
-        let group_index = if let Some(index) = category_indices.get(&category) {
-            *index
-        } else {
-            let index = categories.len();
-            category_indices.insert(category.clone(), index);
-            categories.push(category);
-            groups.push(vec![AggregateCell::default(); value_columns.len()]);
-            group_rows.push(Vec::new());
-            index
-        };
-        group_rows[group_index].push(row_index);
-        for (series_index, column_index) in value_columns.iter().enumerate() {
-            let Some(value) = row.get(*column_index).and_then(numeric_cell) else {
-                continue;
-            };
-            let cell = &mut groups[group_index][series_index];
-            cell.count += 1;
-            cell.sum += value;
-            cell.min = Some(cell.min.map_or(value, |minimum| minimum.min(value)));
-            cell.max = Some(cell.max.map_or(value, |maximum| maximum.max(value)));
-        }
-    }
-    let values = (0..value_columns.len())
-        .map(|series_index| {
-            groups
-                .iter()
-                .map(|group| {
-                    let cell = group[series_index];
-                    match aggregate {
-                        ChartAggregate::None => None,
-                        ChartAggregate::Sum => (cell.count > 0).then_some(cell.sum),
-                        ChartAggregate::Average => {
-                            (cell.count > 0).then(|| cell.sum / cell.count as f64)
-                        }
-                        ChartAggregate::Minimum => cell.min,
-                        ChartAggregate::Maximum => cell.max,
-                        ChartAggregate::Count => Some(cell.count as f64),
-                    }
-                })
-                .collect()
-        })
-        .collect();
-    (categories, values, group_rows)
-}
-
 /// One charted series: the column it came from and its per-category values
 /// (`None` marks a gap — a null or non-numeric cell).
 #[derive(Clone, Debug, PartialEq)]
@@ -190,17 +112,23 @@ pub struct ChartData {
     pub label_column: Option<String>,
     /// Category labels in display order.
     pub categories: Vec<String>,
-    /// Series in display order (capped at [`MAX_SERIES`]).
+    /// Series in display order (capped at [`super::config::MAX_SERIES`]).
     pub series: Vec<ChartSeries>,
     /// Source-row indices feeding each displayed category, in display order.
     /// This is what click-to-navigate resolves a mark against.
     pub category_rows: Vec<Vec<usize>>,
     /// More categories existed than the configured top-N allowed.
     pub categories_truncated: bool,
-    /// More numeric columns existed than [`MAX_SERIES`] allows.
+    /// More numeric columns existed than [`super::config::MAX_SERIES`] allows.
     pub series_truncated: bool,
-    /// More source rows existed than [`MAX_SOURCE_ROWS`] allows.
-    pub source_truncated: bool,
+    /// Ordering aggregated categories by value met more distinct categories
+    /// than [`super::stream::MAX_TRACKED_CATEGORIES`]; later ones were left
+    /// out of the ranking.
+    pub categories_capped: bool,
+    /// Set when a line, area, or scatter chart of more rows than `top_n`
+    /// was drawn as each row bucket's minimum and maximum: how many rows the
+    /// points summarize.
+    pub downsampled_rows: Option<usize>,
 }
 
 impl ChartData {
@@ -214,134 +142,16 @@ impl ChartData {
     /// configured one or the first string-ish column whose values are not all
     /// numeric-looking (falling back to 1-based row indices); the value
     /// columns are the configured numeric ones or every numeric column in
-    /// SELECT order, capped at [`MAX_SERIES`]. Categories cap at the
-    /// configured top-N; all caps set explicit truncation flags.
+    /// SELECT order, capped at [`super::config::MAX_SERIES`]. Column roles are decided from
+    /// the first [`MAX_SOURCE_ROWS`] rows; every row feeds the chart.
+    /// Categories cap at the configured top-N, long line/area/scatter charts
+    /// are downsampled to their shape, and every cap sets an explicit flag.
     pub fn extract_with_config(
         columns: &[Column],
         rows: &[Vec<CellValue>],
         config: &ChartConfig,
     ) -> Result<ChartData, ChartError> {
-        if rows.is_empty() {
-            return Err(ChartError::NoRows);
-        }
-        let source_truncated = rows.len() > MAX_SOURCE_ROWS;
-        let rows = &rows[..rows.len().min(MAX_SOURCE_ROWS)];
-        let column_count = columns
-            .len()
-            .max(rows.iter().map(Vec::len).max().unwrap_or(0));
-        let roles: Vec<ColumnRole> = (0..column_count)
-            .map(|i| classify_column(i, rows))
-            .collect();
-        let available_value_columns: Vec<usize> = roles
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| **r == ColumnRole::Numeric)
-            .map(|(i, _)| i)
-            .collect();
-        let value_columns = if config.value_columns.is_empty() {
-            available_value_columns.clone()
-        } else {
-            config
-                .value_columns
-                .iter()
-                .copied()
-                .filter(|index| available_value_columns.contains(index))
-                .collect()
-        };
-        if value_columns.is_empty() {
-            return Err(ChartError::NoNumericColumns);
-        }
-        let series_truncated = value_columns.len() > MAX_SERIES;
-        let value_columns = value_columns
-            .into_iter()
-            .take(MAX_SERIES)
-            .collect::<Vec<_>>();
-        let label_index = config
-            .label_column
-            .filter(|index| *index < column_count)
-            .or_else(|| roles.iter().position(|role| *role == ColumnRole::Label));
-        let label_for_row = |row_index: usize, row: &Vec<CellValue>| match label_index {
-            Some(column) => label_text(row.get(column)),
-            None => (row_index + 1).to_string(),
-        };
-        let (mut categories, mut values, mut category_rows) =
-            if config.aggregate == ChartAggregate::None {
-                let categories = rows
-                    .iter()
-                    .enumerate()
-                    .map(|(index, row)| label_for_row(index, row))
-                    .collect::<Vec<_>>();
-                let values = value_columns
-                    .iter()
-                    .map(|column| {
-                        rows.iter()
-                            .map(|row| row.get(*column).and_then(numeric_cell))
-                            .collect::<Vec<_>>()
-                    })
-                    .collect::<Vec<_>>();
-                let category_rows = (0..rows.len()).map(|index| vec![index]).collect();
-                (categories, values, category_rows)
-            } else {
-                aggregate_rows(rows, &label_for_row, &value_columns, config.aggregate)
-            };
-
-        let mut order = (0..categories.len()).collect::<Vec<_>>();
-        match config.order {
-            ChartOrder::Source => {}
-            ChartOrder::CategoryAscending => {
-                order.sort_by(|left, right| categories[*left].cmp(&categories[*right]))
-            }
-            ChartOrder::ValueDescending => order.sort_by(|left, right| {
-                let left = values.first().and_then(|series| series[*left]);
-                let right = values.first().and_then(|series| series[*right]);
-                right
-                    .partial_cmp(&left)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            }),
-        }
-        let top_n = config.top_n.clamp(1, MAX_CATEGORIES);
-        let categories_truncated = order.len() > top_n;
-        order.truncate(top_n);
-        categories = order
-            .iter()
-            .map(|index| categories[*index].clone())
-            .collect();
-        category_rows = order
-            .iter()
-            .map(|index| category_rows[*index].clone())
-            .collect();
-        values = values
-            .into_iter()
-            .map(|series| order.iter().map(|index| series[*index]).collect())
-            .collect();
-
-        let series: Vec<ChartSeries> = value_columns
-            .iter()
-            .zip(values)
-            .map(|(&col, values)| ChartSeries {
-                name: columns
-                    .get(col)
-                    .map(|c| c.name.clone())
-                    .filter(|n| !n.is_empty())
-                    .unwrap_or_else(|| {
-                        crate::localization::format(
-                            "datatable.chart.series.fallback_name",
-                            &[("column_number", &(col + 1).to_string())],
-                        )
-                    }),
-                values,
-            })
-            .collect();
-
-        Ok(ChartData {
-            label_column: label_index.and_then(|i| columns.get(i).map(|c| c.name.clone())),
-            categories,
-            series,
-            category_rows,
-            categories_truncated,
-            series_truncated,
-            source_truncated,
-        })
+        super::stream::extract_rows(columns, rows, config).data
     }
 
     /// The value axis for this data under `kind`. Bars, areas, and histograms
@@ -651,23 +461,41 @@ impl HistogramBins {
 /// chart). A single distinct value yields one centered unit-wide bin.
 #[must_use]
 pub fn histogram_bins(values: &[f64]) -> Option<HistogramBins> {
-    let finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
-    if finite.is_empty() {
-        return None;
-    }
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
-    for &value in &finite {
+    let mut count = 0usize;
+    for &value in values.iter().filter(|v| v.is_finite()) {
         min = min.min(value);
         max = max.max(value);
+        count += 1;
+    }
+    let layout = histogram_layout(min, max, count)?;
+    let mut counts = vec![0usize; layout.edges.len() - 1];
+    for &value in values.iter().filter(|v| v.is_finite()) {
+        counts[layout.bin_for(value)] += 1;
+    }
+    Some(HistogramBins {
+        edges: layout.edges,
+        counts,
+    })
+}
+
+/// Bin edges for `count` finite values spanning `min..=max` (see
+/// [`histogram_bins`] for the rules). `None` when there are no values.
+/// Splitting the layout from the counting lets a streamed source learn the
+/// range in one pass and count in a second.
+pub(crate) fn histogram_layout(min: f64, max: f64, count: usize) -> Option<HistogramLayout> {
+    if count == 0 || !min.is_finite() || !max.is_finite() {
+        return None;
     }
     if min == max {
-        return Some(HistogramBins {
+        return Some(HistogramLayout {
+            first: min - 0.5,
+            width: 1.0,
             edges: vec![min - 0.5, min + 0.5],
-            counts: vec![finite.len()],
         });
     }
-    let target = ((finite.len() as f64).log2().ceil() as usize + 1).clamp(5, 30);
+    let target = ((count as f64).log2().ceil() as usize + 1).clamp(5, 30);
     let mut width = nice_num((max - min) / target as f64, true);
     let mut first = (min / width).floor() * width;
     // Edge alignment can push the realized count past the clamp; widen along
@@ -688,13 +516,27 @@ pub fn histogram_bins(values: &[f64]) -> Option<HistogramBins> {
     if edges.len() < 2 {
         edges.push(first + width);
     }
-    let bins = edges.len() - 1;
-    let mut counts = vec![0usize; bins];
-    for &value in &finite {
-        let index = (((value - first) / width).floor() as isize).clamp(0, bins as isize - 1);
-        counts[index as usize] += 1;
+    Some(HistogramLayout {
+        first,
+        width,
+        edges,
+    })
+}
+
+/// Where histogram bins start, how wide they are, and their edges.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HistogramLayout {
+    first: f64,
+    width: f64,
+    pub(crate) edges: Vec<f64>,
+}
+
+impl HistogramLayout {
+    /// The bin `value` falls in, clamped into range.
+    pub(crate) fn bin_for(&self, value: f64) -> usize {
+        let bins = self.edges.len() - 1;
+        (((value - self.first) / self.width).floor() as isize).clamp(0, bins as isize - 1) as usize
     }
-    Some(HistogramBins { edges, counts })
 }
 
 #[cfg(test)]
@@ -702,6 +544,7 @@ mod tests {
     #![allow(clippy::expect_used, clippy::field_reassign_with_default)]
 
     use super::*;
+    use crate::chart::config::{ChartAggregate, ChartOrder, MAX_CATEGORIES, MAX_SERIES};
     use crate::data::ColumnKind;
 
     fn col(name: &str, kind: ColumnKind) -> Column {
@@ -734,7 +577,7 @@ mod tests {
         assert_eq!(data.series[0].name, "v");
         assert_eq!(data.series[0].values, vec![Some(1.0), Some(2.0)]);
         assert_eq!(data.category_rows, vec![vec![0], vec![1]]);
-        assert!(!data.categories_truncated && !data.series_truncated && !data.source_truncated);
+        assert!(!data.categories_truncated && !data.series_truncated && !data.categories_capped);
     }
 
     #[test]
