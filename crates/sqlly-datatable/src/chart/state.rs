@@ -49,6 +49,22 @@ pub(crate) struct ChartScanOutput {
 }
 
 impl ChartScanJob {
+    /// [`Self::run`] once the source's rows are ready (see
+    /// [`RowSource::ready`]).
+    pub(crate) async fn run_when_ready(self) -> Option<ChartScanOutput> {
+        if let Some(ready) = self.source.ready() {
+            if let Err(error) = ready.await {
+                self.control.finish();
+                return Some(ChartScanOutput {
+                    generation: self.generation,
+                    sample: self.sample.clone().unwrap_or_default(),
+                    outcome: Err(error),
+                });
+            }
+        }
+        self.run()
+    }
+
     /// Read the sample (first job only), then extract over every row.
     /// `None` when cancelled. Blocking; runs on the background executor.
     pub(crate) fn run(self) -> Option<ChartScanOutput> {

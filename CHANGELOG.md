@@ -5,6 +5,11 @@ All notable changes to `sqlly-datatable` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [11.1.0] - 2026-11-12
+
+### Added
+- **Row sources that load asynchronously.** `RowSource::ready` (default `None`) returns a future the Pivot and Chart tabs await on the background executor before each scan, for hosts that can only fetch their rows asynchronously, such as a browser keeping a large result in a worker's storage. The progress label shows while it runs, a newer layout still cancels the older scan, and an error fails the scan with the usual "couldn't read" message. `RowSourceReady` names the future's type.
+
 ## [11.0.0] - 2026-11-11
 
 ### Added

@@ -144,6 +144,7 @@ pub use grid::{
 };
 pub use source::{
     RowSource, RowSourceDrill, RowSourceDrillClearHandler, RowSourceDrillHandler, RowSourceError,
+    RowSourceReady,
 };
 pub use text_style::{CellStyler, CellTextStyler, TextSpan};
 pub use tooltip::{set_tooltip_show_delay, tooltip_show_delay};

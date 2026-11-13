@@ -12,7 +12,7 @@ use gpui::TestAppContext;
 use sqlly_datatable::{
     AggregationFn, CellValue, ChartAggregate, ChartConfig, ChartKind, ChartOrder, Column,
     ColumnKind, GridData, GridTab, PivotConfig, RowSource, RowSourceDrill, RowSourceError,
-    Selection, SqllyDataTable,
+    RowSourceReady, Selection, SqllyDataTable,
 };
 
 const TOTAL: usize = 200_000;
@@ -200,6 +200,94 @@ fn unreadable_source_says_so_instead_of_showing_a_partial_pivot(cx: &mut TestApp
     cx.run_until_parked();
     view.read_with(cx, |table, cx| {
         let pivot = table.pivot_state().expect("pivot").read(cx);
+        assert_eq!(pivot.result.source_row_count, 0);
+        assert_eq!(
+            pivot.scan_status().as_deref(),
+            Some("Couldn't read all of the result rows, so the pivot can't be shown.")
+        );
+    });
+}
+
+/// Rows that can only be read after an asynchronous load, like a browser
+/// host whose rows live in a worker: `scan` fails until `ready` has run.
+struct LoadFirstSource {
+    rows: Vec<Vec<CellValue>>,
+    loaded: Arc<std::sync::atomic::AtomicBool>,
+    fail_load: bool,
+}
+
+impl RowSource for LoadFirstSource {
+    fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn scan(&self, visit: &mut dyn FnMut(&[CellValue]) -> bool) -> Result<(), RowSourceError> {
+        if !self.loaded.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(RowSourceError("scanned before it was loaded".into()));
+        }
+        self.rows.scan(visit)
+    }
+
+    fn ready(&self) -> Option<RowSourceReady> {
+        let loaded = Arc::clone(&self.loaded);
+        let fail = self.fail_load;
+        Some(Box::pin(async move {
+            if fail {
+                return Err(RowSourceError("load failed".into()));
+            }
+            loaded.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }))
+    }
+}
+
+fn load_first_source(fail_load: bool) -> Arc<LoadFirstSource> {
+    Arc::new(LoadFirstSource {
+        rows: (0..TOTAL).map(row).collect(),
+        loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        fail_load,
+    })
+}
+
+#[gpui::test]
+fn pivot_and_chart_wait_for_a_source_that_loads_first(cx: &mut TestAppContext) {
+    let (view, cx) = windowed_table(cx);
+    view.update(cx, |table, cx| {
+        table.set_row_source(Some(load_first_source(false)), cx);
+        table.set_active_tab(GridTab::Pivot, cx);
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |table, cx| {
+        let pivot = table.pivot_state().expect("pivot").read(cx);
+        assert_eq!(pivot.scan_status(), None);
+        assert_eq!(pivot.result.source_row_count, TOTAL);
+    });
+
+    view.update(cx, |table, cx| table.set_active_tab(GridTab::Chart, cx));
+    // The chart canvas starts its scan when it paints.
+    redraw(cx);
+    redraw(cx);
+    view.read_with(cx, |table, cx| {
+        let chart = table.chart_state().expect("chart").read(cx);
+        assert!(!chart.is_scanning());
+        assert!(chart.is_chartable(), "{}", chart.empty_message());
+        let data = chart.data().expect("data");
+        let counted: f64 = data.series[0].values.iter().flatten().sum();
+        assert_eq!(counted, TOTAL as f64, "every row is counted once");
+    });
+}
+
+#[gpui::test]
+fn a_source_that_fails_to_load_says_so(cx: &mut TestAppContext) {
+    let (view, cx) = windowed_table(cx);
+    view.update(cx, |table, cx| {
+        table.set_row_source(Some(load_first_source(true)), cx);
+        table.set_active_tab(GridTab::Pivot, cx);
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |table, cx| {
+        let pivot = table.pivot_state().expect("pivot").read(cx);
+        assert!(!pivot.is_scanning());
         assert_eq!(pivot.result.source_row_count, 0);
         assert_eq!(
             pivot.scan_status().as_deref(),

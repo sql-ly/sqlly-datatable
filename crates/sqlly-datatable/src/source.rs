@@ -8,6 +8,8 @@
 //! every row once per layout change on the background executor, holding
 //! only their running totals, and show progress while they do.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -45,7 +47,19 @@ pub trait RowSource: Send + Sync + 'static {
     ///
     /// Returns [`RowSourceError`] when the rows cannot be read.
     fn scan(&self, visit: &mut dyn FnMut(&[CellValue]) -> bool) -> Result<(), RowSourceError>;
+
+    /// A future to await before [`Self::scan`] when the rows can only be
+    /// fetched asynchronously, such as a browser host whose rows live in a
+    /// worker's storage: the pivot and chart await it on the background
+    /// executor, then scan. An error fails the scan like a failed read.
+    /// `None`, the default, means the rows can be scanned right away.
+    fn ready(&self) -> Option<RowSourceReady> {
+        None
+    }
 }
+
+/// What [`RowSource::ready`] returns.
+pub type RowSourceReady = Pin<Box<dyn Future<Output = Result<(), RowSourceError>> + Send>>;
 
 /// The rows behind a pivot cell or chart mark, handed to the host when the
 /// grid holds only a window of the result and cannot filter itself (see

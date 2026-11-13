@@ -225,7 +225,7 @@ fn start_chart_scan(
     cx: &mut Context<ChartCanvas>,
 ) {
     let control = std::sync::Arc::clone(&job.control);
-    let task = cx.background_executor().spawn(async move { job.run() });
+    let task = cx.background_executor().spawn(job.run_when_ready());
     let ticker = state.downgrade();
     cx.spawn(async move |_this, cx| {
         while !control.is_done() {

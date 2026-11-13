@@ -260,6 +260,21 @@ pub(crate) struct PivotScanOutput {
 }
 
 impl PivotScanJob {
+    /// [`Self::run`] once the source's rows are ready (see
+    /// [`RowSource::ready`]).
+    pub(crate) async fn run_when_ready(self) -> Option<PivotScanOutput> {
+        if let Some(ready) = self.source.ready() {
+            if let Err(error) = ready.await {
+                self.control.finish();
+                return Some(PivotScanOutput {
+                    generation: self.generation,
+                    outcome: Err(error),
+                });
+            }
+        }
+        self.run()
+    }
+
     /// Read every row once: collect the Filters-zone checklist values, and
     /// pivot the rows that pass the active filters. `None` when cancelled.
     /// Blocking; runs on the background executor.
